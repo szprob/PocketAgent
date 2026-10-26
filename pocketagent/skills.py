@@ -15,7 +15,7 @@
 - 工作目录下的 .pocketagent/skills、.agents/skills、.claude/skills
 - ~/.pocketagent/skills、~/.agents/skills、~/.claude/skills
 - 设置里额外加的目录
-规范里的硬性要求（名字只能小写字母、数字、短横线，要和目录名一致，描述不超过 1024 字）不满足时只记一条提示、照样加载；
+规范里的硬性要求（名字只能小写字母、数字、短横线，要和目录名一致，描述不超过 2048 字）不满足时只记一条提示、照样加载；
 没有描述的技能模型没法判断什么时候用，跳过。
 """
 
@@ -32,7 +32,8 @@ PROJECT_SKILL_DIRS = [".pocketagent/skills", ".agents/skills", ".claude/skills"]
 USER_SKILL_DIRS = ["~/.agents/skills", "~/.claude/skills"]
 NAME_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 NAME_LIMIT_CHARS = 64
-DESCRIPTION_LIMIT_CHARS = 1024
+# 规范写的是 1024，这里放宽到 2048：描述写细一点（什么时候用、什么时候不用），模型判断触发更准
+DESCRIPTION_LIMIT_CHARS = 2048
 # 系统提示里的技能清单最多这么长，超出的技能只列名字和位置
 LISTING_LIMIT_CHARS = 12000
 # 启用技能时列出的附带文件最多这么多个

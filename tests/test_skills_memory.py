@@ -120,7 +120,8 @@ class SkillFormatTest(SkillTestBase):
 
     def test_catalog_is_available_skills_xml_with_location(self) -> None:
         skill_file = self.write_skill(self.user_dir, "deploy-thing", SKILL_TEXT)
-        self.write_skill(self.user_dir, "long", "---\nname: long\ndescription: " + "长<" * 800 + "\n---\n")
+        # 超过 DESCRIPTION_LIMIT_CHARS（2048）才会在清单里截断
+        self.write_skill(self.user_dir, "long", "---\nname: long\ndescription: " + "长<" * 1100 + "\n---\n")
 
         section = skills_prompt_section(self.user_skills())
 
@@ -130,6 +131,18 @@ class SkillFormatTest(SkillTestBase):
         self.assertIn("长&lt;", section)
         self.assertNotIn("长<", section)
         self.assertIn("…</description>", section)
+
+    def test_description_limit_is_relaxed_to_2048(self) -> None:
+        # 规范写 1024，实际放宽到 2048：刚好到上限不提示，多一个字才提示
+        at_limit = "字" * 2048
+        over_limit = "字" * 2049
+        self.write_skill(self.user_dir, "at-limit", f"---\nname: at-limit\ndescription: {at_limit}\n---\n")
+        self.write_skill(self.user_dir, "over-limit", f"---\nname: over-limit\ndescription: {over_limit}\n---\n")
+
+        by_name = {skill.name: skill for skill in self.user_skills()}
+
+        self.assertEqual(by_name["at-limit"].warnings, [])
+        self.assertTrue(any("2048" in warning for warning in by_name["over-limit"].warnings))
 
     def test_skill_command_parsing(self) -> None:
         self.write_skill(self.user_dir, "deploy-thing", SKILL_TEXT)
