@@ -3,12 +3,14 @@ import unittest
 from typing import Any
 
 from pocketagent.agent import INTERRUPTED_TOOL_RESULT
+from pocketagent.compaction import SUMMARY_PREFIX
 from pocketagent.events import EventType
-from pocketagent.llm import LLMResponse, ToolCall
+from pocketagent.nodes import apply_finished_compaction
+from pocketagent.llm import ContextOverflowError, LLMResponse, ToolCall
 from pocketagent.permissions import ApprovalMode, DenyAllApprover
 from pocketagent.session import SessionStore
 from pocketagent.tools import Tool, ToolContext, ToolKind, ToolResult, default_tool_registry
-from tests.helpers import TemporaryDirectories, build_harness, roles, tool_call
+from tests.helpers import RoutingProvider, TemporaryDirectories, build_harness, roles, tool_call
 
 
 class SlowTool(Tool):
@@ -149,19 +151,113 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(harness.provider.received_messages), 2)
         self.assertEqual(len(harness.recorder.of_type(EventType.STEP_LIMIT)), 1)
 
-    async def test_compaction_replaces_history_with_summary(self) -> None:
+    def _long_history(self) -> list[dict[str, Any]]:
+        """一段大约一万 token 的旧对话，用来把上下文撑满。"""
+        return [
+            {"role": "user", "content": "第一件事"},
+            {"role": "assistant", "content": "很长的回复" * 6000},
+            {"role": "user", "content": "第二件事"},
+            {"role": "assistant", "content": "好的"},
+        ]
+
+    async def test_background_compaction_does_not_block_the_turn(self) -> None:
+        provider = RoutingProvider(
+            [
+                LLMResponse(tool_calls=[tool_call("c1", "list_dir", "{}")]),
+                LLMResponse(tool_calls=[tool_call("c2", "list_dir", "{}")]),
+                LLMResponse(text="完成"),
+            ]
+        )
+        provider.summary_gate.clear()
+        # 阈值极低、窗口极大：第一次工具调用之后就开始后台压缩，但永远到不了必须等的程度
         harness = build_harness(
-            self.directories,
-            [LLMResponse(text="用户想要一个 hello world"), LLMResponse(text="完成")],
-            context_window_tokens=50,
+            self.directories, [], provider=provider, compact_threshold=0.00001, context_window_tokens=10_000_000
         )
 
-        await harness.agent.run_turn("写一个 hello world")
+        await harness.agent.run_turn("列两次目录")
+
+        self.assertEqual(len(provider.chat_calls), 3)
+        self.assertEqual(provider.summary_calls, 1)
+        self.assertEqual(len(harness.recorder.of_type(EventType.COMPACTION_STARTED)), 1)
+        self.assertEqual(harness.recorder.of_type(EventType.COMPACTION), [])
+
+        provider.summary_gate.set()
+        for _ in range(50):
+            if harness.recorder.of_type(EventType.COMPACTION):
+                break
+            await asyncio.sleep(0.01)
 
         messages = harness.agent.context.messages
-        self.assertEqual(roles(messages), ["system", "user", "assistant"])
-        self.assertIn("用户想要一个 hello world", messages[1]["content"])
-        self.assertEqual(len(harness.recorder.of_type(EventType.COMPACTION)), 1)
+        compaction = harness.recorder.of_type(EventType.COMPACTION)[0]
+        self.assertTrue(compaction.data["background"])
+        self.assertTrue(messages[1]["content"].startswith(SUMMARY_PREFIX))
+        # 快照是第一次工具结果之后拍的，之后的第二次调用和最后的回答原样保留
+        self.assertEqual(messages[-1]["content"], "完成")
+        self.assertIn("c2", [call["id"] for message in messages for call in message.get("tool_calls") or []])
+        saved = SessionStore(harness.settings.sessions_dir).load(harness.agent.session.id)
+        self.assertTrue(saved.messages[1]["content"].startswith(SUMMARY_PREFIX))
+
+    async def test_near_the_limit_the_turn_waits_for_the_background_summary(self) -> None:
+        provider = RoutingProvider([LLMResponse(text="接着做完了")])
+        provider.summary_gate.clear()
+        harness = build_harness(self.directories, [], provider=provider, context_window_tokens=8000)
+        harness.agent.context.messages.extend(self._long_history())
+        await harness.agent.start_compaction()
+
+        turn = asyncio.create_task(harness.agent.run_turn("继续"))
+        # 等到这一轮真的停下来等压缩了，再放行摘要
+        for _ in range(500):
+            if harness.recorder.of_type(EventType.COMPACTION_WAITING):
+                break
+            await asyncio.sleep(0.01)
+        self.assertEqual(provider.chat_calls, [])
+        provider.summary_gate.set()
+        await turn
+
+        self.assertEqual(len(harness.recorder.of_type(EventType.COMPACTION_WAITING)), 1)
+        messages = harness.agent.context.messages
+        self.assertTrue(messages[1]["content"].startswith(SUMMARY_PREFIX))
+        self.assertEqual(roles(messages), ["system", "user", "user", "assistant"])
+        self.assertEqual(provider.summary_calls, 1)
+
+    async def test_stale_background_summary_is_discarded(self) -> None:
+        provider = RoutingProvider([])
+        provider.summary_gate.clear()
+        harness = build_harness(self.directories, [], provider=provider)
+        context = harness.agent.context
+        context.messages.extend(self._long_history())
+        await harness.agent.start_compaction()
+        # 期间历史被别的压缩换掉了
+        context.history_version += 1
+        before = list(context.messages)
+        provider.summary_gate.set()
+        await asyncio.wait([context.pending_compaction.task])
+
+        self.assertFalse(await apply_finished_compaction(context))
+        self.assertEqual(context.messages, before)
+
+    async def test_context_overflow_error_compacts_and_retries(self) -> None:
+        provider = RoutingProvider([ContextOverflowError("maximum context length exceeded"), LLMResponse(text="好了")])
+        harness = build_harness(self.directories, [], provider=provider)
+        harness.agent.context.messages.extend(self._long_history())
+
+        final_text = await harness.agent.run_turn("继续")
+
+        compaction = harness.recorder.of_type(EventType.COMPACTION)[0]
+        self.assertEqual(compaction.data["reason"], "overflow")
+        self.assertEqual(final_text, "好了")
+        self.assertEqual(len(provider.chat_calls), 2)
+        self.assertLess(len(provider.chat_calls[1]), len(provider.chat_calls[0]))
+
+    async def test_auto_compact_off_never_compacts_on_its_own(self) -> None:
+        provider = RoutingProvider([LLMResponse(text="好")])
+        harness = build_harness(self.directories, [], provider=provider, context_window_tokens=8000, auto_compact=False)
+        harness.agent.context.messages.extend(self._long_history())
+
+        await harness.agent.run_turn("继续")
+
+        self.assertEqual(provider.summary_calls, 0)
+        self.assertEqual(harness.recorder.of_type(EventType.COMPACTION_STARTED), [])
 
     async def test_cancel_mid_tool_closes_dangling_tool_calls(self) -> None:
         slow_tool = SlowTool()

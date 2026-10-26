@@ -1,7 +1,8 @@
 import time
 import unittest
+from pathlib import Path
 
-from pocketagent.tools import PathOutsideWorkspaceError, ToolContext
+from pocketagent.tools import ToolContext
 from pocketagent.tools.base import truncate_middle
 from pocketagent.tools.files import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
 from pocketagent.tools.search import GlobTool, GrepTool
@@ -29,7 +30,7 @@ class ToolsTest(unittest.IsolatedAsyncioTestCase):
         result = await ReadFileTool().run({"path": "a.txt", "offset": 2, "limit": 1}, self.context)
 
         self.assertEqual(result.content.splitlines()[0], "     2\ttwo")
-        self.assertIn("还有 1 行未显示", result.content)
+        self.assertIn("用 offset=3 接着读", result.content)
 
     async def test_write_file_creates_parent_directories(self) -> None:
         result = await WriteFileTool().run({"path": "deep/dir/b.txt", "content": "hello"}, self.context)
@@ -63,11 +64,15 @@ class ToolsTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("-print('old')", preview)
         self.assertIn("+print('new')", preview)
 
-    def test_paths_outside_workspace_are_rejected(self) -> None:
-        with self.assertRaises(PathOutsideWorkspaceError):
-            self.context.resolve_path("../outside.txt")
-        with self.assertRaises(PathOutsideWorkspaceError):
-            self.context.resolve_path("/etc/hosts")
+    def test_paths_outside_workspace_resolve_but_are_reported(self) -> None:
+        outside = self.context.resolve_path("../outside.txt")
+        inside = self.context.resolve_path("src/a.py")
+
+        self.assertEqual(outside, (self.workspace / "../outside.txt").resolve())
+        self.assertEqual(ReadFileTool().access({"path": "../outside.txt"}, self.context).outside_paths, [outside])
+        self.assertEqual(ReadFileTool().access({"path": "src/a.py"}, self.context).outside_paths, [])
+        self.assertEqual(WriteFileTool().access({"path": "/etc/hosts", "content": ""}, self.context).outside_paths, [Path("/etc/hosts").resolve()])
+        self.assertTrue(str(inside).startswith(str(self.workspace)))
 
     async def test_list_dir_marks_directories_and_skips_git(self) -> None:
         self.write("src/main.py", "")

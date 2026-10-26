@@ -12,7 +12,8 @@ requires-python = ">=3.11"
 dependencies = ["openai>=1.40", "httpx"]
 
 [project.optional-dependencies]
-web = ["aiohttp>=3.9"]
+# Pillow 用来把大图缩小再发给模型，没有也能跑
+web = ["aiohttp>=3.9", "pillow"]
 
 [project.scripts]
 pocketagent = "pocketagent.cli:main"
@@ -21,7 +22,8 @@ pocketagent = "pocketagent.cli:main"
 include = ["pocketagent*", "pocketflow*"]
 
 [tool.setuptools.package-data]
-"pocketagent.web" = ["static/*"]
+# 注意 static/* 不递归，js 子目录要单独列（之前漏了，wheel 里没有 js，可编辑安装掩盖了这个问题）
+"pocketagent.web" = ["static/*", "static/js/*"]
 
 [tool.ruff]
 line-length = 120

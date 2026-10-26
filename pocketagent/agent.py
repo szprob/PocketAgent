@@ -3,8 +3,9 @@
 主循环（PocketFlow 的图）：
 
     guard ──think──▶ think ──tool_calls──▶ run_tools ──next──▶ guard
-      │                │  └──continue（模型说完了但用户刚插了话）──▶ guard
-      ├──compact──▶ compact ──▶ think          │
+      │                │  ├──continue（模型说完了但用户刚插了话）──▶ guard
+      │                │  └──compact（接口说上下文超长）──▶ compact
+      ├──compact（超过阈值）──▶ compact ──▶ think
       │                │                       │
       └──stop──▶ finish ◀──done────────────────┘ stop（用户拒绝）
 """
@@ -15,15 +16,26 @@ from typing import Any
 from pocketflow import AsyncFlow
 
 from pocketagent.attachments import message_display
-from pocketagent.changes import ChangeTracker
+from pocketagent.checkpoints import TaskCheckpoints
 from pocketagent.config import Settings
 from pocketagent.context import AgentContext, TurnState
 from pocketagent.events import EventBus, EventType
 from pocketagent.llm.base import LLMProvider
-from pocketagent.nodes import CompactNode, FinishNode, GuardNode, RunToolsNode, ThinkNode
+from pocketagent.nodes import (
+    CompactNode,
+    FinishNode,
+    GuardNode,
+    RunToolsNode,
+    ThinkNode,
+    apply_finished_compaction,
+    start_background_compaction,
+    wait_for_compaction,
+)
 from pocketagent.permissions import Approver, PermissionGate
 from pocketagent.prompts import build_system_prompt
+from pocketagent.sandbox import SandboxPolicy, available_sandbox, default_secret_dirs
 from pocketagent.session import Session, SessionStore
+from pocketagent.skills import Skill, discover_skills, skill_directories
 from pocketagent.tools import default_tool_registry
 from pocketagent.tools.base import ToolContext, ToolRegistry
 from pocketagent.trace import JsonlTracer
@@ -45,6 +57,7 @@ def build_agent_flow() -> AsyncFlow:
     compact >> think
     think - "tool_calls" >> run_tools
     think - "continue" >> guard
+    think - "compact" >> compact
     think - "done" >> finish
     run_tools - "next" >> guard
     run_tools - "stop" >> finish
@@ -70,11 +83,63 @@ def close_dangling_tool_calls(messages: list[dict[str, Any]]) -> None:
             messages.append({"role": "tool", "tool_call_id": tool_call["id"], "content": INTERRUPTED_TOOL_RESULT})
 
 
+def enabled_skills(settings: Settings) -> list[Skill]:
+    if not settings.skills_enabled:
+        return []
+    directories = skill_directories(settings.workspace, settings.home_dir, settings.skill_dirs)
+    return [skill for skill in discover_skills(directories) if skill.name not in settings.disabled_skills]
+
+
+def sandbox_active(settings: Settings) -> bool:
+    return settings.sandbox_enabled and available_sandbox() is not None
+
+
+def build_tool_context(settings: Settings, session: Session, skills: list[Skill]) -> ToolContext:
+    """附件目录、技能目录不用确认就能读；PocketAgent 自己的目录（有密钥）和 ~/.ssh 这类算密钥目录。"""
+    extra_read_dirs = [settings.attachments_dir / session.id] + [skill.directory for skill in skills]
+    secret_dirs = default_secret_dirs() + [settings.home_dir]
+    sandbox = None
+    if sandbox_active(settings):
+        sandbox = SandboxPolicy(
+            workspace=settings.workspace,
+            allow_network=settings.sandbox_network,
+            secret_dirs=secret_dirs,
+            readable_exceptions=extra_read_dirs,
+        )
+    return ToolContext(
+        workspace=settings.workspace,
+        shell_timeout_seconds=settings.shell_timeout_seconds,
+        extra_read_dirs=extra_read_dirs,
+        secret_dirs=secret_dirs,
+        sandbox=sandbox,
+    )
+
+
+def build_tool_registry(settings: Settings, skills: list[Skill]) -> ToolRegistry:
+    return default_tool_registry(
+        web_search=settings.web_search,
+        web_fetch=settings.web_fetch,
+        sandboxed=sandbox_active(settings),
+        skills=skills,
+    )
+
+
 class Agent:
-    def __init__(self, context: AgentContext, session_store: SessionStore, usage_log: UsageLog | None = None) -> None:
+    def __init__(
+        self,
+        context: AgentContext,
+        session_store: SessionStore,
+        usage_log: UsageLog | None = None,
+        skills: list[Skill] | None = None,
+    ) -> None:
         self.context = context
         self.session_store = session_store
         self.usage_log = usage_log
+        self.skills = skills or []
+        # 正在跑一轮；后台压缩做完时只有空闲才能直接换上摘要
+        self.turn_running = False
+        # 影子 git 检查点：每轮开始前给工作区拍一张
+        self.checkpoints = TaskCheckpoints(context.settings.shadow_dir, context.settings.workspace, context.session)
         self.flow = build_agent_flow()
         self.refresh_system_prompt()
 
@@ -87,7 +152,13 @@ class Agent:
         settings = self.context.settings
         system_message = {
             "role": "system",
-            "content": build_system_prompt(settings.workspace, settings.home_dir, self.context.tools),
+            "content": build_system_prompt(
+                settings.workspace,
+                settings.home_dir,
+                self.context.tools,
+                skills=self.skills,
+                sandbox=self.context.tool_context.sandbox,
+            ),
         }
         messages = self.context.messages
         if messages and messages[0].get("role") == "system":
@@ -108,8 +179,11 @@ class Agent:
             user_text=display["text"],
             attachments=display["attachments"],
         )
+        await self._checkpoint_turn_start(display["text"])
+        self.turn_running = True
         try:
             await self.flow.run_async(context)
+            await apply_finished_compaction(context)
         except (asyncio.CancelledError, KeyboardInterrupt):
             context.turn.stop_reason = "interrupted"
             close_dangling_tool_calls(context.messages)
@@ -119,11 +193,24 @@ class Agent:
             close_dangling_tool_calls(context.messages)
             await context.events.emit(EventType.ERROR, message=f"{type(error).__name__}: {error}")
         finally:
+            self.turn_running = False
             self.session_store.save(self.session)
+            self._apply_compaction_when_done()
             await context.events.emit(
                 EventType.TURN_END, stop_reason=context.turn.stop_reason, final_text=context.turn.final_text
             )
         return context.turn.final_text
+
+    async def _checkpoint_turn_start(self, user_text: str) -> None:
+        """这一轮动手之前给工作区拍一张；第一张就是「任务开始时的样子」，变更都和它比。"""
+        was_enabled = self.checkpoints.enabled
+        is_first = self.checkpoints.baseline() is None
+        label = "任务开始时" if is_first else f"这一轮之前：{user_text.strip()[:30]}"
+        checkpoint = await self.checkpoints.create(label, kind="baseline" if is_first else "turn")
+        if checkpoint is not None:
+            await self.context.events.emit(EventType.CHECKPOINT, commit=checkpoint.commit, label=checkpoint.label)
+        elif was_enabled:
+            await self.context.events.emit(EventType.ERROR, message=self.checkpoints.disabled_reason)
 
     async def interject(self, user_input: str | dict[str, Any]) -> None:
         """agent 干活时用户插话：下一次调用模型前放进对话，模型就能看到。"""
@@ -135,13 +222,46 @@ class Agent:
         )
 
     async def compact(self) -> None:
-        """手动压缩（/compact），复用 CompactNode 的重试和 trace。"""
-        await AsyncFlow(start=CompactNode()).run_async(self.context)
+        """手动压缩并等它做完（命令行 /compact 用）。"""
+        await start_background_compaction(self.context, reason="manual")
+        await wait_for_compaction(self.context)
         self.session_store.save(self.session)
+
+    async def start_compaction(self) -> bool:
+        """手动压缩但不等（web 的「压缩」按钮）：后台做摘要，做完自动换上，对话照常进行。"""
+        started = await start_background_compaction(self.context, reason="manual")
+        if not self.turn_running:
+            self._apply_compaction_when_done()
+        return started
+
+    def _apply_compaction_when_done(self) -> None:
+        """一轮结束时后台压缩还没做完：等它做完、而且没在跑新的一轮时，直接换上摘要并存盘。"""
+        pending = self.context.pending_compaction
+        if pending is None or pending.task.done():
+            return
+        pending.task.add_done_callback(self._on_compaction_done)
+
+    def _on_compaction_done(self, finished_task: asyncio.Task) -> None:
+        finished_task.get_loop().create_task(self._apply_if_idle())
+
+    async def _apply_if_idle(self) -> None:
+        # 正在跑的一轮会在下一步的 GuardNode 里自己换上
+        if self.turn_running:
+            return
+        if await apply_finished_compaction(self.context):
+            self.session_store.save(self.session)
 
     def replace_provider(self, provider: LLMProvider) -> None:
         """换模型时用：新的 provider 同样包上用量记录。"""
         self.context.provider = _with_usage_recording(provider, self.usage_log, self.context.settings, self.session)
+
+    def reload_tools(self) -> None:
+        """设置变了（联网、沙箱、技能）：工具、工具环境、系统提示都重新装一遍，下一次调用模型时生效。"""
+        settings = self.context.settings
+        self.skills = enabled_skills(settings)
+        self.context.tools = build_tool_registry(settings, self.skills)
+        self.context.tool_context = build_tool_context(settings, self.session, self.skills)
+        self.refresh_system_prompt()
 
 
 def _as_user_message(user_input: str | dict[str, Any]) -> dict[str, Any]:
@@ -176,8 +296,8 @@ def create_agent(
 ) -> Agent:
     """组装一个 Agent。provider / tools 留空就用默认的（OpenAI 兼容接口 + 内置工具）。
 
-    同时接好：trace（~/.pocketagent/traces）、用量记录（usage.jsonl）、
-    文件变更跟踪（checkpoints/<会话>）、附件目录（attachments/<会话>，只读工具可以读）。
+    同时接好：trace（~/.pocketagent/traces）、用量记录（usage.jsonl）、影子 git 检查点（shadow/<工作区>）、
+    附件目录和技能目录（只读工具不用确认就能读）、bash 沙箱。
     """
     session_store = SessionStore(settings.sessions_dir)
     if session is None:
@@ -192,23 +312,18 @@ def create_agent(
     if enable_trace:
         events.subscribe(JsonlTracer(settings.traces_dir / f"{session.id}.jsonl"))
 
-    tool_context = ToolContext(
-        workspace=settings.workspace,
-        shell_timeout_seconds=settings.shell_timeout_seconds,
-        extra_read_dirs=[settings.attachments_dir / session.id],
-        write_observer=ChangeTracker(settings.checkpoints_dir / session.id, settings.workspace),
-    )
+    skills = enabled_skills(settings)
     context = AgentContext(
         settings=settings,
         provider=_with_usage_recording(provider, usage_log, settings, session),
-        tools=tools or default_tool_registry(),
-        tool_context=tool_context,
+        tools=tools or build_tool_registry(settings, skills),
+        tool_context=build_tool_context(settings, session, skills),
         permissions=PermissionGate(mode=settings.approval_mode, approver=approver),
         events=events,
         session=session,
         attachments_root=settings.attachments_dir,
     )
-    return Agent(context, session_store, usage_log)
+    return Agent(context, session_store, usage_log, skills=skills)
 
 
 def create_provider(settings: Settings) -> LLMProvider:
@@ -222,4 +337,6 @@ def create_provider(settings: Settings) -> LLMProvider:
         temperature=settings.temperature,
         reasoning_effort=settings.reasoning_effort,
         extra_body=settings.extra_body,
+        reasoning_style=settings.reasoning_style,
+        max_output_tokens=settings.max_output_tokens,
     )

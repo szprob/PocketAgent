@@ -1,4 +1,5 @@
 from pocketagent.llm.base import (
+    ContextOverflowError,
     LLMProvider,
     LLMResponse,
     SilentListener,
@@ -10,6 +11,7 @@ from pocketagent.llm.base import (
 from pocketagent.llm.scripted import ScriptedProvider
 
 __all__ = [
+    "ContextOverflowError",
     "LLMProvider",
     "LLMResponse",
     "ScriptedProvider",

@@ -31,13 +31,22 @@ function renderTiles(periods) {
   for (const period of periods) {
     const tile = el("div", "usage-tile");
     const detail = `输入 ${formatTokens(period.prompt)} · 输出 ${formatTokens(period.completion)} · ${period.calls} 次`;
-    tile.append(el("div", "tile-label", period.label), el("div", "tile-value", formatTokens(period.total)), el("div", "tile-detail", detail));
+    tile.append(
+      el("div", "tile-label", period.label),
+      el("div", "tile-value", formatTokens(period.total)),
+      el("div", "tile-detail", detail),
+      el("div", "tile-detail", `缓存命中 ${percentText(period.cache_hit_rate)}${period.cost > 0 ? ` · $${period.cost.toFixed(3)}` : ""}`)
+    );
     if (period.estimated_calls) {
       tile.appendChild(el("div", "tile-note", `其中 ${period.estimated_calls} 次接口没报用量，按字数估算`));
     }
     tiles.appendChild(tile);
   }
   return tiles;
+}
+
+function percentText(rate) {
+  return rate === null || rate === undefined ? "—" : `${Math.round(rate * 100)}%`;
 }
 
 // ---- 近 30 天柱状图 ----
@@ -116,7 +125,7 @@ function renderColumn(day, maximum, tooltip, plot) {
       el("div", "tooltip-title", day.date),
       tooltipRow("series-input", "输入", day.prompt),
       tooltipRow("series-output", "输出", day.completion),
-      el("div", "tooltip-total", `合计 ${formatNumber(day.total)} · ${day.calls} 次调用`)
+      el("div", "tooltip-total", `合计 ${formatNumber(day.total)} · ${day.calls} 次调用 · 缓存命中 ${percentText(day.cache_hit_rate)}`)
     );
     tooltip.classList.remove("hidden");
     const center = column.offsetLeft + column.offsetWidth / 2;
@@ -147,8 +156,8 @@ function renderDailyTable(daily) {
   const rows = daily
     .filter((day) => day.calls > 0)
     .reverse()
-    .map((day) => [day.date, day.calls, day.prompt, day.completion, day.total]);
-  details.appendChild(dataTable(["日期", "调用", "输入", "输出", "合计"], rows, "这 30 天还没有用量"));
+    .map((day) => [day.date, day.calls, day.prompt, day.completion, day.total, percentText(day.cache_hit_rate)]);
+  details.appendChild(dataTable(["日期", "调用", "输入", "输出", "合计", "缓存命中"], rows, "这 30 天还没有用量"));
   return details;
 }
 
@@ -157,8 +166,16 @@ function renderDailyTable(daily) {
 function renderModelTable(byModel) {
   const section = el("section", "usage-section");
   section.appendChild(el("h3", "", "按模型（全部时间）"));
-  const rows = byModel.map((item) => [item.model, item.calls, item.prompt, item.completion, item.total]);
-  section.appendChild(dataTable(["模型", "调用", "输入", "输出", "合计"], rows, "还没有用量记录"));
+  const rows = byModel.map((item) => [
+    item.model,
+    item.calls,
+    item.prompt,
+    item.completion,
+    item.total,
+    percentText(item.cache_hit_rate),
+    item.cost > 0 ? `$${item.cost.toFixed(4)}` : "—",
+  ]);
+  section.appendChild(dataTable(["模型", "调用", "输入", "输出", "合计", "缓存命中", "费用"], rows, "还没有用量记录"));
   return section;
 }
 
@@ -167,19 +184,16 @@ function dataTable(headers, rows, emptyText) {
     return el("div", "muted", emptyText);
   }
   const table = el("table", "data-table");
+  // 第一列是名字（模型、日期）左对齐，后面都是数值类，表头和内容一起右对齐
   const head = el("tr");
-  headers.forEach((header, index) => {
-    // 数字列表头和数字一样右对齐
-    const isNumberColumn = typeof rows[0][index] === "number" && index > 0;
-    head.appendChild(el("th", isNumberColumn ? "number" : "", header));
-  });
+  headers.forEach((header, index) => head.appendChild(el("th", index > 0 ? "number" : "", header)));
   table.appendChild(el("thead")).appendChild(head);
   const body = el("tbody");
   for (const row of rows) {
     const tableRow = el("tr");
     row.forEach((cell, index) => {
-      const isNumber = typeof cell === "number";
-      tableRow.appendChild(el("td", isNumber ? "number" : "", isNumber && index > 0 ? formatNumber(cell) : String(cell)));
+      const text = typeof cell === "number" ? formatNumber(cell) : String(cell);
+      tableRow.appendChild(el("td", index > 0 ? "number" : "", text));
     });
     body.appendChild(tableRow);
   }

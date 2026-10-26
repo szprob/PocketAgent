@@ -5,6 +5,9 @@
 文本附件直接把内容拼进消息；其他文件只告诉模型保存的路径，需要时它用工具去看。
 
 user 消息里另外带一个 _display 字段（原话 + 附件清单），给界面重放历史用；发给模型前会去掉。
+
+图片：上传时如果长边超过 2048 就另存一份缩小的给模型用（原图留着给界面看），省请求体积和图片 token；
+每次调模型都要把图重新放进请求（接口是无状态的），但读盘 + base64 只做一次，结果缓存在内存里。
 """
 
 import base64
@@ -12,15 +15,25 @@ import copy
 import mimetypes
 import re
 import uuid
+from collections import OrderedDict
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
+
+try:
+    from PIL import Image, ImageOps
+except ImportError:
+    # 没装 Pillow 就不缩图，照样能用
+    Image = None
 
 ATTACHMENT_URL_PREFIX = "pocketagent-attachment:"
 TEXT_INLINE_LIMIT_CHARS = 50_000
 TEXT_DETECTION_MAX_BYTES = 2_000_000
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 DISPLAY_KEY = "_display"
+MODEL_IMAGE_MAX_SIDE = 2048
+MODEL_COPY_MARKER = ".model"
+DATA_URL_CACHE_BUDGET_BYTES = 64 * 1024 * 1024
 
 
 @dataclass
@@ -69,7 +82,10 @@ class AttachmentStore:
         self.directory.mkdir(parents=True, exist_ok=True)
         path = self.directory / attachment_id
         path.write_bytes(data)
-        return self.get(attachment_id)
+        attachment = self.get(attachment_id)
+        if attachment.kind == "image":
+            _write_model_copy(path)
+        return attachment
 
     def get(self, attachment_id: str) -> Attachment:
         """找不到抛 KeyError。"""
@@ -159,6 +175,47 @@ def message_text(message: dict[str, Any]) -> str:
     return ""
 
 
+def model_copy_path(original: Path) -> Path:
+    """给模型用的缩小版和原图放在一起：<原名>.model<扩展名>。"""
+    return original.with_name(f"{original.stem}{MODEL_COPY_MARKER}{original.suffix}")
+
+
+def _write_model_copy(original: Path) -> None:
+    """长边超过 2048 的图存一份缩小的；不需要缩、没装 Pillow、或者不是 Pillow 认识的格式就算了。"""
+    if Image is None:
+        return
+    try:
+        with Image.open(original) as image:
+            image = ImageOps.exif_transpose(image)
+            if max(image.size) <= MODEL_IMAGE_MAX_SIDE:
+                return
+            image.thumbnail((MODEL_IMAGE_MAX_SIDE, MODEL_IMAGE_MAX_SIDE))
+            if image.mode not in ("RGB", "L") and original.suffix.lower() in (".jpg", ".jpeg"):
+                image = image.convert("RGB")
+            image.save(model_copy_path(original))
+    except Exception:
+        return
+
+
+# (路径, 修改时间, 大小) → data URL；按总字节数做 LRU
+_DATA_URL_CACHE: "OrderedDict[tuple[str, float, int], str]" = OrderedDict()
+
+
+def _cached_data_url(path: Path) -> str:
+    stat = path.stat()
+    key = (str(path), stat.st_mtime, stat.st_size)
+    cached = _DATA_URL_CACHE.get(key)
+    if cached is not None:
+        _DATA_URL_CACHE.move_to_end(key)
+        return cached
+    mime = mimetypes.guess_type(path.name)[0] or "image/png"
+    data_url = f"data:{mime};base64,{base64.b64encode(path.read_bytes()).decode('ascii')}"
+    _DATA_URL_CACHE[key] = data_url
+    while sum(len(value) for value in _DATA_URL_CACHE.values()) > DATA_URL_CACHE_BUDGET_BYTES and len(_DATA_URL_CACHE) > 1:
+        _DATA_URL_CACHE.popitem(last=False)
+    return data_url
+
+
 def _image_data_url(attachments_root: Path | None, reference: str) -> str | None:
     if attachments_root is None:
         return None
@@ -166,9 +223,8 @@ def _image_data_url(attachments_root: Path | None, reference: str) -> str | None
     path = (attachments_root / relative).resolve()
     if attachments_root.resolve() not in path.parents or not path.is_file():
         return None
-    mime = mimetypes.guess_type(path.name)[0] or "image/png"
-    encoded = base64.b64encode(path.read_bytes()).decode("ascii")
-    return f"data:{mime};base64,{encoded}"
+    smaller = model_copy_path(path)
+    return _cached_data_url(smaller if smaller.is_file() else path)
 
 
 def _materialize_part(

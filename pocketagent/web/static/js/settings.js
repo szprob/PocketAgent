@@ -1,7 +1,8 @@
-// 设置弹窗：模型 / 通用 / 用量 三页。模型和通用改完点保存，写进 ~/.pocketagent/config.json。
+// 设置弹窗：模型 / 通用 / 技能 / 用量 四页。模型和通用改完点保存，写进 ~/.pocketagent/config.json。
 
 import { requestJson, sendJson } from "./api.js";
 import { button, el, show } from "./dom.js";
+import { reasoningLabel } from "./modelpicker.js";
 import { MODE_LABELS, reloadInfo, state } from "./state.js";
 import { renderUsage } from "./usage.js";
 
@@ -23,6 +24,10 @@ const draft = {
   models: [],
   defaultModel: null,
   selectedId: null,
+  // 各家接口能选的思考档位（后端实测的那张表）
+  reasoningPresets: {},
+  // 技能页里关掉的技能名
+  disabledSkills: new Set(),
 };
 
 export function initSettings() {
@@ -47,6 +52,20 @@ export function initSettings() {
     defaultMode: byId("default-mode-select"),
     maxSteps: byId("max-steps-input"),
     busyModeInputs: [...document.querySelectorAll('input[name="busy-input-mode"]')],
+    autoCompact: byId("auto-compact-input"),
+    compactThreshold: byId("compact-threshold-select"),
+    webSearchEnabled: byId("web-search-enabled"),
+    webSearchEngine: byId("web-search-engine"),
+    webSearchKey: byId("web-search-key"),
+    webSearchKeyHint: byId("web-search-key-hint"),
+    webFetchEnabled: byId("web-fetch-enabled"),
+    sandboxEnabled: byId("sandbox-enabled"),
+    sandboxNetwork: byId("sandbox-network"),
+    sandboxHint: byId("sandbox-hint"),
+    skillsEnabled: byId("skills-enabled"),
+    skillList: byId("skill-list"),
+    skillDirs: byId("skill-dirs-input"),
+    skillDirsHint: byId("skill-dirs-hint"),
     configPath: byId("config-path"),
     usageContent: byId("usage-content"),
   });
@@ -116,11 +135,58 @@ function toDraftModel(model) {
     temperature: textOrEmpty(model.temperature),
     extra_body: formatJsonObject(model.extra_body),
     supports_images: Boolean(model.supports_images),
+    // 单独配过的思考档位（比如 Grok 不能关），保存时原样带回去
+    custom_reasoning_choices: model.custom_reasoning_choices || null,
   };
 }
 
+// 和后端 config.provider_kind 同一套规则
+function providerOf(baseUrl) {
+  let host = "";
+  try {
+    host = new URL(baseUrl).hostname;
+  } catch (notUrl) {
+    return "openai";
+  }
+  if (host.includes("deepseek.com")) {
+    return "deepseek";
+  }
+  if (host.includes("bigmodel.cn")) {
+    return "bigmodel";
+  }
+  if (host.includes("openrouter.ai")) {
+    return "openrouter";
+  }
+  return "openai";
+}
+
+function reasoningChoicesFor(model) {
+  return model.custom_reasoning_choices || draft.reasoningPresets[providerOf(model.base_url)] || [];
+}
+
+function renderReasoningOptions(model) {
+  const select = elements.modelForm.elements.namedItem("reasoning_effort");
+  const choices = reasoningChoicesFor(model);
+  // 换了接口地址后原来的档位可能不支持了，回到默认
+  if (model.reasoning_effort && !choices.includes(model.reasoning_effort)) {
+    model.reasoning_effort = "";
+  }
+  select.replaceChildren();
+  for (const value of [""].concat(choices)) {
+    const option = el("option", "", value ? `${reasoningLabel(value)}（${value}）` : "默认（不传）");
+    option.value = value;
+    select.appendChild(option);
+  }
+  select.value = model.reasoning_effort;
+}
+
 function toPayloadModel(model) {
-  const payload = { id: model.id, clear_api_key: model.clear_api_key, supports_images: model.supports_images };
+  const payload = {
+    id: model.id,
+    clear_api_key: model.clear_api_key,
+    supports_images: model.supports_images,
+    reasoning_choices: model.custom_reasoning_choices,
+  };
   for (const field of MODEL_FORM_FIELDS) {
     payload[field] = model[field];
   }
@@ -131,6 +197,7 @@ export async function openSettings(tabName) {
   const config = await requestJson("api/config");
   draft.models = config.models.map(toDraftModel);
   draft.defaultModel = config.default_model;
+  draft.reasoningPresets = config.reasoning_presets;
   draft.selectedId = config.default_model || draft.models[0]?.id || null;
 
   elements.defaultMode.replaceChildren();
@@ -145,12 +212,100 @@ export async function openSettings(tabName) {
   for (const input of elements.busyModeInputs) {
     input.checked = input.value === config.busy_input_mode;
   }
+  elements.autoCompact.checked = config.auto_compact;
+  elements.compactThreshold.value = String(config.compact_threshold_percent);
+  elements.webSearchEnabled.checked = config.web_search_enabled;
+  elements.webSearchEngine.value = config.web_search_engine;
+  elements.webSearchKey.value = "";
+  elements.webSearchKeyHint.textContent = config.web_search_key_hint
+    ? `已单独配置 ${config.web_search_key_hint}，留空表示不改`
+    : config.web_search_key_source || "没有可用的密钥：填一个，或者在模型里加一个智谱模型";
+  elements.webFetchEnabled.checked = config.web_fetch_enabled;
+  elements.sandboxEnabled.checked = config.sandbox_enabled;
+  elements.sandboxNetwork.checked = config.sandbox_network;
+  elements.sandboxHint.textContent = sandboxHint(config.sandbox_available);
+  elements.skillsEnabled.checked = config.skills_enabled;
+  elements.skillDirs.value = (config.skill_dirs || []).join("\n");
+  draft.disabledSkills = new Set(config.disabled_skills || []);
+  loadSkills();
   elements.configPath.textContent = `保存在 ${config.config_path}（文件权限 600，只有你自己能读）`;
   setMessage("");
   renderModelList();
   renderModelForm();
   show(elements.modal, true);
   selectTab(tabName || "models");
+}
+
+function sandboxHint(kind) {
+  if (kind === "seatbelt") {
+    return "本机用 macOS 自带的 sandbox-exec。被拦下的命令，模型可以申请在沙箱外执行，那一次会问你。";
+  }
+  if (kind === "bubblewrap") {
+    return "本机用 bubblewrap（bwrap）。被拦下的命令，模型可以申请在沙箱外执行，那一次会问你。";
+  }
+  return "这台机器没有可用的沙箱（macOS 要 sandbox-exec，Linux 要装 bubblewrap），命令会直接执行。";
+}
+
+// ---- 技能 ----
+
+function currentWorkspace() {
+  const task = state.tasks.find((each) => each.id === state.currentTaskId);
+  return task?.workspace || "";
+}
+
+async function loadSkills() {
+  elements.skillList.replaceChildren(el("div", "muted", "正在找技能…"));
+  const workspace = currentWorkspace();
+  const query = workspace ? `?workspace=${encodeURIComponent(workspace)}` : "";
+  let overview;
+  try {
+    overview = await requestJson(`api/skills${query}`);
+  } catch (error) {
+    elements.skillList.replaceChildren(el("div", "muted", `读不到技能：${error.message}`));
+    return;
+  }
+  renderSkills(overview.skills);
+  const found = overview.directories.filter((directory) => directory.exists).map((directory) => directory.path);
+  const missing = overview.directories.filter((directory) => !directory.exists).map((directory) => directory.path);
+  elements.skillDirsHint.textContent =
+    `在这些目录里找到了技能：${found.join("、") || "（没有）"}。` +
+    (missing.length ? `还会看（目前不存在）：${missing.join("、")}。` : "") +
+    (workspace ? "" : "打开一个任务再来，能看到那个工作区自己的技能。");
+}
+
+function renderSkills(skills) {
+  if (skills.length === 0) {
+    elements.skillList.replaceChildren(el("div", "muted", "还没有技能。把带 SKILL.md 的目录放进 ~/.claude/skills 或 ~/.pocketagent/skills 就行。"));
+    return;
+  }
+  const rows = skills.map((skill) => {
+    const row = el("label", "skill-row");
+    const toggle = document.createElement("input");
+    toggle.type = "checkbox";
+    toggle.checked = !draft.disabledSkills.has(skill.name);
+    toggle.addEventListener("change", () => {
+      if (toggle.checked) {
+        draft.disabledSkills.delete(skill.name);
+      } else {
+        draft.disabledSkills.add(skill.name);
+      }
+    });
+    const text = el("div", "skill-text");
+    const title = el("div", "skill-title");
+    title.append(el("strong", "", skill.name), el("span", "skill-source", skill.source));
+    text.append(title, el("div", "skill-description", skill.description || "（没写描述）"));
+    text.title = skill.path;
+    row.append(toggle, text);
+    return row;
+  });
+  elements.skillList.replaceChildren(...rows);
+}
+
+function skillDirsFromInput() {
+  return elements.skillDirs.value
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
 }
 
 // ---- 模型列表和表单 ----
@@ -226,8 +381,11 @@ function renderModelForm() {
     return;
   }
   for (const field of MODEL_FORM_FIELDS) {
-    elements.modelForm.elements.namedItem(field).value = model[field];
+    if (field !== "reasoning_effort") {
+      elements.modelForm.elements.namedItem(field).value = model[field];
+    }
   }
+  renderReasoningOptions(model);
   elements.supportsImages.checked = model.supports_images;
   renderApiKeyHint(model);
   elements.makeDefaultButton.disabled = model.id === draft.defaultModel;
@@ -255,6 +413,9 @@ function onModelFieldInput(event) {
   }
   if (event.target.name === "name" || event.target.name === "model") {
     renderModelList();
+  }
+  if (event.target.name === "base_url") {
+    renderReasoningOptions(model);
   }
 }
 
@@ -327,6 +488,17 @@ async function saveSettings() {
     busy_input_mode: busyInput ? busyInput.value : "interject",
     max_steps: elements.maxSteps.value,
     user_name: elements.userName.value,
+    auto_compact: elements.autoCompact.checked,
+    compact_threshold_percent: elements.compactThreshold.value,
+    web_search_enabled: elements.webSearchEnabled.checked,
+    web_search_engine: elements.webSearchEngine.value,
+    web_search_api_key: elements.webSearchKey.value,
+    web_fetch_enabled: elements.webFetchEnabled.checked,
+    sandbox_enabled: elements.sandboxEnabled.checked,
+    sandbox_network: elements.sandboxNetwork.checked,
+    skills_enabled: elements.skillsEnabled.checked,
+    skill_dirs: skillDirsFromInput(),
+    disabled_skills: [...draft.disabledSkills],
   };
   elements.save.disabled = true;
   setMessage("保存中…", true);

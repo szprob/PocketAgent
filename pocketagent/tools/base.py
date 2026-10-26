@@ -8,7 +8,9 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
+
+from pocketagent.sandbox import SandboxPolicy, default_secret_dirs
 
 
 class ToolKind(str, Enum):
@@ -25,14 +27,17 @@ class ToolResult:
     is_error: bool = False
 
 
-class PathOutsideWorkspaceError(ValueError):
-    pass
+@dataclass
+class ToolAccess:
+    """一次调用要碰到的、超出常规的地方，权限审批按它决定要不要多问一句。"""
 
-
-class WriteObserver(Protocol):
-    """改文件前要通知的对象（见 changes.ChangeTracker）。"""
-
-    def remember_original(self, path: Path) -> None: ...
+    # 工作目录（读的话还有附件、技能目录）以外的路径
+    outside_paths: list[Path] = field(default_factory=list)
+    # 密钥、凭据所在的路径，什么模式下都要用户确认
+    secret_paths: list[Path] = field(default_factory=list)
+    # bash 要求在沙箱外执行
+    outside_sandbox: bool = False
+    command: str = ""
 
 
 def _is_within(path: Path, root: Path) -> bool:
@@ -43,28 +48,37 @@ def _is_within(path: Path, root: Path) -> bool:
 class ToolContext:
     workspace: Path
     shell_timeout_seconds: int = 120
-    # 只读工具额外能读的目录，例如这个会话的附件目录
+    # 不用确认就能读的目录：这个会话的附件目录、技能目录
     extra_read_dirs: list[Path] = field(default_factory=list)
-    # 写文件前通知它记下原始内容，右侧栏的「变更」靠这个
-    write_observer: WriteObserver | None = None
+    # 密钥、凭据目录：工具碰到要确认，bash 在沙箱里读不到
+    secret_dirs: list[Path] = field(default_factory=default_secret_dirs)
+    # bash 的沙箱；None 表示不隔离（设置里关掉了）
+    sandbox: SandboxPolicy | None = None
 
-    def resolve_path(self, raw_path: str, for_write: bool = False) -> Path:
-        """相对路径按工作目录解析。写只能写工作目录内；读还可以读 extra_read_dirs。"""
+    def resolve_path(self, raw_path: str) -> Path:
+        """相对路径按工作目录解析。工作目录外的路径也能用，要不要确认由权限审批决定（见 path_access）。"""
         path = Path(raw_path).expanduser()
         if not path.is_absolute():
             path = self.workspace / path
-        resolved = path.resolve()
-        workspace = self.workspace.resolve()
-        allowed_roots = [workspace]
-        if not for_write:
-            allowed_roots += [directory.resolve() for directory in self.extra_read_dirs]
-        if not any(_is_within(resolved, root) for root in allowed_roots):
-            raise PathOutsideWorkspaceError(f"路径不在工作目录 {workspace} 内：{raw_path}")
-        return resolved
+        return path.resolve()
 
-    def before_write(self, path: Path) -> None:
-        if self.write_observer is not None:
-            self.write_observer.remember_original(path)
+    def path_access(self, paths: list[Path], write: bool) -> ToolAccess:
+        """哪些路径在工作目录外、哪些是密钥目录。附件、技能目录只对读放行。"""
+        free_roots = [self.workspace.resolve()]
+        if not write:
+            free_roots += [directory.resolve() for directory in self.extra_read_dirs]
+        secret_roots = [directory.resolve() for directory in self.secret_dirs]
+        access = ToolAccess()
+        for path in paths:
+            if any(_is_within(path, root) for root in free_roots):
+                continue
+            access.outside_paths.append(path)
+            if any(_is_within(path, root) for root in secret_roots):
+                access.secret_paths.append(path)
+        return access
+
+    def is_secret(self, path: Path) -> bool:
+        return any(_is_within(path, directory.resolve()) for directory in self.secret_dirs)
 
     def display_path(self, path: Path) -> str:
         try:
@@ -91,6 +105,10 @@ class Tool(ABC):
     def preview(self, arguments: dict[str, Any], context: ToolContext) -> str:
         """请求用户批准时展示的内容，改文件的工具可以覆盖成 diff。"""
         return self.describe(arguments)
+
+    def access(self, arguments: dict[str, Any], context: ToolContext) -> ToolAccess:
+        """这次调用要碰哪些超出常规的地方；按路径干活的工具覆盖它。"""
+        return ToolAccess()
 
     def to_openai_schema(self) -> dict[str, Any]:
         return {

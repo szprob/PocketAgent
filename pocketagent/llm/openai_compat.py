@@ -1,10 +1,67 @@
-"""OpenAI 兼容接口（new-api、vLLM、DeepSeek、Qwen 网关……）的流式调用。"""
+"""OpenAI 兼容接口（new-api、vLLM、DeepSeek、Qwen 网关……）的流式调用。
 
+重试只在这一层做，而且只重试「再试一次可能就好了」的错误：429、5xx、连接断开、超时（包括流到一半断掉）。
+400 / 401 / 403 / 404 这类再试也没用，直接报。退避按指数增长加随机抖动，服务端给了 Retry-After 就听它的。
+SDK 自带的重试关掉了，免得两层叠加。
+"""
+
+import asyncio
+import email.utils
 import json
+import random
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from pocketagent.llm.base import LLMResponse, StreamListener, ToolCall, Usage
+from pocketagent.llm.base import ContextOverflowError, LLMResponse, StreamListener, ToolCall, Usage, is_context_overflow
+
+MAX_ATTEMPTS = 4
+BASE_DELAY_SECONDS = 1.0
+MAX_DELAY_SECONDS = 30.0
+RETRY_AFTER_CAP_SECONDS = 60.0
+RETRYABLE_STATUS_CODES = {408, 409, 429, 500, 502, 503, 504, 529}
+
+
+def _retry_after_seconds(error: Exception) -> float | None:
+    """服务端在 Retry-After（秒数或 HTTP 日期）/ retry-after-ms 里说了等多久。"""
+    response = getattr(error, "response", None)
+    headers = getattr(response, "headers", None)
+    if not headers:
+        return None
+    milliseconds = headers.get("retry-after-ms")
+    if milliseconds:
+        try:
+            return float(milliseconds) / 1000
+        except ValueError:
+            pass
+    value = headers.get("retry-after")
+    if not value:
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        parsed = email.utils.parsedate_to_datetime(value)
+        return max(parsed.timestamp() - time.time(), 0) if parsed else None
+
+
+def is_retryable(error: Exception) -> bool:
+    import httpx
+    import openai
+
+    if isinstance(error, (openai.APIConnectionError, openai.APITimeoutError, httpx.TransportError)):
+        return True
+    if isinstance(error, openai.APIStatusError):
+        return error.status_code in RETRYABLE_STATUS_CODES
+    return False
+
+
+def retry_delay_seconds(error: Exception, attempt: int) -> float:
+    """第 attempt 次失败后等多久：有 Retry-After 就用它（封顶 60 秒），否则指数退避加抖动。"""
+    retry_after = _retry_after_seconds(error)
+    if retry_after is not None:
+        return min(retry_after, RETRY_AFTER_CAP_SECONDS)
+    ceiling = min(MAX_DELAY_SECONDS, BASE_DELAY_SECONDS * 2 ** (attempt - 1))
+    return ceiling * (0.5 + random.random() / 2)
 
 
 @dataclass
@@ -74,6 +131,29 @@ def _finish_tool_call(partial: _PartialToolCall, index: int) -> ToolCall:
     )
 
 
+def _detail(details: Any, name: str) -> int:
+    if details is None:
+        return 0
+    value = details.get(name) if isinstance(details, dict) else getattr(details, name, None)
+    return int(value or 0)
+
+
+def parse_usage(raw_usage: Any) -> Usage:
+    """各家 usage 的字段不完全一样：缓存命中标准位置是 prompt_tokens_details.cached_tokens，
+    DeepSeek 官方另有 prompt_cache_hit_tokens；OpenRouter 额外给 cost。"""
+    extra = getattr(raw_usage, "model_extra", None) or {}
+    cached = _detail(getattr(raw_usage, "prompt_tokens_details", None), "cached_tokens")
+    cached = cached or int(extra.get("prompt_cache_hit_tokens") or 0)
+    cost = extra.get("cost")
+    return Usage(
+        prompt_tokens=raw_usage.prompt_tokens or 0,
+        completion_tokens=raw_usage.completion_tokens or 0,
+        cached_tokens=cached,
+        reasoning_tokens=_detail(getattr(raw_usage, "completion_tokens_details", None), "reasoning_tokens"),
+        cost=float(cost) if cost is not None else None,
+    )
+
+
 def _reasoning_from_delta(delta: Any) -> str | None:
     # DeepSeek / vLLM 用 reasoning_content，部分网关用 reasoning
     return getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
@@ -89,6 +169,8 @@ class OpenAICompatibleProvider:
         reasoning_effort: str | None = None,
         extra_body: dict[str, Any] | None = None,
         timeout_seconds: float = 600,
+        reasoning_style: str = "top",
+        max_output_tokens: int | None = None,
     ) -> None:
         # 延迟导入：跑单测、用假 provider 时不需要装 openai
         from openai import AsyncOpenAI
@@ -96,8 +178,13 @@ class OpenAICompatibleProvider:
         self.model = model
         self.temperature = temperature
         self.reasoning_effort = reasoning_effort
+        self.reasoning_style = reasoning_style
+        self.max_output_tokens = max_output_tokens
         self.extra_body = extra_body or {}
-        self.client = AsyncOpenAI(base_url=base_url, api_key=api_key or "EMPTY", timeout=timeout_seconds)
+        # 重试自己做（只重试该重试的），SDK 的关掉
+        self.client = AsyncOpenAI(
+            base_url=base_url, api_key=api_key or "EMPTY", timeout=timeout_seconds, max_retries=0
+        )
 
     def _build_request(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
         request: dict[str, Any] = {
@@ -110,10 +197,16 @@ class OpenAICompatibleProvider:
             request["tools"] = tools
         if self.temperature is not None:
             request["temperature"] = self.temperature
-        if self.reasoning_effort:
+        if self.max_output_tokens:
+            request["max_tokens"] = self.max_output_tokens
+        extra_body = dict(self.extra_body)
+        if self.reasoning_effort and self.reasoning_style == "openrouter":
+            # OpenRouter 自己的写法；顶层 reasoning_effort 有的模型不认
+            extra_body["reasoning"] = {**extra_body.get("reasoning", {}), "effort": self.reasoning_effort}
+        elif self.reasoning_effort:
             request["reasoning_effort"] = self.reasoning_effort
-        if self.extra_body:
-            request["extra_body"] = self.extra_body
+        if extra_body:
+            request["extra_body"] = extra_body
         return request
 
     async def complete(
@@ -122,15 +215,37 @@ class OpenAICompatibleProvider:
         tools: list[dict[str, Any]],
         listener: StreamListener,
     ) -> LLMResponse:
+        for attempt in range(1, MAX_ATTEMPTS + 1):
+            try:
+                return await self._complete_once(messages, tools, listener)
+            except ContextOverflowError:
+                raise
+            except Exception as error:
+                if attempt == MAX_ATTEMPTS or not is_retryable(error):
+                    raise
+                wait_seconds = retry_delay_seconds(error, attempt)
+                await listener.on_retry(attempt + 1, error, wait_seconds)
+                await asyncio.sleep(wait_seconds)
+        raise AssertionError("不会走到这里")
+
+    async def _complete_once(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        listener: StreamListener,
+    ) -> LLMResponse:
         accumulator = StreamAccumulator()
+        try:
+            stream = await self.client.chat.completions.create(**self._build_request(messages, tools))
+        except Exception as error:
+            if is_context_overflow(error):
+                raise ContextOverflowError(str(error)) from error
+            raise
         # async with 保证流读完、出错或被中断时都关掉 HTTP 连接
-        async with await self.client.chat.completions.create(**self._build_request(messages, tools)) as stream:
+        async with stream:
             async for chunk in stream:
                 if chunk.usage:
-                    accumulator.usage = Usage(
-                        prompt_tokens=chunk.usage.prompt_tokens or 0,
-                        completion_tokens=chunk.usage.completion_tokens or 0,
-                    )
+                    accumulator.usage = parse_usage(chunk.usage)
                 if not chunk.choices:
                     continue
                 choice = chunk.choices[0]

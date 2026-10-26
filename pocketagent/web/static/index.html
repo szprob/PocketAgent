@@ -105,6 +105,10 @@
         <div class="panel-section-title"><span>产出</span></div>
         <div id="output-list"></div>
       </section>
+      <section class="panel-section">
+        <div class="panel-section-title"><span>检查点</span></div>
+        <div id="checkpoint-list"></div>
+      </section>
     </aside>
   </div>
 
@@ -119,6 +123,7 @@
         <nav class="settings-tabs">
           <button class="settings-tab active" type="button" data-tab="models">模型</button>
           <button class="settings-tab" type="button" data-tab="general">通用</button>
+          <button class="settings-tab" type="button" data-tab="skills">技能</button>
           <button class="settings-tab" type="button" data-tab="usage">用量</button>
         </nav>
         <div class="settings-content">
@@ -142,7 +147,7 @@
                     <span class="field-hint" id="api-key-hint"></span></label>
                   <div class="field-row">
                     <label class="field"><span>思考档位</span>
-                      <input name="reasoning_effort" type="text" list="reasoning-options" placeholder="不填就不传"></label>
+                      <select name="reasoning_effort"></select></label>
                     <label class="field"><span>上下文长度（token）</span>
                       <input name="context_window_tokens" type="number" min="1000" step="1000"></label>
                     <label class="field"><span>温度</span>
@@ -160,10 +165,6 @@
                 </div>
               </form>
             </div>
-            <datalist id="reasoning-options">
-              <option value="none"></option><option value="low"></option><option value="medium"></option>
-              <option value="high"></option><option value="max"></option>
-            </datalist>
           </div>
 
           <div class="settings-page hidden" data-page="general">
@@ -177,6 +178,42 @@
                   <input id="max-steps-input" type="number" min="1" step="1"></label>
               </div>
               <fieldset class="radio-group">
+                <legend>上下文压缩</legend>
+                <label class="checkbox-field"><input type="checkbox" id="auto-compact-input">
+                  <span>自动压缩：上下文超过阈值时在后台总结前面的历史，不打断对话；快满了才会停下来等</span></label>
+                <label class="inline-field"><span>阈值</span>
+                  <select id="compact-threshold-select">
+                    <option value="50">50%</option><option value="60">60%</option><option value="70">70%</option>
+                    <option value="80">80%</option><option value="90">90%</option>
+                  </select></label>
+                <div class="field-hint">接口报「上下文超长」时，不管开没开自动压缩，都会先压缩再重试。</div>
+              </fieldset>
+              <fieldset class="radio-group">
+                <legend>联网</legend>
+                <label class="checkbox-field"><input type="checkbox" id="web-search-enabled">
+                  <span>联网搜索（web_search，用智谱 Web Search API，国内直连）</span></label>
+                <div class="field-row">
+                  <label class="field"><span>搜索档位</span>
+                    <select id="web-search-engine">
+                      <option value="search_std">基础版 search_std</option>
+                      <option value="search_pro">高阶版 search_pro</option>
+                    </select></label>
+                  <label class="field"><span>搜索 API Key</span>
+                    <input id="web-search-key" type="password" placeholder="留空就用智谱模型的密钥">
+                    <span class="field-hint" id="web-search-key-hint"></span></label>
+                </div>
+                <label class="checkbox-field"><input type="checkbox" id="web-fetch-enabled">
+                  <span>读网页（web_fetch：打开搜索结果里的链接、读文档）</span></label>
+              </fieldset>
+              <fieldset class="radio-group">
+                <legend>命令沙箱</legend>
+                <label class="checkbox-field"><input type="checkbox" id="sandbox-enabled">
+                  <span>把 bash 关进沙箱：命令只能写工作目录、临时目录和缓存目录，读不到 ~/.ssh、API Key 这类密钥</span></label>
+                <label class="checkbox-field"><input type="checkbox" id="sandbox-network">
+                  <span>沙箱里允许联网（不勾的话，要联网的命令得在沙箱外跑，每次都会问你）</span></label>
+                <div class="field-hint" id="sandbox-hint"></div>
+              </fieldset>
+              <fieldset class="radio-group">
                 <legend>agent 正在干活时，我又发了一句话</legend>
                 <label class="radio-option"><input type="radio" name="busy-input-mode" value="interject">
                   <span><strong>插话</strong>：马上放进对话，模型下一步就能看到（适合纠正方向、补充要求）</span></label>
@@ -184,6 +221,17 @@
                   <span><strong>排队</strong>：等这一轮做完再作为新的一轮执行（适合接着布置下一件事）</span></label>
               </fieldset>
               <div class="field-hint" id="config-path"></div>
+            </div>
+          </div>
+
+          <div class="settings-page hidden" data-page="skills">
+            <div class="form-fields">
+              <label class="checkbox-field"><input type="checkbox" id="skills-enabled">
+                <span>启用技能：系统提示里列出技能的名字和描述，用得上时模型自己调 load_skill 读完整说明</span></label>
+              <div id="skill-list" class="skill-list"></div>
+              <label class="field"><span>额外的技能目录（一行一个；目录下每个子目录放一个 SKILL.md）</span>
+                <textarea id="skill-dirs-input" rows="3" placeholder="/Users/me/my-skills"></textarea></label>
+              <div class="field-hint" id="skill-dirs-hint"></div>
             </div>
           </div>
 
@@ -204,14 +252,36 @@
   <div class="modal hidden" id="workspace-modal" role="dialog" aria-modal="true" aria-labelledby="workspace-modal-title">
     <div class="modal-panel small-panel">
       <header class="modal-header"><h2 id="workspace-modal-title">添加工作区</h2></header>
-      <div class="modal-body">
-        <label class="field"><span>本机目录（绝对路径，可以用 ~）</span>
-          <input id="workspace-path-input" type="text" placeholder="~/projects/foo"></label>
+      <div class="modal-body folder-picker">
+        <div class="folder-path-row">
+          <button id="folder-home" class="icon-button" type="button" title="回到家目录" aria-label="回到家目录" data-icon="folder"></button>
+          <button id="folder-up" class="ghost-button small" type="button">上一级</button>
+          <input id="workspace-path-input" type="text" placeholder="也可以直接粘贴路径，回车跳过去">
+        </div>
+        <div class="folder-list" id="folder-list"></div>
         <div class="error-text" id="workspace-error"></div>
       </div>
       <footer class="modal-footer">
+        <span class="field-hint">点子目录进去，选好后点「添加这个目录」</span>
+        <span class="header-spacer"></span>
         <button id="workspace-cancel" class="ghost-button" type="button">取消</button>
-        <button id="workspace-save" class="primary-button" type="button">添加</button>
+        <button id="workspace-save" class="primary-button" type="button">添加这个目录</button>
+      </footer>
+    </div>
+  </div>
+
+  <!-- 文件预览 -->
+  <div class="modal hidden" id="file-modal" role="dialog" aria-modal="true" aria-labelledby="file-modal-title">
+    <div class="modal-panel file-panel">
+      <header class="modal-header">
+        <h2 id="file-modal-title" class="file-modal-title"></h2>
+        <span class="field-hint" id="file-modal-meta"></span>
+        <button id="file-close" class="icon-button" type="button" data-icon="close" aria-label="关闭"></button>
+      </header>
+      <div class="file-modal-body" id="file-modal-body"></div>
+      <footer class="modal-footer">
+        <button id="file-copy" class="ghost-button" type="button">复制路径</button>
+        <button id="file-cite" class="primary-button" type="button">在对话中引用</button>
       </footer>
     </div>
   </div>

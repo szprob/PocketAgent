@@ -1,16 +1,27 @@
-// 左侧栏：新任务、自动化、工作区（点开看这个工作区的任务）、最近任务（全部历史），底部是账户和设置。
+// 左侧栏：新任务、自动化、工作区（点开是文件树）、最近任务（全部历史），底部是账户和设置。
 
-import { sendJson } from "./api.js";
-import { button, el, icon, relativeTime, show, workspaceName } from "./dom.js";
+import { requestJson, sendJson } from "./api.js";
+import { button, el, icon, relativeTime, workspaceName } from "./dom.js";
+import { openFilePreview } from "./filepreview.js";
+import { initFolderPicker, openFolderPicker } from "./folderpicker.js";
 import { on, reloadInfo, savePreference, state } from "./state.js";
 
-const RECENT_TASK_LIMIT = 40;
-const WORKSPACE_TASK_LIMIT = 8;
+const RECENT_TASK_LIMIT = 50;
 
 const elements = {};
 let callbacks = {};
 // 当前所在的页面，用来高亮：new / automations / task
 let activeView = "new";
+// 文件树：工作区 → (目录相对路径 → 子项)；展开了的目录；正在加载的目录
+const tree = {
+  children: new Map(),
+  expandedDirs: new Set(),
+  loading: new Set(),
+};
+// 上次画侧栏用的数据，没变就不重画（任务列表每 5 秒轮询一次）
+let lastSignature = "";
+// 任务改了文件后，过一会儿把那个工作区已经展开的目录静默刷新一遍
+let filesRefreshTimer = null;
 
 export function initSidebar(handlers) {
   callbacks = handlers;
@@ -25,11 +36,26 @@ export function initSidebar(handlers) {
   elements.navAutomations.addEventListener("click", () => callbacks.onAutomations());
   document.getElementById("account-button").addEventListener("click", () => callbacks.onSettings("usage"));
   document.getElementById("open-settings").addEventListener("click", () => callbacks.onSettings("models"));
-  document.getElementById("add-workspace").addEventListener("click", openWorkspaceDialog);
-  bindWorkspaceDialog();
+  document.getElementById("add-workspace").addEventListener("click", openFolderPicker);
+  initFolderPicker((addedPath) => {
+    if (addedPath) {
+      state.expandedWorkspaces.add(addedPath);
+      saveExpanded();
+    }
+    callbacks.onNewTask(addedPath);
+  });
 
-  on("tasks-changed", render);
-  on("info-changed", render);
+  on("tasks-changed", () => render());
+  on("info-changed", () => render(true));
+  on("files-changed", (taskId) => {
+    clearTimeout(filesRefreshTimer);
+    filesRefreshTimer = setTimeout(() => {
+      // 刚建的任务可能还不在任务列表里，那就把展开着的工作区都刷一遍
+      const task = state.tasks.find((each) => each.id === taskId);
+      const workspaces = task ? [task.workspace] : [...state.expandedWorkspaces];
+      workspaces.forEach(reloadLoadedDirectories);
+    }, 800);
+  });
 }
 
 export function setActiveView(view) {
@@ -37,10 +63,33 @@ export function setActiveView(view) {
   render();
 }
 
-function render() {
+function treeKey(workspacePath, relativePath) {
+  return `${workspacePath}\u0000${relativePath}`;
+}
+
+function signature() {
+  return JSON.stringify([
+    activeView,
+    state.currentTaskId,
+    state.tasks,
+    state.info.workspaces,
+    state.info.user_name,
+    [...state.expandedWorkspaces],
+    [...tree.expandedDirs],
+    [...tree.loading],
+    tree.children.size,
+  ]);
+}
+
+function render(force = false) {
   if (!state.info) {
     return;
   }
+  const current = signature();
+  if (!force && current === lastSignature) {
+    return;
+  }
+  lastSignature = current;
   elements.navNewTask.classList.toggle("active", activeView === "new");
   elements.navAutomations.classList.toggle("active", activeView === "automations");
   renderAccount();
@@ -54,19 +103,194 @@ function renderAccount() {
   elements.avatar.textContent = (name || "?").slice(0, 1).toUpperCase();
 }
 
-// ---- 任务行 ----
+// ---- 工作区和文件树 ----
 
-function taskRow(task, showWorkspace) {
+function saveExpanded() {
+  savePreference("expandedWorkspaces", [...state.expandedWorkspaces]);
+}
+
+function renderWorkspaces() {
+  elements.workspaceList.replaceChildren();
+  if (state.info.workspaces.length === 0) {
+    elements.workspaceList.appendChild(el("div", "sidebar-empty", "还没有工作区，点 + 添加一个目录"));
+    return;
+  }
+  for (const workspace of state.info.workspaces) {
+    elements.workspaceList.appendChild(renderWorkspace(workspace));
+  }
+}
+
+function renderWorkspace(workspace) {
+  const group = el("div", "workspace-group");
+  const expanded = state.expandedWorkspaces.has(workspace.path);
+  const header = el("div", "workspace-row");
+  header.classList.toggle("missing", !workspace.exists);
+  header.title = workspace.exists ? workspace.path : `${workspace.path}（目录不存在）`;
+  const toggle = el("button", "workspace-toggle");
+  toggle.type = "button";
+  toggle.append(icon(expanded ? "chevronDown" : "chevronRight", "tree-chevron"), icon("folder"), el("span", "workspace-name", workspace.name));
+  if (state.tasks.some((task) => task.workspace === workspace.path && task.running)) {
+    toggle.appendChild(el("span", "running-dot"));
+  }
+  toggle.addEventListener("click", () => toggleWorkspace(workspace));
+  const newTask = button("row-action", "", "plus", "在这个工作区开新任务");
+  newTask.addEventListener("click", () => callbacks.onNewTask(workspace.path));
+  const refresh = button("row-action", "", "refresh", "刷新文件列表");
+  refresh.addEventListener("click", () => refreshWorkspace(workspace));
+  const remove = button("row-action", "", "close", "从列表里移除（目录和任务记录都不动）");
+  remove.addEventListener("click", () => removeWorkspace(workspace));
+  header.append(toggle, newTask, refresh, remove);
+  group.appendChild(header);
+  if (expanded && workspace.exists) {
+    group.appendChild(renderDirectory(workspace.path, "", 1));
+  }
+  return group;
+}
+
+function toggleWorkspace(workspace) {
+  if (state.expandedWorkspaces.has(workspace.path)) {
+    state.expandedWorkspaces.delete(workspace.path);
+  } else {
+    state.expandedWorkspaces.add(workspace.path);
+    loadDirectory(workspace.path, "");
+  }
+  saveExpanded();
+  render();
+}
+
+function refreshWorkspace(workspace) {
+  for (const key of [...tree.children.keys()]) {
+    if (key.startsWith(`${workspace.path}\u0000`)) {
+      tree.children.delete(key);
+    }
+  }
+  state.expandedWorkspaces.add(workspace.path);
+  loadDirectory(workspace.path, "");
+  for (const key of tree.expandedDirs) {
+    const [workspacePath, relativePath] = key.split("\u0000");
+    if (workspacePath === workspace.path) {
+      loadDirectory(workspacePath, relativePath);
+    }
+  }
+  render(true);
+}
+
+async function reloadLoadedDirectories(workspacePath) {
+  // 不先清空，新列表到了直接换上，不会闪「加载中」
+  const keys = [...tree.children.keys()].filter((key) => key.startsWith(`${workspacePath}\u0000`));
+  await Promise.all(
+    keys.map(async (key) => {
+      const relativePath = key.split("\u0000")[1];
+      try {
+        const query = `workspace=${encodeURIComponent(workspacePath)}&path=${encodeURIComponent(relativePath)}`;
+        const { entries } = await requestJson(`api/files?${query}`);
+        tree.children.set(key, entries);
+      } catch (error) {
+        // 目录被删了：去掉缓存，展开时再重新加载
+        tree.children.delete(key);
+      }
+    })
+  );
+  render(true);
+}
+
+async function loadDirectory(workspacePath, relativePath) {
+  const key = treeKey(workspacePath, relativePath);
+  if (tree.children.has(key) || tree.loading.has(key)) {
+    return;
+  }
+  // 「加载中…」已经由调用方画出来了，这里不能同步重画（可能正在画侧栏的过程中被调用）
+  tree.loading.add(key);
+  try {
+    const query = `workspace=${encodeURIComponent(workspacePath)}&path=${encodeURIComponent(relativePath)}`;
+    const { entries } = await requestJson(`api/files?${query}`);
+    tree.children.set(key, entries);
+  } catch (error) {
+    tree.children.set(key, [{ name: `读不了：${error.message}`, path: "", is_dir: false, error: true }]);
+  } finally {
+    tree.loading.delete(key);
+    render(true);
+  }
+}
+
+function renderDirectory(workspacePath, relativePath, depth) {
+  const container = el("div", "file-tree");
+  const key = treeKey(workspacePath, relativePath);
+  const entries = tree.children.get(key);
+  if (!entries) {
+    // 还没加载过（比如刷新页面后恢复了展开状态），现在加载
+    loadDirectory(workspacePath, relativePath);
+    container.appendChild(treeNote("加载中…", depth));
+    return container;
+  }
+  if (entries.length === 0) {
+    container.appendChild(treeNote("空目录", depth));
+  }
+  for (const entry of entries) {
+    container.appendChild(entry.is_dir ? renderDirectoryRow(workspacePath, entry, depth) : renderFileRow(workspacePath, entry, depth));
+  }
+  return container;
+}
+
+function treeNote(text, depth) {
+  const note = el("div", "tree-note", text);
+  note.style.paddingLeft = `${depth * 14 + 22}px`;
+  return note;
+}
+
+function renderDirectoryRow(workspacePath, entry, depth) {
+  const wrapper = el("div");
+  const key = treeKey(workspacePath, entry.path);
+  const expanded = tree.expandedDirs.has(key);
+  const row = el("button", "tree-row");
+  row.type = "button";
+  row.style.paddingLeft = `${depth * 14 + 4}px`;
+  row.title = entry.path;
+  row.append(icon(expanded ? "chevronDown" : "chevronRight", "tree-chevron"), icon("folder", "tree-icon"), el("span", "tree-name", entry.name));
+  row.addEventListener("click", () => {
+    if (expanded) {
+      tree.expandedDirs.delete(key);
+    } else {
+      tree.expandedDirs.add(key);
+      loadDirectory(workspacePath, entry.path);
+    }
+    render();
+  });
+  wrapper.appendChild(row);
+  if (expanded) {
+    wrapper.appendChild(renderDirectory(workspacePath, entry.path, depth + 1));
+  }
+  return wrapper;
+}
+
+function renderFileRow(workspacePath, entry, depth) {
+  const row = el("button", `tree-row file${entry.error ? " error" : ""}`);
+  row.type = "button";
+  row.style.paddingLeft = `${depth * 14 + 18}px`;
+  row.title = entry.path;
+  row.append(icon("file", "tree-icon"), el("span", "tree-name", entry.name));
+  if (!entry.error) {
+    row.addEventListener("click", () => openFilePreview(workspacePath, entry.path));
+  }
+  return row;
+}
+
+async function removeWorkspace(workspace) {
+  if (!window.confirm(`从工作区列表里移除「${workspace.name}」？\n只是不显示，目录和任务记录都不动。`)) {
+    return;
+  }
+  await sendJson("api/workspaces", "DELETE", { path: workspace.path });
+  await reloadInfo();
+}
+
+// ---- 最近任务（全部历史） ----
+
+function taskRow(task) {
   const row = el("button", "task-row");
   row.type = "button";
   row.classList.toggle("active", activeView === "task" && task.id === state.currentTaskId);
   const title = el("span", "task-title", task.title);
-  const meta = el("span", "task-meta");
-  if (showWorkspace) {
-    meta.textContent = `${workspaceName(task.workspace)} · ${relativeTime(task.updated_at)}`;
-  } else {
-    meta.textContent = relativeTime(task.updated_at);
-  }
+  const meta = el("span", "task-meta", `${workspaceName(task.workspace)} · ${relativeTime(task.updated_at)}`);
   const text = el("span", "task-text");
   text.append(title, meta);
   if (task.source && task.source.startsWith("automation:")) {
@@ -81,79 +305,6 @@ function taskRow(task, showWorkspace) {
   return row;
 }
 
-// ---- 工作区 ----
-
-function tasksIn(workspacePath) {
-  return state.tasks.filter((task) => task.workspace === workspacePath);
-}
-
-function renderWorkspaces() {
-  elements.workspaceList.replaceChildren();
-  if (state.info.workspaces.length === 0) {
-    elements.workspaceList.appendChild(el("div", "sidebar-empty", "还没有工作区，点 + 添加"));
-    return;
-  }
-  for (const workspace of state.info.workspaces) {
-    elements.workspaceList.appendChild(renderWorkspace(workspace));
-  }
-}
-
-function renderWorkspace(workspace) {
-  const group = el("div", "workspace-group");
-  const expanded = state.expandedWorkspaces.has(workspace.path);
-  const tasks = tasksIn(workspace.path);
-  const header = el("div", "workspace-row");
-  header.classList.toggle("missing", !workspace.exists);
-  header.title = workspace.exists ? workspace.path : `${workspace.path}（目录不存在）`;
-  const toggle = el("button", "workspace-toggle");
-  toggle.type = "button";
-  toggle.append(icon(expanded ? "chevronDown" : "chevronRight", "workspace-chevron"), icon("folder"), el("span", "workspace-name", workspace.name));
-  if (tasks.some((task) => task.running)) {
-    toggle.appendChild(el("span", "running-dot"));
-  }
-  toggle.appendChild(el("span", "workspace-count", tasks.length ? String(tasks.length) : ""));
-  toggle.addEventListener("click", () => {
-    if (expanded) {
-      state.expandedWorkspaces.delete(workspace.path);
-    } else {
-      state.expandedWorkspaces.add(workspace.path);
-    }
-    savePreference("expandedWorkspaces", [...state.expandedWorkspaces]);
-    render();
-  });
-  const newTask = button("row-action", "", "plus", "在这个工作区开新任务");
-  newTask.addEventListener("click", () => callbacks.onNewTask(workspace.path));
-  const remove = button("row-action", "", "close", "从列表里移除（任务记录不删）");
-  remove.addEventListener("click", () => removeWorkspace(workspace));
-  header.append(toggle, newTask, remove);
-  group.appendChild(header);
-
-  if (expanded) {
-    const list = el("div", "workspace-tasks");
-    if (tasks.length === 0) {
-      list.appendChild(el("div", "sidebar-empty", "还没有任务"));
-    }
-    for (const task of tasks.slice(0, WORKSPACE_TASK_LIMIT)) {
-      list.appendChild(taskRow(task, false));
-    }
-    if (tasks.length > WORKSPACE_TASK_LIMIT) {
-      list.appendChild(el("div", "sidebar-empty", `还有 ${tasks.length - WORKSPACE_TASK_LIMIT} 个，在「最近任务」里看`));
-    }
-    group.appendChild(list);
-  }
-  return group;
-}
-
-async function removeWorkspace(workspace) {
-  if (!window.confirm(`从工作区列表里移除「${workspace.name}」？\n只是不显示，目录和任务记录都不动。`)) {
-    return;
-  }
-  await sendJson("api/workspaces", "DELETE", { path: workspace.path });
-  await reloadInfo();
-}
-
-// ---- 最近任务 ----
-
 function renderRecentTasks() {
   elements.recentList.replaceChildren();
   if (state.tasks.length === 0) {
@@ -161,57 +312,6 @@ function renderRecentTasks() {
     return;
   }
   for (const task of state.tasks.slice(0, RECENT_TASK_LIMIT)) {
-    elements.recentList.appendChild(taskRow(task, true));
+    elements.recentList.appendChild(taskRow(task));
   }
-}
-
-// ---- 添加工作区 ----
-
-function bindWorkspaceDialog() {
-  elements.workspaceModal = document.getElementById("workspace-modal");
-  elements.workspaceInput = document.getElementById("workspace-path-input");
-  elements.workspaceError = document.getElementById("workspace-error");
-  document.getElementById("workspace-cancel").addEventListener("click", closeWorkspaceDialog);
-  document.getElementById("workspace-save").addEventListener("click", saveWorkspace);
-  elements.workspaceInput.addEventListener("keydown", (event) => {
-    if (event.key === "Enter" && !event.isComposing) {
-      saveWorkspace();
-    }
-  });
-  elements.workspaceModal.addEventListener("click", (event) => {
-    if (event.target === elements.workspaceModal) {
-      closeWorkspaceDialog();
-    }
-  });
-}
-
-function openWorkspaceDialog() {
-  elements.workspaceInput.value = "";
-  elements.workspaceError.textContent = "";
-  show(elements.workspaceModal, true);
-  elements.workspaceInput.focus();
-}
-
-function closeWorkspaceDialog() {
-  show(elements.workspaceModal, false);
-}
-
-async function saveWorkspace() {
-  const path = elements.workspaceInput.value.trim();
-  if (!path) {
-    return;
-  }
-  try {
-    await sendJson("api/workspaces", "POST", { path });
-  } catch (error) {
-    elements.workspaceError.textContent = error.message;
-    return;
-  }
-  closeWorkspaceDialog();
-  const info = await reloadInfo();
-  const added = info.workspaces.find((workspace) => workspace.path.endsWith(path.replace(/\/+$/, "").replace(/^~/, "")));
-  if (added) {
-    state.expandedWorkspaces.add(added.path);
-  }
-  callbacks.onNewTask(added ? added.path : null);
 }

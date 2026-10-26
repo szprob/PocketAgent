@@ -2,6 +2,7 @@
 // 文本框 + 附件（回形针、粘贴图片、拖进来）+ 权限 + 模型 + 发送 / 停止，底下一行是工作区和上下文占用。
 
 import { button, el, formatBytes, icon, show, workspaceName } from "./dom.js";
+import { ModelPicker } from "./modelpicker.js";
 import { MODE_ICONS, MODE_LABELS } from "./state.js";
 
 const MAX_TEXTAREA_HEIGHT = 240;
@@ -61,11 +62,7 @@ export class Composer {
       this.onModeChange?.(this.permissionSelect.value);
     });
 
-    const modelPill = el("label", "pill");
-    this.modelSelect = el("select");
-    this.modelSelect.title = "模型";
-    modelPill.append(icon("model", "pill-icon"), this.modelSelect, icon("chevronDown", "pill-chevron"));
-    this.modelSelect.addEventListener("change", () => this.onModelChange?.(this.modelSelect.value));
+    this.modelPicker = new ModelPicker({ onSelectModel: (modelId) => this.onModelChange?.(modelId) });
 
     this.stopButton = button("stop-button hidden", "", "stop", "停止（Esc）");
     this.stopButton.addEventListener("click", () => this.onStop?.());
@@ -76,7 +73,7 @@ export class Composer {
       attachButton,
       this.fileInput,
       this.permissionPill,
-      modelPill,
+      this.modelPicker.root,
       el("div", "toolbar-spacer"),
       this.stopButton,
       this.sendButton
@@ -97,13 +94,16 @@ export class Composer {
       workspace.appendChild(this.workspaceLabel);
     }
     this.busyHint = el("span", "busy-hint");
+    this.compactingHint = el("span", "compacting-hint hidden", "后台压缩上下文中…");
     this.contextMeter = el("span", "context-meter hidden");
     this.contextFill = el("span", "context-fill");
+    // 自动压缩阈值的位置画一条竖线
+    this.contextMarker = el("span", "context-marker hidden");
     const bar = el("span", "context-bar");
-    bar.appendChild(this.contextFill);
+    bar.append(this.contextFill, this.contextMarker);
     this.contextText = el("span", "context-text");
     this.contextMeter.append(bar, this.contextText);
-    footer.append(workspace, this.busyHint, el("span", "toolbar-spacer"), this.contextMeter);
+    footer.append(workspace, this.busyHint, el("span", "toolbar-spacer"), this.compactingHint, this.contextMeter);
     return footer;
   }
 
@@ -221,6 +221,19 @@ export class Composer {
     this.textarea.focus();
   }
 
+  // 在光标处插入一段文字（比如左侧文件树里「在对话中引用」的 @路径）
+  insertText(text) {
+    const start = this.textarea.selectionStart ?? this.textarea.value.length;
+    const end = this.textarea.selectionEnd ?? start;
+    const before = this.textarea.value.slice(0, start);
+    const spacer = before && !/\s$/.test(before) ? " " : "";
+    this.textarea.value = `${before}${spacer}${text}${this.textarea.value.slice(end)}`;
+    const cursor = before.length + spacer.length + text.length;
+    this.textarea.setSelectionRange(cursor, cursor);
+    this._resize();
+    this.focus();
+  }
+
   // ---- 外部设置 ----
 
   setModes(modes) {
@@ -251,35 +264,19 @@ export class Composer {
   }
 
   setModels(models, fallbackModel) {
-    const current = this.modelSelect.value;
-    this.modelSelect.replaceChildren();
-    if (models.length === 0) {
-      const option = el("option", "", `${fallbackModel}（环境变量）`);
-      option.value = "";
-      this.modelSelect.appendChild(option);
-      this.modelSelect.disabled = true;
-      return;
-    }
-    this.modelSelect.disabled = false;
-    for (const model of models) {
-      const option = el("option", "", model.name);
-      option.value = model.id;
-      option.title = model.model;
-      this.modelSelect.appendChild(option);
-    }
-    if (models.some((model) => model.id === current)) {
-      this.modelSelect.value = current;
-    }
+    this.modelPicker.setModels(models, fallbackModel);
   }
 
   setModel(modelId) {
-    if (modelId && [...this.modelSelect.options].some((option) => option.value === modelId)) {
-      this.modelSelect.value = modelId;
-    }
+    this.modelPicker.setModel(modelId);
   }
 
   getModel() {
-    return this.modelSelect.value || null;
+    return this.modelPicker.getModel();
+  }
+
+  setCompacting(compacting) {
+    show(this.compactingHint, Boolean(compacting));
   }
 
   setWorkspaces(workspaces, selectedPath) {
@@ -316,7 +313,7 @@ export class Composer {
     }
   }
 
-  setContext(tokens, windowSize) {
+  setContext(tokens, windowSize, compactThreshold) {
     if (!windowSize) {
       show(this.contextMeter, false);
       return;
@@ -324,8 +321,14 @@ export class Composer {
     const percent = Math.min(100, Math.round((tokens / windowSize) * 100));
     show(this.contextMeter, true);
     this.contextFill.style.width = `${percent}%`;
-    this.contextMeter.classList.toggle("warning", percent >= 70);
+    const thresholdPercent = compactThreshold ? Math.round(compactThreshold * 100) : null;
+    this.contextMeter.classList.toggle("warning", thresholdPercent !== null && percent >= thresholdPercent - 10);
+    show(this.contextMarker, thresholdPercent !== null);
+    if (thresholdPercent !== null) {
+      this.contextMarker.style.left = `${thresholdPercent}%`;
+    }
     this.contextText.textContent = `${percent}%`;
-    this.contextMeter.title = `上下文约 ${tokens} / ${windowSize} tokens，超过 80% 会自动压缩`;
+    const rule = thresholdPercent !== null ? `超过 ${thresholdPercent}% 在后台自动压缩` : "自动压缩已关闭";
+    this.contextMeter.title = `上下文约 ${tokens} / ${windowSize} tokens，${rule}`;
   }
 }

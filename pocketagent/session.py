@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from pocketagent.attachments import message_display
+from pocketagent.compaction import SUMMARY_PREFIX
 
 
 def _now_text() -> str:
@@ -28,12 +29,18 @@ class Session:
     title: str | None = None
     # 谁建的：空是用户，"automation:<id>" 是定时任务
     source: str | None = None
+    # 影子 git 里的检查点（见 checkpoints.py），第一个是任务开始时的样子
+    checkpoints: list[dict[str, Any]] = field(default_factory=list)
     messages: list[dict[str, Any]] = field(default_factory=list)
 
     def first_user_text(self) -> str:
+        """第一句用户的话；压缩后放在开头的摘要不算。"""
         for message in self.messages:
-            if message.get("role") == "user":
-                return message_display(message)["text"]
+            if message.get("role") != "user" or message.get("_kind"):
+                continue
+            text = message_display(message)["text"]
+            if not text.startswith(SUMMARY_PREFIX):
+                return text
         return ""
 
     def display_title(self) -> str:
@@ -43,9 +50,22 @@ class Session:
         return first_text.splitlines()[0][:80] if first_text else "新任务"
 
 
+@dataclass
+class SessionSummary:
+    """侧栏任务列表要的那几项，不含消息。"""
+
+    id: str
+    workspace: str
+    title: str
+    updated_at: str
+    source: str | None
+
+
 class SessionStore:
     def __init__(self, directory: Path) -> None:
         self.directory = directory
+        # 会话 id → (文件修改时间, 摘要)。任务列表每隔几秒刷新一次，只重读改过的文件
+        self._summary_cache: dict[str, tuple[float, SessionSummary]] = {}
 
     def new_session(self, workspace: Path) -> Session:
         session_id = datetime.now().strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
@@ -72,6 +92,30 @@ class SessionStore:
 
     def delete(self, session_id: str) -> None:
         self.path_for(session_id).unlink(missing_ok=True)
+
+    def summaries(self) -> list[SessionSummary]:
+        """所有会话的摘要，按最近更新排序。"""
+        if not self.directory.is_dir():
+            return []
+        current: dict[str, tuple[float, SessionSummary]] = {}
+        for path in self.directory.glob("*.json"):
+            modified_at = path.stat().st_mtime
+            cached = self._summary_cache.get(path.stem)
+            if cached is None or cached[0] != modified_at:
+                session = self.load(path.stem)
+                summary = SessionSummary(
+                    id=session.id,
+                    workspace=session.workspace,
+                    title=session.display_title(),
+                    updated_at=session.updated_at,
+                    source=session.source,
+                )
+                cached = (modified_at, summary)
+            current[path.stem] = cached
+        self._summary_cache = current
+        summaries = [summary for _, summary in current.values()]
+        summaries.sort(key=lambda summary: summary.updated_at, reverse=True)
+        return summaries
 
     def list_sessions(self, workspace: Path | None = None) -> list[Session]:
         """按最近更新排序；给了 workspace 就只要这个目录下的会话。"""

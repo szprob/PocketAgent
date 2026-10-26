@@ -35,6 +35,8 @@ def _tool_call_item(tool_call: dict[str, Any], tools: ToolRegistry) -> dict[str,
 
 
 def _user_item(message: dict[str, Any]) -> dict[str, Any]:
+    if message.get("_kind") == "notice":
+        return {"kind": "notice", "text": message.get("content") or ""}
     display = message_display(message)
     if display["text"].startswith(SUMMARY_PREFIX):
         return {"kind": "summary", "text": display["text"][len(SUMMARY_PREFIX) :]}

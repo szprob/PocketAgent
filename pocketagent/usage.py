@@ -1,17 +1,19 @@
 """本机的 token 用量记录：每调用一次模型记一行 JSONL（~/.pocketagent/usage.jsonl），设置页的「用量」从这里统计。
 
+除了输入 / 输出，还记缓存命中（cached_tokens）、思考 token、接口报的费用。
 接口没返回 usage 时按字符数估算，记录里标 estimated。
+读的时候按文件偏移增量读，统计页、右侧栏频繁刷新也不会每次把整个文件重读一遍。
 """
 
 import json
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from pocketagent.compaction import estimate_tokens
-from pocketagent.llm.base import LLMProvider, LLMResponse, StreamListener
+from pocketagent.tokens import estimate_text_tokens, estimate_tokens
+from pocketagent.llm.base import LLMProvider, LLMResponse, StreamListener, Usage
 
 DAILY_CHART_DAYS = 30
 
@@ -31,31 +33,58 @@ class UsageMetadata:
 class TokenCount:
     prompt: int = 0
     completion: int = 0
+    cached: int = 0
+    reasoning: int = 0
+    cost: float = 0.0
     calls: int = 0
     estimated_calls: int = 0
 
     def add(self, entry: dict[str, Any]) -> None:
         self.prompt += int(entry.get("prompt_tokens", 0))
         self.completion += int(entry.get("completion_tokens", 0))
+        self.cached += int(entry.get("cached_tokens") or 0)
+        self.reasoning += int(entry.get("reasoning_tokens") or 0)
+        self.cost += float(entry.get("cost") or 0)
         self.calls += 1
         if entry.get("estimated"):
             self.estimated_calls += 1
 
-    def to_dict(self) -> dict[str, int]:
+    def cache_hit_rate(self) -> float | None:
+        """缓存命中的 token 占输入 token 的比例；没有输入时为 None。"""
+        if self.prompt <= 0:
+            return None
+        return round(self.cached / self.prompt, 4)
+
+    def to_dict(self) -> dict[str, Any]:
         return {
             "prompt": self.prompt,
             "completion": self.completion,
             "total": self.prompt + self.completion,
+            "cached": self.cached,
+            "cache_hit_rate": self.cache_hit_rate(),
+            "reasoning": self.reasoning,
+            "cost": round(self.cost, 6),
             "calls": self.calls,
             "estimated_calls": self.estimated_calls,
         }
+
+
+@dataclass
+class _ReadState:
+    """一个用量文件已经读到哪了。同一个文件可能有多个 UsageLog 在写，读的时候都从这里接着读。"""
+
+    offset: int = 0
+    entries: list[dict[str, Any]] = field(default_factory=list)
+
+
+_READ_STATES: dict[Path, _ReadState] = {}
 
 
 class UsageLog:
     def __init__(self, path: Path) -> None:
         self.path = path
 
-    def record(self, metadata: UsageMetadata, prompt_tokens: int, completion_tokens: int, estimated: bool) -> None:
+    def record(self, metadata: UsageMetadata, usage: Usage, estimated: bool) -> None:
         entry = {
             "time": datetime.now().isoformat(timespec="seconds"),
             "session_id": metadata.session_id,
@@ -63,8 +92,11 @@ class UsageLog:
             "model_id": metadata.model_id,
             "model": metadata.model,
             "model_name": metadata.model_name or metadata.model,
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
+            "prompt_tokens": usage.prompt_tokens,
+            "completion_tokens": usage.completion_tokens,
+            "cached_tokens": usage.cached_tokens,
+            "reasoning_tokens": usage.reasoning_tokens,
+            "cost": usage.cost,
             "estimated": estimated,
         }
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -72,16 +104,27 @@ class UsageLog:
             log_file.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
     def entries(self) -> list[dict[str, Any]]:
+        """全部记录。只读上次读完之后新追加的部分；文件被截短或删掉就从头读。"""
         if not self.path.is_file():
+            _READ_STATES.pop(self.path, None)
             return []
-        entries = []
-        for line in self.path.read_text(encoding="utf-8").splitlines():
-            try:
-                entries.append(json.loads(line))
-            except json.JSONDecodeError:
-                # 进程被杀时可能留下半行，跳过
-                continue
-        return entries
+        state = _READ_STATES.setdefault(self.path, _ReadState())
+        size = self.path.stat().st_size
+        if size < state.offset:
+            state = _READ_STATES[self.path] = _ReadState()
+        if size > state.offset:
+            with self.path.open("rb") as log_file:
+                log_file.seek(state.offset)
+                new_bytes = log_file.read()
+            # 只认完整的行，最后半行（别人正在写）留到下次
+            complete_length = new_bytes.rfind(b"\n") + 1
+            for line in new_bytes[:complete_length].decode("utf-8", errors="replace").splitlines():
+                try:
+                    state.entries.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+            state.offset += complete_length
+        return state.entries
 
     def session_total(self, session_id: str) -> dict[str, int]:
         count = TokenCount()
@@ -131,10 +174,10 @@ def _entry_day(entry: dict[str, Any], fallback: date) -> date:
 
 
 def _estimate_completion_tokens(response: LLMResponse) -> int:
-    characters = len(response.text) + len(response.reasoning)
+    total = estimate_text_tokens(response.text) + estimate_text_tokens(response.reasoning)
     for call in response.tool_calls:
-        characters += len(call.name) + len(call.raw_arguments)
-    return characters // 3
+        total += estimate_text_tokens(call.name) + estimate_text_tokens(call.raw_arguments)
+    return total
 
 
 class UsageRecordingProvider:
@@ -153,11 +196,10 @@ class UsageRecordingProvider:
     ) -> LLMResponse:
         response = await self.inner.complete(messages, tools, listener)
         if response.usage and (response.usage.prompt_tokens or response.usage.completion_tokens):
-            self.usage_log.record(
-                self.metadata, response.usage.prompt_tokens, response.usage.completion_tokens, estimated=False
-            )
+            self.usage_log.record(self.metadata, response.usage, estimated=False)
         else:
-            self.usage_log.record(
-                self.metadata, estimate_tokens(messages), _estimate_completion_tokens(response), estimated=True
+            estimated = Usage(
+                prompt_tokens=estimate_tokens(messages), completion_tokens=_estimate_completion_tokens(response)
             )
+            self.usage_log.record(self.metadata, estimated, estimated=True)
         return response

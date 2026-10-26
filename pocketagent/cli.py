@@ -149,15 +149,18 @@ class ConsoleApprover:
 
     async def request_approval(self, request: ApprovalRequest) -> ApprovalAnswer:
         print(self.style.yellow(f"\n需要确认：{request.tool_name}"))
+        for note in request.notes:
+            print(self.style.yellow(f"  ! {note}"))
         print(self._colorize_preview(request.preview))
-        prompt = f"[y] 允许  [a] 本会话总是允许 {request.tool_name}  [n] 拒绝（默认）> "
+        always = f"[a] {request.always_label}  " if request.always_label else ""
+        prompt = f"[y] 允许  {always}[n] 拒绝（默认）> "
         try:
             answer = input(prompt).strip().lower()
         except (EOFError, KeyboardInterrupt):
             return ApprovalAnswer.DENY
         if answer in ("y", "yes"):
             return ApprovalAnswer.ALLOW_ONCE
-        if answer in ("a", "always"):
+        if answer in ("a", "always") and request.always_label:
             return ApprovalAnswer.ALLOW_ALWAYS
         return ApprovalAnswer.DENY
 

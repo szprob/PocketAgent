@@ -2,9 +2,11 @@
 
 import { sendJson } from "./api.js";
 import { closeEditor, initAutomations, isAutomationEditorOpen, showAutomations } from "./automations.js";
-import { initChat, interrupt, isChatRunning, leaveTask, openTask, updateChatOptions } from "./chat.js";
+import { chatComposer, initChat, interrupt, isChatRunning, leaveTask, openTask, updateChatOptions } from "./chat.js";
 import { Composer } from "./composer.js";
 import { el, icon, show } from "./dom.js";
+import { citationText, closeFilePreview, initFilePreview, isFilePreviewOpen } from "./filepreview.js";
+import { closeFolderPicker, isFolderPickerOpen } from "./folderpicker.js";
 import { initRightPanel, setRightPanelVisible, showTaskInPanel } from "./rightpanel.js";
 import { closeSettings, initSettings, isSettingsOpen, openSettings } from "./settings.js";
 import { initSidebar, setActiveView } from "./sidebar.js";
@@ -176,6 +178,10 @@ function bindLayoutControls() {
     }
     if (isSettingsOpen()) {
       closeSettings();
+    } else if (isFilePreviewOpen()) {
+      closeFilePreview();
+    } else if (isFolderPickerOpen()) {
+      closeFolderPicker();
     } else if (isAutomationEditorOpen()) {
       closeEditor();
     } else if (isChatRunning()) {
@@ -198,6 +204,21 @@ function onInfoChanged(info) {
   if (parseRoute().view === "new") {
     prepareNewTask(newTaskComposer.getWorkspace());
   }
+}
+
+// 文件预览里点「在对话中引用」：任务页就放进任务的输入框；否则去新任务页，并切到这个文件所在的工作区
+function citeFile({ workspace, path }) {
+  const view = parseRoute().view;
+  if (view === "chat") {
+    chatComposer().insertText(citationText(path));
+    return;
+  }
+  if (view !== "new") {
+    navigate(`#/new?workspace=${encodeURIComponent(workspace)}`);
+  } else {
+    newTaskComposer.setWorkspaces(state.info.workspaces, workspace);
+  }
+  newTaskComposer.insertText(citationText(path));
 }
 
 function startTaskPolling() {
@@ -223,6 +244,7 @@ async function init() {
   initSettings();
   initAutomations({ onOpenTask: (taskId) => navigate(`#/task/${encodeURIComponent(taskId)}`) });
   initNewTask();
+  initFilePreview();
   bindLayoutControls();
 
   await reloadInfo();
@@ -232,6 +254,7 @@ async function init() {
   await reloadTasks();
   on("info-changed", onInfoChanged);
   on("turn-finished", () => reloadTasks());
+  on("cite-file", citeFile);
   updateChatOptions(state.info);
   window.addEventListener("hashchange", route);
   route();

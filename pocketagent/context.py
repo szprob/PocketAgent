@@ -8,13 +8,27 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from pocketagent.compaction import estimate_tokens
+from pocketagent.compaction import PendingCompaction
 from pocketagent.config import Settings
 from pocketagent.events import EventBus
-from pocketagent.llm.base import LLMProvider, ToolCall
+from pocketagent.llm.base import LLMProvider, ToolCall, Usage
 from pocketagent.permissions import PermissionGate
 from pocketagent.session import Session
+from pocketagent.tokens import estimate_tokens, estimate_tools_tokens
 from pocketagent.tools.base import ToolContext, ToolRegistry
+
+
+# 占用超过上下文窗口的这个比例时，不能再边压缩边跑了，要等压缩做完
+BLOCKING_COMPACTION_RATIO = 0.95
+
+
+@dataclass
+class TokenAnchor:
+    """接口报的真实占用：历史的前 message_count 条一共 tokens 个（含系统提示和工具定义）。"""
+
+    tokens: int
+    message_count: int
+    history_version: int
 
 
 @dataclass
@@ -25,6 +39,11 @@ class TurnState:
     pending_tool_calls: list[ToolCall] = field(default_factory=list)
     final_text: str = ""
     stop_reason: str = ""
+    # 这一轮压缩了几次、下一次压缩的原因（auto / overflow / manual），给界面显示
+    compactions: int = 0
+    compact_reason: str = ""
+    # 这一轮回复被截断了几次
+    truncations: int = 0
 
 
 @dataclass
@@ -39,18 +58,39 @@ class AgentContext:
     # 用户上传的附件放在这里，发给模型前从这里读图片
     attachments_root: Path | None = None
     turn: TurnState = field(default_factory=TurnState)
-    # 最近一次模型调用报告的 prompt token 数，比字符估算准
-    last_prompt_tokens: int = 0
+    # 最近一次模型调用报的真实占用，记账以它为准（见 tokens.py）
+    token_anchor: TokenAnchor | None = None
     # agent 干活时用户插的话（完整的 user 消息），下一次调用模型前由 GuardNode 放进对话
     pending_interjections: list[dict[str, Any]] = field(default_factory=list)
+    # 后台正在做的压缩；历史每被压缩换掉一次版本号加一
+    pending_compaction: PendingCompaction | None = None
+    history_version: int = 0
 
     @property
     def messages(self) -> list[dict[str, Any]]:
         return self.session.messages
 
+    def record_usage(self, usage: Usage) -> None:
+        """模型刚回复完（assistant 消息已经追加进历史）时调用：真实占用 = 这次的输入 + 留在历史里的输出。
+        思考 token 不回传给模型，要减掉。"""
+        kept_output = max(usage.completion_tokens - usage.reasoning_tokens, 0)
+        self.token_anchor = TokenAnchor(
+            tokens=usage.prompt_tokens + kept_output,
+            message_count=len(self.messages),
+            history_version=self.history_version,
+        )
+
     def estimated_context_tokens(self) -> int:
-        # 消息只增不减（压缩时会把 last_prompt_tokens 清零），两者取大更稳妥
-        return max(estimate_tokens(self.messages), self.last_prompt_tokens)
+        """锚点 + 锚点之后新加的消息的估算；没有可用的锚点就整段估算（再加上工具定义）。"""
+        anchor = self.token_anchor
+        if anchor is not None and anchor.history_version == self.history_version and anchor.message_count <= len(self.messages):
+            return anchor.tokens + estimate_tokens(self.messages[anchor.message_count :])
+        return estimate_tokens(self.messages) + estimate_tools_tokens(self.tools.openai_schemas())
 
     def context_limit_tokens(self) -> int:
+        """超过它就开始后台压缩。"""
         return int(self.settings.context_window_tokens * self.settings.compact_threshold)
+
+    def blocking_limit_tokens(self) -> int:
+        """超过它就得停下来等压缩做完，再调模型就要超长了。"""
+        return int(self.settings.context_window_tokens * BLOCKING_COMPACTION_RATIO)

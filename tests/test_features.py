@@ -1,4 +1,4 @@
-"""新功能模块的单元测试：文件变更跟踪、附件、AI 审批结果解析、用量统计、自动化计划。"""
+"""新功能模块的单元测试：附件、AI 审批结果解析、用量统计、自动化计划。"""
 
 import base64
 import unittest
@@ -7,9 +7,9 @@ from pathlib import Path
 
 from pocketagent.attachments import AttachmentStore, build_user_message, materialize_messages, message_display
 from pocketagent.automations import Automation, AutomationStore
-from pocketagent.changes import ChangeTracker
 from pocketagent.config import ConfigError
 from pocketagent.reviewer import parse_review, recent_user_requests
+from pocketagent.llm import Usage
 from pocketagent.usage import UsageLog, UsageMetadata
 from tests.helpers import TemporaryDirectories
 
@@ -17,57 +17,6 @@ from tests.helpers import TemporaryDirectories
 TINY_PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
 )
-
-
-class ChangeTrackerTest(unittest.TestCase):
-    def setUp(self) -> None:
-        self.directories = TemporaryDirectories()
-        self.workspace = self.directories.workspace
-        self.tracker = ChangeTracker(self.directories.home_dir / "checkpoints" / "s1", self.workspace)
-
-    def tearDown(self) -> None:
-        self.directories.cleanup()
-
-    def write(self, name: str, content: str) -> Path:
-        path = self.workspace / name
-        self.tracker.remember_original(path)
-        path.write_text(content, encoding="utf-8")
-        return path
-
-    def test_added_modified_and_unchanged_files(self) -> None:
-        (self.workspace / "old.py").write_text("a = 1\nb = 2\n", encoding="utf-8")
-        self.write("old.py", "a = 1\nb = 3\nc = 4\n")
-        self.write("new.py", "print('hi')\n")
-        (self.workspace / "same.py").write_text("x\n", encoding="utf-8")
-        self.write("same.py", "x\n")
-
-        changes = {change.display_path: change for change in self.tracker.list_changes()}
-
-        self.assertEqual(set(changes), {"old.py", "new.py"})
-        self.assertEqual(changes["old.py"].status, "modified")
-        self.assertEqual((changes["old.py"].additions, changes["old.py"].deletions), (2, 1))
-        self.assertEqual(changes["new.py"].status, "added")
-        self.assertIn("+c = 4", self.tracker.diff(str(self.workspace / "old.py")))
-
-    def test_only_first_original_is_kept_and_revert_restores_it(self) -> None:
-        (self.workspace / "f.txt").write_text("original\n", encoding="utf-8")
-        path = self.write("f.txt", "first edit\n")
-        self.write("f.txt", "second edit\n")
-        new_path = self.write("created.txt", "new\n")
-
-        self.tracker.revert(str(path))
-        self.tracker.revert(str(new_path))
-
-        self.assertEqual(path.read_text(encoding="utf-8"), "original\n")
-        self.assertFalse(new_path.exists())
-        self.assertEqual(self.tracker.list_changes(), [])
-
-    def test_index_survives_reload(self) -> None:
-        self.write("a.txt", "x\n")
-
-        reloaded = ChangeTracker(self.directories.home_dir / "checkpoints" / "s1", self.workspace)
-
-        self.assertEqual([change.display_path for change in reloaded.list_changes()], ["a.txt"])
 
 
 class AttachmentTest(unittest.TestCase):
@@ -152,9 +101,9 @@ class UsageLogTest(unittest.TestCase):
     def test_summary_by_period_model_and_day(self) -> None:
         ds = UsageMetadata(model="deepseek-v4.1-flash", model_name="DS", session_id="s1")
         glm = UsageMetadata(model="glm-5.3-flash", model_name="GLM", session_id="s2")
-        self.log.record(ds, 100, 20, estimated=False)
-        self.log.record(ds, 50, 10, estimated=True)
-        self.log.record(glm, 1000, 0, estimated=False)
+        self.log.record(ds, Usage(prompt_tokens=100, completion_tokens=20, cached_tokens=80), estimated=False)
+        self.log.record(ds, Usage(prompt_tokens=50, completion_tokens=10), estimated=True)
+        self.log.record(glm, Usage(prompt_tokens=1000, completion_tokens=0, cost=0.002), estimated=False)
 
         summary = self.log.summarize(today=date.today())
         today = summary["periods"][0]
@@ -166,6 +115,21 @@ class UsageLogTest(unittest.TestCase):
         self.assertEqual(len(summary["daily"]), 30)
         self.assertEqual(summary["daily"][-1]["total"], 1180)
         self.assertEqual(self.log.session_total("s1")["total"], 180)
+        self.assertEqual(self.log.session_total("s1")["cache_hit_rate"], round(80 / 150, 4))
+        self.assertEqual(today["cost"], 0.002)
+
+    def test_incremental_reads_pick_up_new_lines_and_skip_partial_ones(self) -> None:
+        meta = UsageMetadata(model="m", session_id="s")
+        self.log.record(meta, Usage(prompt_tokens=1, completion_tokens=1), estimated=False)
+        self.assertEqual(len(self.log.entries()), 1)
+        with self.log.path.open("a", encoding="utf-8") as log_file:
+            log_file.write('{"prompt_tokens": 5')
+
+        other_writer = UsageLog(self.log.path)
+        self.assertEqual(len(other_writer.entries()), 1)
+        with self.log.path.open("a", encoding="utf-8") as log_file:
+            log_file.write(', "completion_tokens": 0}\n')
+        self.assertEqual(len(self.log.entries()), 2)
 
 
 class AutomationTest(unittest.TestCase):

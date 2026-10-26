@@ -13,7 +13,7 @@ import json
 import shutil
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -23,12 +23,12 @@ from aiohttp import web
 from pocketagent.agent import Agent, create_agent, create_provider
 from pocketagent.attachments import AttachmentStore, build_user_message, message_display
 from pocketagent.automations import Automation, AutomationStore
-from pocketagent.changes import ChangeTracker
-from pocketagent.compaction import estimate_tokens
+from pocketagent.checkpoints import TaskCheckpoints
 from pocketagent.config import BUSY_INPUT_INTERJECT, AppConfig, ConfigError, ModelProfile, Settings
-from pocketagent.events import Event, json_default
+from pocketagent.events import Event, EventType, json_default
 from pocketagent.llm.base import LLMProvider, SilentListener
 from pocketagent.permissions import ApprovalAnswer, ApprovalMode, ApprovalRequest
+from pocketagent.skills import discover_skills, skill_directories
 from pocketagent.session import Session, SessionStore
 from pocketagent.usage import UsageLog
 from pocketagent.web.history import history_items
@@ -40,6 +40,7 @@ CONNECTION_TEST_TIMEOUT_SECONDS = 60
 # 自动化任务没人盯着，AI 审批不放行的操作最多等用户这么久，超时就拒绝
 AUTOMATION_APPROVAL_TIMEOUT_SECONDS = 600
 SCHEDULER_TICK_SECONDS = 20
+STATE_CHANGING_EVENTS = {EventType.COMPACTION_STARTED, EventType.COMPACTION, EventType.COMPACTION_FAILED}
 
 
 class SessionBusyError(RuntimeError):
@@ -59,6 +60,8 @@ class PendingApproval:
             "tool_name": self.request.tool_name,
             "summary": self.request.summary,
             "preview": self.request.preview,
+            "notes": self.request.notes,
+            "always_label": self.request.always_label,
         }
 
 
@@ -106,8 +109,8 @@ class WebSession:
         return self.agent.context.permissions.mode
 
     @property
-    def change_tracker(self) -> ChangeTracker:
-        return self.agent.context.tool_context.write_observer
+    def checkpoints(self) -> TaskCheckpoints:
+        return self.agent.checkpoints
 
     # ---- 推给浏览器 ----
 
@@ -124,8 +127,11 @@ class WebSession:
 
     async def _forward_event(self, event: Event) -> None:
         await self.broadcast({"type": "event", "event": event.to_record()})
+        if event.type in STATE_CHANGING_EVENTS:
+            # 压缩开始 / 换上摘要会改变「压缩中」和上下文占用，空闲时也要让界面知道
+            await self.broadcast_state()
 
-    def _status_fields(self) -> dict[str, Any]:
+    def status_fields(self) -> dict[str, Any]:
         context = self.agent.context
         return {
             "running": self.running,
@@ -134,21 +140,23 @@ class WebSession:
             "model": self.settings.display_model(),
             "title": self.session.display_title(),
             "workspace": self.session.workspace,
-            "context_tokens": max(estimate_tokens(context.messages), context.last_prompt_tokens),
+            "context_tokens": context.estimated_context_tokens(),
             "context_window": self.settings.context_window_tokens,
+            "compact_threshold": self.settings.compact_threshold if self.settings.auto_compact else None,
+            "compacting": context.pending_compaction is not None,
             "queued": [message_display(message) for message in self.queued_messages],
             "interjections": [message_display(message) for message in context.pending_interjections],
         }
 
     def state_message(self) -> dict[str, Any]:
-        return {"type": "state", **self._status_fields()}
+        return {"type": "state", **self.status_fields()}
 
     def snapshot_message(self) -> dict[str, Any]:
         """新连接进来时发一次：完整历史 + 当前状态 + 还没答复的审批。"""
         return {
             "type": "snapshot",
             "session_id": self.id,
-            **self._status_fields(),
+            **self.status_fields(),
             "items": history_items(self.agent.context.messages, self.agent.context.tools),
             "pending_approvals": [pending.to_message() for pending in self.pending_approvals.values()],
         }
@@ -179,8 +187,10 @@ class WebSession:
     def start_turn(self, message: dict[str, Any] | str) -> None:
         self._start_background(self.agent.run_turn(message))
 
-    def start_compaction(self) -> None:
-        self._start_background(self._compact_and_resend_history())
+    async def start_compaction(self) -> None:
+        """「压缩」按钮：在后台做摘要，做完自动换上；不占着这个任务，照样可以接着聊。"""
+        if not await self.agent.start_compaction():
+            raise SessionBusyError("已经在压缩了，或者历史太短不用压缩")
 
     def _start_background(self, coroutine: Any) -> None:
         if self.running:
@@ -216,9 +226,10 @@ class WebSession:
                 self._run_and_report(self.agent.run_turn(self.queued_messages.pop(0)))
             )
 
-    async def _compact_and_resend_history(self) -> None:
-        await self.agent.compact()
-        await self.broadcast(self.snapshot_message())
+    def cancel_background_work(self) -> None:
+        if self.agent.context.pending_compaction is not None:
+            self.agent.context.pending_compaction.task.cancel()
+            self.agent.context.pending_compaction = None
 
     async def interrupt(self) -> None:
         """停止这一轮。还没用上的插话和排队的消息退回给浏览器，放回输入框。"""
@@ -303,7 +314,7 @@ class SessionManager:
         """以启动时的设置为底，换上这个任务的工作区、模型（找不到就用默认模型）和审批模式。"""
         settings = copy.deepcopy(self.base_settings)
         settings.workspace = workspace
-        settings.max_steps = self.app_config.max_steps
+        settings.apply_app_config(self.app_config)
         settings.approval_mode = ApprovalMode(mode_name) if mode_name else self.app_config.approval_mode
         profile = self.app_config.find_model(model_key) or self.app_config.default_profile()
         if profile is not None:
@@ -372,35 +383,42 @@ class SessionManager:
         """所有存过盘的任务（按最近更新排序），加上内存里正在跑但还没存盘的。"""
         tasks = []
         seen_ids = set()
-        for session in self.store.list_sessions():
-            seen_ids.add(session.id)
-            live = self.sessions.get(session.id)
-            tasks.append(self._task_summary(live.session if live else session, live))
+        for summary in self.store.summaries():
+            seen_ids.add(summary.id)
+            live = self.sessions.get(summary.id)
+            task = {**asdict(summary), "running": bool(live and live.running)}
+            if live is not None:
+                # 内存里的标题可能刚改过还没存盘
+                task["title"] = live.session.display_title()
+            tasks.append(task)
         for live in self.sessions.values():
             if live.id not in seen_ids and live.running:
-                tasks.insert(0, self._task_summary(live.session, live))
+                session = live.session
+                tasks.insert(
+                    0,
+                    {
+                        "id": session.id,
+                        "title": session.display_title(),
+                        "workspace": session.workspace,
+                        "updated_at": session.updated_at,
+                        "source": session.source,
+                        "running": True,
+                    },
+                )
         return tasks
 
-    @staticmethod
-    def _task_summary(session: Session, live: WebSession | None) -> dict[str, Any]:
-        return {
-            "id": session.id,
-            "title": session.display_title(),
-            "workspace": session.workspace,
-            "updated_at": session.updated_at,
-            "source": session.source,
-            "running": bool(live and live.running),
-        }
-
-    def delete_task(self, session_id: str) -> None:
+    async def delete_task(self, session_id: str) -> None:
         live = self.sessions.get(session_id)
         if live is not None and live.running:
             raise SessionBusyError("任务还在运行，先停止再删除")
+        web_session = live or (self.get(session_id) if self.store.exists(session_id) else None)
+        if web_session is not None:
+            web_session.cancel_background_work()
+            await web_session.checkpoints.repo.forget()
         self.sessions.pop(session_id, None)
         self.store.delete(session_id)
         settings = self.base_settings
         (settings.traces_dir / f"{session_id}.jsonl").unlink(missing_ok=True)
-        shutil.rmtree(settings.checkpoints_dir / session_id, ignore_errors=True)
         shutil.rmtree(settings.attachments_dir / session_id, ignore_errors=True)
 
     async def switch_model(self, web_session: WebSession, model_id: str) -> None:
@@ -431,6 +449,11 @@ class SessionManager:
         data = self.app_config.to_dict()
         data.update(payload)
         data["models"] = self._fill_kept_api_keys(payload.get("models", data["models"]))
+        # 搜索密钥同模型密钥：留空表示不改，勾了清除才清空
+        if payload.get("clear_web_search_api_key"):
+            data["web_search_api_key"] = None
+        elif not payload.get("web_search_api_key"):
+            data["web_search_api_key"] = self.app_config.web_search_api_key
         data["web_token"] = self.app_config.web_token
         data["workspaces"] = self.app_config.workspaces
         return AppConfig.from_dict(data)
@@ -438,12 +461,63 @@ class SessionManager:
     async def apply_config(self, new_config: AppConfig) -> None:
         new_config.save(self.base_settings.config_path)
         self.app_config = new_config
-        self.base_settings.max_steps = new_config.max_steps
+        self.base_settings.apply_app_config(new_config)
         for web_session in self.sessions.values():
-            web_session.settings.max_steps = new_config.max_steps
-            profile = new_config.find_model(web_session.settings.model_profile_id) or new_config.default_profile()
+            settings = web_session.settings
+            settings.apply_app_config(new_config)
+            # 联网、沙箱、技能可能变了，工具重新装一遍（下一次调用模型时生效）
+            web_session.agent.reload_tools()
+            profile = new_config.find_model(settings.model_profile_id) or new_config.default_profile()
             if profile is not None:
                 await web_session.use_model(profile, self.build_provider)
+
+    async def update_model_options(self, model_id: str, options: dict[str, Any]) -> ModelProfile:
+        """选模型面板里直接改思考档位、上下文长度：存进配置，用这个模型的任务马上换上。"""
+        profile = self.app_config.find_model(model_id)
+        if profile is None:
+            raise KeyError(model_id)
+        data = profile.to_dict()
+        if "reasoning_effort" in options:
+            data["reasoning_effort"] = options["reasoning_effort"] or None
+        if "context_window_tokens" in options:
+            data["context_window_tokens"] = options["context_window_tokens"]
+        updated = ModelProfile.from_dict(data)
+        self.app_config.models = [updated if each.id == model_id else each for each in self.app_config.models]
+        self.app_config.save(self.base_settings.config_path)
+        for web_session in self.sessions.values():
+            if web_session.settings.model_profile_id == model_id:
+                await web_session.use_model(updated, self.build_provider)
+        return updated
+
+    def skills_overview(self, workspace: str | None) -> dict[str, Any]:
+        """设置里「技能」页：找技能的目录、找到的技能。给了工作区就带上那个工作区自己的技能。"""
+        config = self.app_config
+        root = Path(workspace) if workspace else None
+        directories = skill_directories(root, self.base_settings.home_dir, config.skill_dirs)
+        skills = discover_skills(directories)
+        return {
+            "enabled": config.skills_enabled,
+            "directories": [
+                {"path": str(directory.path), "source": directory.source, "exists": directory.path.is_dir()}
+                for directory in directories
+            ],
+            "skills": [skill.public_dict(disabled=skill.name in config.disabled_skills) for skill in skills],
+        }
+
+    def task_overview(self, session_id: str) -> dict[str, Any]:
+        """右侧栏要的：本任务用量（含缓存命中）、最新一条回复。比整份快照轻得多。"""
+        web_session = self.get(session_id)
+        latest_reply = ""
+        for message in reversed(web_session.agent.context.messages):
+            if message.get("role") == "assistant" and message.get("content"):
+                latest_reply = message["content"]
+                break
+        return {
+            "usage": self.usage_log.session_total(session_id),
+            "latest_reply": latest_reply,
+            "updated_at": web_session.session.updated_at,
+            **web_session.status_fields(),
+        }
 
     async def test_model(self, model_item: dict[str, Any]) -> dict[str, Any]:
         """用表单里（还没保存）的模型配置真的调一次模型。"""
@@ -531,5 +605,6 @@ class SessionManager:
     async def shutdown(self) -> None:
         for web_session in self.sessions.values():
             await web_session.interrupt()
+            web_session.cancel_background_work()
             for client in list(web_session.clients):
                 await client.close()

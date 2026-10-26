@@ -21,10 +21,23 @@ const chat = {
   approvalCards: new Map(),
   // 新任务页发的第一句话：等连上、拿到快照后再发
   pendingFirstMessage: null,
+  // 对话末尾的「等待中」提示
+  activity: null,
 };
 
 const TOOL_STATUS_ICONS = { running: "●", ok: "✓", error: "✗", denied: "⊘" };
-const FILE_TOOLS = new Set(["edit_file", "write_file"]);
+
+function compactionNotice(event) {
+  const sizes = `约 ${event.tokens_before} → ${event.tokens_after} tokens`;
+  if (event.reason === "overflow") {
+    return `模型说上下文超长，已压缩后重试（${sizes}）`;
+  }
+  if (event.reason === "manual") {
+    return `已按你的要求压缩上下文（${sizes}）`;
+  }
+  return event.background ? `上下文已在后台压缩，没打断对话（${sizes}）` : `上下文已压缩（${sizes}）`;
+}
+const FILE_TOOLS = new Set(["edit_file", "write_file", "bash"]);
 const TURN_END_NOTICES = {
   interrupted: ["已中断，可以接着说", "warning"],
   denied: ["调用被拒绝，这一轮先停下。告诉 agent 接下来怎么做。", "warning"],
@@ -69,6 +82,10 @@ export function updateChatOptions(info) {
 
 export function isChatRunning() {
   return chat.running;
+}
+
+export function chatComposer() {
+  return chat.composer;
 }
 
 // ===================== 打开 / 离开任务 =====================
@@ -210,7 +227,8 @@ function applyStatus(status) {
   chat.composer.setMode(status.mode);
   chat.composer.setModel(status.model_id);
   chat.composer.setRunning(status.running, state.info?.busy_input_mode);
-  chat.composer.setContext(status.context_tokens, status.context_window);
+  chat.composer.setContext(status.context_tokens, status.context_window, status.compact_threshold);
+  chat.composer.setCompacting(status.compacting);
   chat.composer.setWorkspaceLabel(status.workspace);
   renderPendingInputs(status);
   emit("task-status", status);
@@ -238,10 +256,12 @@ function handleAgentEvent(event) {
     case "turn_start":
       finishStreamingBlocks();
       addUserMessage(event.user_text, event.attachments);
+      showActivity("等待模型响应");
       break;
     case "interjection_applied":
       finishStreamingBlocks();
       addUserMessage(event.user_text, event.attachments, "插话");
+      showActivity("等待模型响应");
       // 已经交给模型了，从输入框上方的「待发」里拿掉
       if (chat.status?.interjections.length) {
         chat.status.interjections.shift();
@@ -260,10 +280,23 @@ function handleAgentEvent(event) {
       break;
     case "llm_retry":
       discardPartialAssistant();
-      addNotice(`模型调用失败，第 ${event.attempt} 次尝试：${event.error}`, "warning");
+      addNotice(`模型调用失败（${event.error}），${event.wait_seconds} 秒后第 ${event.attempt} 次尝试`, "warning");
+      showActivity("重试中");
+      break;
+    case "llm_truncated":
+      finishStreamingBlocks();
+      if (event.gave_up) {
+        addNotice("回复多次超出输出长度上限，先停下了", "warning");
+      } else if (event.had_tool_calls) {
+        addNotice("回复超出输出长度上限被截断，工具调用不完整没有执行，已让模型拆小重来", "warning");
+      } else {
+        addNotice("回复超出输出长度上限被截断，已让模型接着写", "warning");
+      }
+      showActivity("等待模型响应");
       break;
     case "tool_call":
       finishStreamingBlocks();
+      hideActivity();
       addToolCard(event.call_id, event.name, event.summary);
       break;
     case "tool_review":
@@ -271,12 +304,28 @@ function handleAgentEvent(event) {
       break;
     case "tool_result":
       setToolResult(event.call_id, event.content, event.is_error, event.denied);
+      if (chat.running && !event.denied) {
+        showActivity("等待模型响应");
+      }
       if (FILE_TOOLS.has(event.name)) {
         emit("files-changed", state.currentTaskId);
       }
       break;
+    case "checkpoint":
+      // 每轮开始前拍的检查点，右侧栏的检查点列表跟着刷新
+      emit("files-changed", state.currentTaskId);
+      break;
+    case "compaction_waiting":
+      showActivity("上下文快满了，等后台压缩做完");
+      break;
+    case "compaction_failed":
+      addNotice(`后台压缩失败：${event.message}（下次超过阈值会再试）`, "warning");
+      break;
     case "compaction":
-      addNotice(`上下文已压缩：约 ${event.tokens_before} → ${event.tokens_after} tokens`);
+      addNotice(compactionNotice(event));
+      if (chat.running) {
+        showActivity("等待模型响应");
+      }
       break;
     case "step_limit":
       addNotice(`这一轮已调用模型 ${event.max_steps} 次，达到上限，先停下`, "warning");
@@ -286,6 +335,7 @@ function handleAgentEvent(event) {
       break;
     case "turn_end": {
       finishStreamingBlocks();
+      hideActivity();
       const notice = TURN_END_NOTICES[event.stop_reason];
       if (notice) {
         addNotice(notice[0], notice[1]);
@@ -312,7 +362,9 @@ function scrollToBottom() {
 function appendToTranscript(element) {
   const shouldScroll = isNearBottom();
   elements.transcriptInner.querySelector(".empty-chat")?.remove();
-  elements.transcriptInner.appendChild(element);
+  // 「等待中」提示始终在最下面
+  const activityElement = chat.activity?.element.isConnected ? chat.activity.element : null;
+  elements.transcriptInner.insertBefore(element, activityElement);
   if (shouldScroll) {
     scrollToBottom();
   }
@@ -320,6 +372,10 @@ function appendToTranscript(element) {
 }
 
 function clearTranscript() {
+  hideActivity();
+  if (chat.currentReasoning) {
+    clearInterval(chat.currentReasoning.timer);
+  }
   elements.transcriptInner.replaceChildren();
   chat.currentAssistant = null;
   chat.currentReasoning = null;
@@ -384,44 +440,108 @@ function addNotice(text, kind) {
   appendToTranscript(el("div", `notice ${kind || ""}`, text));
 }
 
+// ---- 流式输出：打字机节奏 ----
+// 网关常常一阵一阵地推（实测几十个片段同时到，然后停 100ms），直接画会一顿一顿的。
+// 收到的字先进缓冲，每帧按积压量放出一部分：积压少就慢慢出，积压多就加快追上。
+
+const TYPEWRITER_FRAMES_TO_CATCH_UP = 8;
+const TYPEWRITER_MIN_CHARS_PER_FRAME = 2;
+const REASONING_PREVIEW_CHARS = 48;
+
 function appendAssistantText(delta) {
+  hideActivity();
   if (!chat.currentAssistant) {
-    const element = appendToTranscript(el("div", "message-assistant"));
-    chat.currentAssistant = { element, text: "", renderScheduled: false };
+    const element = appendToTranscript(el("div", "message-assistant streaming"));
+    chat.currentAssistant = { element, shown: "", pending: "", frameScheduled: false };
   }
   const block = chat.currentAssistant;
-  block.text += delta;
-  // 每帧最多重新渲染一次，长回复流式输出时不卡
-  if (!block.renderScheduled) {
-    block.renderScheduled = true;
-    requestAnimationFrame(() => {
-      const shouldScroll = isNearBottom();
-      block.element.innerHTML = renderMarkdown(block.text);
-      block.renderScheduled = false;
-      if (shouldScroll) {
-        scrollToBottom();
-      }
-    });
+  block.pending += delta;
+  scheduleTypewriter(block);
+}
+
+function scheduleTypewriter(block) {
+  if (block.frameScheduled) {
+    return;
+  }
+  block.frameScheduled = true;
+  requestAnimationFrame(() => typewriterFrame(block));
+}
+
+function typewriterFrame(block) {
+  block.frameScheduled = false;
+  if (!block.pending) {
+    return;
+  }
+  const take = Math.max(TYPEWRITER_MIN_CHARS_PER_FRAME, Math.ceil(block.pending.length / TYPEWRITER_FRAMES_TO_CATCH_UP));
+  block.shown += block.pending.slice(0, take);
+  block.pending = block.pending.slice(take);
+  renderStreamingBlock(block);
+  if (block.pending) {
+    scheduleTypewriter(block);
   }
 }
 
+function renderStreamingBlock(block) {
+  const shouldScroll = isNearBottom();
+  block.element.innerHTML = renderMarkdown(block.shown);
+  if (shouldScroll) {
+    scrollToBottom();
+  }
+}
+
+function flushAssistantBlock(block) {
+  block.shown += block.pending;
+  block.pending = "";
+  renderStreamingBlock(block);
+  block.element.classList.remove("streaming");
+}
+
+function elapsedSeconds(startedAt) {
+  return ((performance.now() - startedAt) / 1000).toFixed(1);
+}
+
 function appendReasoning(delta) {
+  hideActivity();
   if (!chat.currentReasoning) {
-    const details = el("details", "reasoning");
-    const summary = el("summary", "", "思考中…");
+    const details = el("details", "reasoning live");
+    const summary = el("summary");
+    const label = el("span", "reasoning-label", "思考中");
+    const preview = el("span", "reasoning-preview");
+    summary.append(label, preview);
     const body = el("div", "reasoning-body");
+    const bodyText = document.createTextNode("");
+    body.appendChild(bodyText);
     details.append(summary, body);
     appendToTranscript(details);
-    chat.currentReasoning = { details, summary, body, length: 0 };
+    const block = { details, label, preview, bodyText, length: 0, tail: "", startedAt: performance.now() };
+    // 计时和最新一句每 0.1 秒刷新一次，思考很长时也不卡
+    block.timer = setInterval(() => updateReasoningLabel(block), 100);
+    chat.currentReasoning = block;
   }
   const block = chat.currentReasoning;
-  block.body.textContent += delta;
+  block.bodyText.appendData(delta);
   block.length += delta.length;
+  block.tail = (block.tail + delta).slice(-REASONING_PREVIEW_CHARS * 2);
+}
+
+function updateReasoningLabel(block) {
+  block.label.textContent = `思考中 ${elapsedSeconds(block.startedAt)}s`;
+  block.preview.textContent = block.tail.replace(/\s+/g, " ").trim().slice(-REASONING_PREVIEW_CHARS);
+}
+
+function finishReasoningBlock(block) {
+  clearInterval(block.timer);
+  block.details.classList.remove("live");
+  block.label.textContent = `思考了 ${elapsedSeconds(block.startedAt)}s（${block.length} 字）`;
+  block.preview.textContent = "";
 }
 
 function finishStreamingBlocks() {
   if (chat.currentReasoning) {
-    chat.currentReasoning.summary.textContent = `思考过程（${chat.currentReasoning.length} 字）`;
+    finishReasoningBlock(chat.currentReasoning);
+  }
+  if (chat.currentAssistant) {
+    flushAssistantBlock(chat.currentAssistant);
   }
   chat.currentAssistant = null;
   chat.currentReasoning = null;
@@ -429,10 +549,46 @@ function finishStreamingBlocks() {
 
 function discardPartialAssistant() {
   // 模型调用失败要重试时，丢掉已经流出来的半截回复
+  if (chat.currentReasoning) {
+    clearInterval(chat.currentReasoning.timer);
+    chat.currentReasoning.details.remove();
+  }
   chat.currentAssistant?.element.remove();
-  chat.currentReasoning?.details.remove();
   chat.currentAssistant = null;
   chat.currentReasoning = null;
+}
+
+// ---- 「等待中」提示：等第一个字、工具跑完等模型、等后台压缩时，让人知道没卡住 ----
+
+function showActivity(text) {
+  if (!chat.activity) {
+    const element = el("div", "activity");
+    const label = el("span", "activity-label");
+    const seconds = el("span", "activity-seconds");
+    element.append(el("span", "activity-dots"), label, seconds);
+    chat.activity = { element, label, seconds, startedAt: 0, timer: null };
+  }
+  const activity = chat.activity;
+  activity.label.textContent = text;
+  activity.startedAt = performance.now();
+  activity.seconds.textContent = "";
+  clearInterval(activity.timer);
+  activity.timer = setInterval(() => {
+    activity.seconds.textContent = `${elapsedSeconds(activity.startedAt)}s`;
+  }, 200);
+  const shouldScroll = isNearBottom();
+  elements.transcriptInner.appendChild(activity.element);
+  if (shouldScroll) {
+    scrollToBottom();
+  }
+}
+
+function hideActivity() {
+  if (!chat.activity) {
+    return;
+  }
+  clearInterval(chat.activity.timer);
+  chat.activity.element.remove();
 }
 
 function setToolStatus(card, status) {
@@ -501,14 +657,19 @@ function showApproval(request) {
   if (reviewNote) {
     card.appendChild(el("div", "approval-note", `AI 审批没有放行：${reviewNote[1]}`));
   }
+  // 工作目录外、沙箱外、密钥目录：多问这一句的原因
+  for (const note of request.notes || []) {
+    card.appendChild(el("div", "approval-note approval-warning", note));
+  }
   card.appendChild(renderDiff(request.preview || request.summary || "", "approval-preview"));
 
   const actions = el("div", "approval-actions");
-  const choices = [
-    { label: "允许", answer: "allow_once", className: "primary-button" },
-    { label: `本任务总是允许 ${request.tool_name}`, answer: "allow_always", className: "ghost-button" },
-    { label: "拒绝", answer: "deny", className: "ghost-button danger-text" },
-  ];
+  const choices = [{ label: "允许", answer: "allow_once", className: "primary-button" }];
+  // 碰到密钥目录时不给「总是允许」
+  if (request.always_label) {
+    choices.push({ label: request.always_label, answer: "allow_always", className: "ghost-button" });
+  }
+  choices.push({ label: "拒绝", answer: "deny", className: "ghost-button danger-text" });
   for (const choice of choices) {
     const choiceButton = button(choice.className, choice.label);
     choiceButton.addEventListener("click", () => {
@@ -535,6 +696,8 @@ function renderHistoryItem(item) {
     addAssistantMessage(item.text);
   } else if (item.kind === "summary") {
     addSummaryCard(item.text);
+  } else if (item.kind === "notice") {
+    addNotice(item.text, "warning");
   } else if (item.kind === "tool") {
     addToolCard(item.call_id, item.name, item.summary);
     setToolReview(item.call_id, item.review);
@@ -552,6 +715,10 @@ function renderSnapshot(snapshot) {
   }
   snapshot.pending_approvals.forEach(showApproval);
   applyStatus(snapshot);
+  if (snapshot.running && snapshot.pending_approvals.length === 0) {
+    // 中途连上来的：前面流式的那段没了，给个提示，后面的照常显示
+    showActivity("运行中");
+  }
   scrollToBottom();
 }
 

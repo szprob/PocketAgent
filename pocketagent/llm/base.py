@@ -22,6 +22,12 @@ class ToolCall:
 class Usage:
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    # prompt 里命中缓存的部分（DeepSeek、Grok 等会报；没报就是 0）
+    cached_tokens: int = 0
+    # completion 里花在思考上的部分
+    reasoning_tokens: int = 0
+    # 接口直接报的费用（美元，OpenRouter 会报）；没报是 None
+    cost: float | None = None
 
 
 @dataclass
@@ -40,6 +46,33 @@ class StreamListener(Protocol):
 
     async def on_reasoning(self, text: str) -> None: ...
 
+    async def on_retry(self, attempt: int, error: Exception, wait_seconds: float) -> None:
+        """要重试了：前面流出来的半截输出作废。"""
+
+
+class ContextOverflowError(RuntimeError):
+    """接口说输入超过了模型的上下文长度。ThinkNode 收到它会先压缩再重试。"""
+
+
+CONTEXT_OVERFLOW_HINTS = (
+    "context length",
+    "context_length",
+    "maximum context",
+    "context window",
+    "prompt is too long",
+    "input is too long",
+    "too many tokens",
+    "token limit",
+    "上下文长度",
+    "超出最大长度",
+    "超过最大长度",
+)
+
+
+def is_context_overflow(error: Exception) -> bool:
+    message = str(error).lower()
+    return any(hint in message for hint in CONTEXT_OVERFLOW_HINTS)
+
 
 class SilentListener:
     """不需要把流式输出展示出来的调用（压缩摘要、测试连接）用它。"""
@@ -48,6 +81,9 @@ class SilentListener:
         return None
 
     async def on_reasoning(self, text: str) -> None:
+        return None
+
+    async def on_retry(self, attempt: int, error: Exception, wait_seconds: float) -> None:
         return None
 
 

@@ -1,11 +1,17 @@
 """文件读写工具：read_file / write_file / edit_file / list_dir。"""
 
+import asyncio
 import difflib
+from pathlib import Path
 from typing import Any
 
-from pocketagent.tools.base import Tool, ToolContext, ToolKind, ToolResult
+from pocketagent.tools.base import Tool, ToolAccess, ToolContext, ToolKind, ToolResult
 
 READ_DEFAULT_LINE_LIMIT = 2000
+READ_MAX_LINE_CHARS = 2000
+# 一次最多返回这么多字，再多就提示用 offset 接着读
+READ_MAX_TOTAL_CHARS = 120_000
+BINARY_SNIFF_BYTES = 8192
 LIST_DIR_MAX_ENTRIES = 500
 SKIPPED_DIRECTORY_NAMES = {".git", "__pycache__", "node_modules", ".venv", ".mypy_cache", ".pytest_cache"}
 
@@ -27,21 +33,60 @@ class ReadFileTool(Tool):
     def describe(self, arguments: dict[str, Any]) -> str:
         return str(arguments.get("path", ""))
 
+    def access(self, arguments: dict[str, Any], context: ToolContext) -> ToolAccess:
+        return path_argument_access(arguments, context, write=False)
+
     async def run(self, arguments: dict[str, Any], context: ToolContext) -> ToolResult:
         path = context.resolve_path(arguments["path"])
         if not path.is_file():
             return ToolResult(f"文件不存在：{arguments['path']}", is_error=True)
-        offset = max(int(arguments.get("offset", 1)), 1)
-        limit = max(int(arguments.get("limit", READ_DEFAULT_LINE_LIMIT)), 1)
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-        selected = lines[offset - 1 : offset - 1 + limit]
-        numbered = [f"{offset + index:6d}\t{line}" for index, line in enumerate(selected)]
-        if not numbered:
-            return ToolResult(f"（文件共 {len(lines)} 行，第 {offset} 行之后没有内容）")
-        remaining = len(lines) - (offset - 1 + len(selected))
-        if remaining > 0:
-            numbered.append(f"（还有 {remaining} 行未显示，用 offset 继续读）")
-        return ToolResult("\n".join(numbered))
+        offset = max(int(arguments.get("offset") or 1), 1)
+        limit = max(int(arguments.get("limit") or READ_DEFAULT_LINE_LIMIT), 1)
+        # 放到线程里读，大文件也不会卡住事件循环（别的任务的流式输出照常走）
+        return await asyncio.to_thread(read_numbered_lines, path, offset, limit)
+
+
+def path_argument_access(
+    arguments: dict[str, Any], context: ToolContext, write: bool, default: str | None = None
+) -> ToolAccess:
+    """按 path 参数算这次调用碰到的路径；没给 path 时用 default（一般是工作目录）。"""
+    raw_path = arguments.get("path", default)
+    if not raw_path:
+        return ToolAccess()
+    return context.path_access([context.resolve_path(str(raw_path))], write=write)
+
+
+def _looks_binary(path: Path) -> bool:
+    with path.open("rb") as file:
+        return b"\x00" in file.read(BINARY_SNIFF_BYTES)
+
+
+def read_numbered_lines(path: Path, offset: int, limit: int) -> ToolResult:
+    """逐行读，只留 [offset, offset+limit) 这几行；剩下的行只数不存。超长的行截断，总字数也有上限。"""
+    if _looks_binary(path):
+        return ToolResult(f"这是二进制文件（{path.stat().st_size} 字节），不能按文本读", is_error=True)
+    numbered: list[str] = []
+    collected_chars = 0
+    stopped_at = None
+    total_lines = 0
+    with path.open("r", encoding="utf-8", errors="replace") as file:
+        for line_number, line in enumerate(file, start=1):
+            total_lines = line_number
+            if line_number < offset or line_number >= offset + limit or stopped_at is not None:
+                continue
+            text = line.rstrip("\n")
+            if len(text) > READ_MAX_LINE_CHARS:
+                text = f"{text[:READ_MAX_LINE_CHARS]}…（这一行有 {len(text)} 字，后面截掉了）"
+            numbered.append(f"{line_number:6d}\t{text}")
+            collected_chars += len(text)
+            if collected_chars > READ_MAX_TOTAL_CHARS:
+                stopped_at = line_number
+    if not numbered:
+        return ToolResult(f"（文件共 {total_lines} 行，第 {offset} 行之后没有内容）")
+    last_shown = stopped_at or min(offset + limit - 1, total_lines)
+    if last_shown < total_lines:
+        numbered.append(f"（共 {total_lines} 行，显示到第 {last_shown} 行；用 offset={last_shown + 1} 接着读）")
+    return ToolResult("\n".join(numbered))
 
 
 class WriteFileTool(Tool):
@@ -60,8 +105,11 @@ class WriteFileTool(Tool):
     def describe(self, arguments: dict[str, Any]) -> str:
         return str(arguments.get("path", ""))
 
+    def access(self, arguments: dict[str, Any], context: ToolContext) -> ToolAccess:
+        return path_argument_access(arguments, context, write=True)
+
     def preview(self, arguments: dict[str, Any], context: ToolContext) -> str:
-        path = context.resolve_path(arguments["path"], for_write=True)
+        path = context.resolve_path(arguments["path"])
         new_text = arguments["content"]
         if not path.exists():
             return f"新建 {context.display_path(path)}（{len(new_text.splitlines())} 行）"
@@ -69,9 +117,8 @@ class WriteFileTool(Tool):
         return _unified_diff(old_text, new_text, context.display_path(path))
 
     async def run(self, arguments: dict[str, Any], context: ToolContext) -> ToolResult:
-        path = context.resolve_path(arguments["path"], for_write=True)
+        path = context.resolve_path(arguments["path"])
         existed = path.exists()
-        context.before_write(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(arguments["content"], encoding="utf-8")
         action = "覆盖" if existed else "新建"
@@ -99,8 +146,11 @@ class EditFileTool(Tool):
     def describe(self, arguments: dict[str, Any]) -> str:
         return str(arguments.get("path", ""))
 
+    def access(self, arguments: dict[str, Any], context: ToolContext) -> ToolAccess:
+        return path_argument_access(arguments, context, write=True)
+
     def preview(self, arguments: dict[str, Any], context: ToolContext) -> str:
-        path = context.resolve_path(arguments["path"], for_write=True)
+        path = context.resolve_path(arguments["path"])
         old_text = path.read_text(encoding="utf-8", errors="replace")
         new_text, error = _apply_edit(old_text, arguments)
         if error:
@@ -108,14 +158,13 @@ class EditFileTool(Tool):
         return _unified_diff(old_text, new_text, context.display_path(path))
 
     async def run(self, arguments: dict[str, Any], context: ToolContext) -> ToolResult:
-        path = context.resolve_path(arguments["path"], for_write=True)
+        path = context.resolve_path(arguments["path"])
         if not path.is_file():
             return ToolResult(f"文件不存在：{arguments['path']}", is_error=True)
         old_text = path.read_text(encoding="utf-8")
         new_text, error = _apply_edit(old_text, arguments)
         if error:
             return ToolResult(error, is_error=True)
-        context.before_write(path)
         path.write_text(new_text, encoding="utf-8")
         return ToolResult(f"已修改 {context.display_path(path)}")
 
@@ -160,6 +209,9 @@ class ListDirTool(Tool):
 
     def describe(self, arguments: dict[str, Any]) -> str:
         return str(arguments.get("path", "."))
+
+    def access(self, arguments: dict[str, Any], context: ToolContext) -> ToolAccess:
+        return path_argument_access(arguments, context, write=False, default=".")
 
     async def run(self, arguments: dict[str, Any], context: ToolContext) -> ToolResult:
         directory = context.resolve_path(arguments.get("path", "."))

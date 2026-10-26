@@ -10,12 +10,17 @@
   event（agent 事件，见 events.py）、approval_request / approval_resolved、returned_inputs（中断时退回的输入）、error
 
 REST（都在 /api 下）：
-  info                                   工作区、模型、审批模式、用户名
+  info                                   工作区、模型（含可选思考档位、上下文长度）、审批模式、用户名
+  models/{id}         PATCH              选模型面板里改思考档位、上下文长度（存进配置，马上生效）
   workspaces          POST / DELETE      加 / 移除工作区
+  files / file / file/raw                工作区文件树 / 文件预览 / 原始文件（图片预览）
+  browse                                 选工作区时浏览本机目录（只列目录）
   sessions            GET / POST         任务列表 / 新建任务（指定工作区、模型、审批模式）
   sessions/{id}       GET / PATCH / DELETE   快照 / 改标题 / 删除
+  sessions/{id}/overview                 右侧栏概要（用量、缓存命中、最新回复），比快照轻
   sessions/{id}/attachments              POST 上传（multipart），GET .../{附件 id} 取文件
-  sessions/{id}/changes                  GET 文件变更，GET .../diff?path=，POST .../revert
+  sessions/{id}/changes                  GET 文件变更 + 检查点（影子 git），GET .../diff?path=，POST .../revert
+  sessions/{id}/checkpoints/restore      POST 把整个工作区恢复到某个检查点
   usage / usage/balance                  本机 token 用量 / 各家账户余额
   config              GET / PUT          设置；config/test 测试模型连接
   automations         GET / POST         自动化列表 / 新建；automations/{id} PUT / DELETE；.../run 立即运行
@@ -34,8 +39,10 @@ from aiohttp import WSMsgType, web
 
 from pocketagent.automations import Automation
 from pocketagent.billing import query_all_balances
+from pocketagent.checkpoints import CheckpointError
 from pocketagent.config import AppConfig, ConfigError, Settings
 from pocketagent.permissions import WEB_APPROVAL_MODES
+from pocketagent.web import files
 from pocketagent.web.runtime import ProviderFactory, SessionBusyError, SessionManager, WebSession
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -91,6 +98,8 @@ async def error_middleware(request: web.Request, handler: Handler) -> web.Stream
         return _error_response(str(error), status=409)
     except KeyError as error:
         return _error_response(f"找不到：{error}", status=404)
+    except CheckpointError as error:
+        return _error_response(str(error))
 
 
 # ---- 页面和基本信息 ----
@@ -105,7 +114,16 @@ async def get_info(request: web.Request) -> web.Response:
     app_config = manager.app_config
     default_profile = app_config.default_profile()
     models = [
-        {"id": profile.id, "name": profile.name, "model": profile.model, "supports_images": profile.supports_images}
+        {
+            "id": profile.id,
+            "name": profile.name,
+            "model": profile.model,
+            "provider": profile.provider,
+            "supports_images": profile.supports_images,
+            "reasoning_effort": profile.reasoning_effort,
+            "reasoning_choices": profile.available_reasoning_choices(),
+            "context_window_tokens": profile.context_window_tokens,
+        }
         for profile in app_config.models
     ]
     return _json_response(
@@ -120,8 +138,47 @@ async def get_info(request: web.Request) -> web.Response:
             "default_mode": app_config.approval_mode.value,
             "modes": [mode.value for mode in WEB_APPROVAL_MODES],
             "busy_input_mode": app_config.busy_input_mode,
+            "auto_compact": app_config.auto_compact,
+            "compact_threshold_percent": app_config.compact_threshold_percent,
+            "web_search_enabled": app_config.web_search_settings() is not None,
         }
     )
+
+
+async def update_model(request: web.Request) -> web.Response:
+    profile = await _manager(request).update_model_options(request.match_info["model_id"], await request.json())
+    return _json_response(profile.public_dict())
+
+
+# ---- 文件浏览 ----
+
+
+async def list_files(request: web.Request) -> web.Response:
+    manager = _manager(request)
+    entries = files.list_workspace_dir(
+        manager.app_config.workspaces, request.query.get("workspace", ""), request.query.get("path", "")
+    )
+    return _json_response({"entries": entries})
+
+
+async def read_file(request: web.Request) -> web.Response:
+    manager = _manager(request)
+    preview = files.read_workspace_file(
+        manager.app_config.workspaces, request.query.get("workspace", ""), request.query.get("path", "")
+    )
+    return _json_response(preview)
+
+
+async def raw_file(request: web.Request) -> web.StreamResponse:
+    manager = _manager(request)
+    path = files.workspace_file_path(
+        manager.app_config.workspaces, request.query.get("workspace", ""), request.query.get("path", "")
+    )
+    return web.FileResponse(path)
+
+
+async def browse_directories(request: web.Request) -> web.Response:
+    return _json_response(files.browse_directories(request.query.get("path")))
 
 
 # ---- 工作区 ----
@@ -161,6 +218,13 @@ def _find_session(request: web.Request) -> WebSession:
         raise web.HTTPNotFound(text="任务不存在")
 
 
+async def get_overview(request: web.Request) -> web.Response:
+    try:
+        return _json_response(_manager(request).task_overview(request.match_info["session_id"]))
+    except KeyError:
+        raise web.HTTPNotFound(text="任务不存在")
+
+
 async def get_session(request: web.Request) -> web.Response:
     web_session = _find_session(request)
     snapshot = web_session.snapshot_message()
@@ -177,7 +241,7 @@ async def update_session(request: web.Request) -> web.Response:
 
 
 async def delete_session(request: web.Request) -> web.Response:
-    _manager(request).delete_task(request.match_info["session_id"])
+    await _manager(request).delete_task(request.match_info["session_id"])
     return _json_response({"ok": True})
 
 
@@ -208,14 +272,23 @@ async def get_attachment(request: web.Request) -> web.StreamResponse:
 # ---- 文件变更 ----
 
 
+async def _changes_payload(web_session: WebSession) -> dict[str, Any]:
+    checkpoints = web_session.checkpoints
+    changes = await checkpoints.changes()
+    return {
+        "enabled": checkpoints.enabled,
+        "disabled_reason": checkpoints.disabled_reason,
+        "changes": [change.to_dict() for change in changes],
+        "checkpoints": [checkpoint.to_dict() for checkpoint in checkpoints.all_checkpoints()],
+    }
+
+
 async def list_changes(request: web.Request) -> web.Response:
-    tracker = _find_session(request).change_tracker
-    return _json_response({"changes": [change.to_dict() for change in tracker.list_changes()]})
+    return _json_response(await _changes_payload(_find_session(request)))
 
 
 async def get_change_diff(request: web.Request) -> web.Response:
-    tracker = _find_session(request).change_tracker
-    return _json_response({"diff": tracker.diff(request.query.get("path", ""))})
+    return _json_response({"diff": await _find_session(request).checkpoints.diff(request.query.get("path", ""))})
 
 
 async def revert_change(request: web.Request) -> web.Response:
@@ -223,8 +296,19 @@ async def revert_change(request: web.Request) -> web.Response:
     if web_session.running:
         raise SessionBusyError("任务还在运行，等它停下再撤销")
     payload = await request.json()
-    web_session.change_tracker.revert(str(payload.get("path", "")))
-    return _json_response({"changes": [change.to_dict() for change in web_session.change_tracker.list_changes()]})
+    await web_session.checkpoints.revert_file(str(payload.get("path", "")))
+    web_session.agent.session_store.save(web_session.session)
+    return _json_response(await _changes_payload(web_session))
+
+
+async def restore_checkpoint(request: web.Request) -> web.Response:
+    web_session = _find_session(request)
+    if web_session.running:
+        raise SessionBusyError("任务还在运行，等它停下再恢复")
+    payload = await request.json()
+    restored = await web_session.checkpoints.restore(str(payload.get("commit", "")))
+    web_session.agent.session_store.save(web_session.session)
+    return _json_response({"restored": restored, **(await _changes_payload(web_session))})
 
 
 # ---- 用量和余额 ----
@@ -243,6 +327,10 @@ async def get_balances(request: web.Request) -> web.Response:
 
 def _config_payload(manager: SessionManager) -> dict[str, Any]:
     return {**manager.app_config.public_dict(), "config_path": str(manager.base_settings.config_path)}
+
+
+async def list_skills(request: web.Request) -> web.Response:
+    return _json_response(_manager(request).skills_overview(request.query.get("workspace") or None))
 
 
 async def get_config(request: web.Request) -> web.Response:
@@ -332,7 +420,7 @@ async def _handle_client_message(
         elif message_type == "interrupt":
             await web_session.interrupt()
         elif message_type == "compact":
-            web_session.start_compaction()
+            await web_session.start_compaction()
         elif message_type == "remove_queued":
             web_session.remove_queued(int(message["index"]))
             await web_session.broadcast_state()
@@ -374,11 +462,17 @@ def create_app(
 def _add_routes(router: web.UrlDispatcher) -> None:
     router.add_get("/", index)
     router.add_get("/api/info", get_info)
+    router.add_patch("/api/models/{model_id}", update_model)
+    router.add_get("/api/files", list_files)
+    router.add_get("/api/file", read_file)
+    router.add_get("/api/file/raw", raw_file)
+    router.add_get("/api/browse", browse_directories)
     router.add_post("/api/workspaces", add_workspace)
     router.add_delete("/api/workspaces", remove_workspace)
     router.add_get("/api/sessions", list_sessions)
     router.add_post("/api/sessions", create_session)
     router.add_get("/api/sessions/{session_id}", get_session)
+    router.add_get("/api/sessions/{session_id}/overview", get_overview)
     router.add_patch("/api/sessions/{session_id}", update_session)
     router.add_delete("/api/sessions/{session_id}", delete_session)
     router.add_post("/api/sessions/{session_id}/attachments", upload_attachments)
@@ -386,8 +480,10 @@ def _add_routes(router: web.UrlDispatcher) -> None:
     router.add_get("/api/sessions/{session_id}/changes", list_changes)
     router.add_get("/api/sessions/{session_id}/changes/diff", get_change_diff)
     router.add_post("/api/sessions/{session_id}/changes/revert", revert_change)
+    router.add_post("/api/sessions/{session_id}/checkpoints/restore", restore_checkpoint)
     router.add_get("/api/usage", get_usage)
     router.add_get("/api/usage/balance", get_balances)
+    router.add_get("/api/skills", list_skills)
     router.add_get("/api/config", get_config)
     router.add_put("/api/config", put_config)
     router.add_post("/api/config/test", test_config)

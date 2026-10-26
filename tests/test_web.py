@@ -3,6 +3,7 @@ import base64
 import json
 import socket
 import unittest
+from pathlib import Path
 from typing import Any, Callable
 from unittest import mock
 
@@ -76,7 +77,9 @@ def is_running_state(message: dict[str, Any]) -> bool:
     return message["type"] == "state" and message["running"]
 
 
-class WebServerTest(AioHTTPTestCase):
+class WebTestBase(AioHTTPTestCase):
+    """搭服务和小工具；具体用例在下面的子类里。"""
+
     async def get_application(self):
         self.directories = TemporaryDirectories()
         # 每个测试在建任务前设好剧本；建任务时用它造假模型
@@ -127,6 +130,8 @@ class WebServerTest(AioHTTPTestCase):
     def _connect(self, session_id: str):
         return self.client.ws_connect(f"/ws/{session_id}", params=AUTH)
 
+
+class WebServerTest(WebTestBase):
     # ---- 鉴权、基本信息 ----
 
     async def test_token_is_required_and_remembered_by_cookie(self) -> None:
@@ -216,6 +221,11 @@ class WebServerTest(AioHTTPTestCase):
             await socket_client.receive_json()
             await socket_client.send_json({"type": "user_message", "text": "看看目录"})
             await self._receive_until(socket_client, is_running_state)
+            # 等第一次调模型真的开始了再插话（每轮开始前要先拍检查点）
+            for _ in range(500):
+                if gated.call_count >= 1:
+                    break
+                await asyncio.sleep(0.01)
             await socket_client.send_json({"type": "user_message", "text": "顺便看看 README"})
             await self._receive_until(socket_client, is_event("interjection_queued"))
             gated.gate.set()
@@ -313,14 +323,16 @@ class WebServerTest(AioHTTPTestCase):
 
     # ---- 文件变更 ----
 
-    async def test_file_changes_diff_and_revert(self) -> None:
+    async def test_shadow_git_sees_bash_changes_and_reverts_them(self) -> None:
         (self.directories.workspace / "app.py").write_text("print('v1')\n", encoding="utf-8")
+        (self.directories.workspace / "old.txt").write_text("old\n", encoding="utf-8")
         self.responses.extend(
             [
                 LLMResponse(
                     tool_calls=[
                         tool_call("c1", "edit_file", '{"path": "app.py", "old_string": "v1", "new_string": "v2"}'),
-                        tool_call("c2", "write_file", '{"path": "new.md", "content": "# 新文件"}'),
+                        # 以前的变更跟踪看不见 bash 的改动；影子 git 拍整个工作区，都看得见
+                        tool_call("c2", "bash", '{"command": "echo hi > from_bash.txt && rm old.txt"}'),
                     ]
                 ),
                 LLMResponse(text="改好了"),
@@ -333,18 +345,27 @@ class WebServerTest(AioHTTPTestCase):
             await self._receive_until(socket_client, is_event("turn_end"))
             await self._receive_until(socket_client, is_idle_state)
 
-        changes = (await self._get_json(f"/api/sessions/{session_id}/changes"))["changes"]
-        by_path = {change["display_path"]: change for change in changes}
-        app_path = by_path["app.py"]["path"]
-        diff = await self.client.get(f"/api/sessions/{session_id}/changes/diff", params={**AUTH, "path": app_path})
-        await self._send_json("POST", f"/api/sessions/{session_id}/changes/revert", {"path": app_path})
-        await self._send_json("POST", f"/api/sessions/{session_id}/changes/revert", {"path": by_path["new.md"]["path"]})
+        payload = await self._get_json(f"/api/sessions/{session_id}/changes")
+        by_path = {change["path"]: change for change in payload["changes"]}
+        diff = await self.client.get(f"/api/sessions/{session_id}/changes/diff", params={**AUTH, "path": "app.py"})
+        await self._send_json("POST", f"/api/sessions/{session_id}/changes/revert", {"path": "app.py"})
+        await self._send_json("POST", f"/api/sessions/{session_id}/changes/revert", {"path": "from_bash.txt"})
+        baseline = payload["checkpoints"][0]["commit"]
+        restored = await (await self._send_json("POST", f"/api/sessions/{session_id}/checkpoints/restore", {"commit": baseline})).json()
 
-        self.assertEqual(by_path["app.py"]["status"], "modified")
-        self.assertEqual(by_path["new.md"]["status"], "added")
+        self.assertTrue(payload["enabled"])
+        self.assertEqual(
+            {path: change["status"] for path, change in by_path.items()},
+            {"app.py": "modified", "from_bash.txt": "added", "old.txt": "deleted"},
+        )
         self.assertIn("+print('v2')", (await diff.json())["diff"])
         self.assertEqual((self.directories.workspace / "app.py").read_text(encoding="utf-8"), "print('v1')\n")
-        self.assertFalse((self.directories.workspace / "new.md").exists())
+        self.assertFalse((self.directories.workspace / "from_bash.txt").exists())
+        # 整体恢复把 bash 删掉的 old.txt 也找回来了，恢复前还自动拍了一张
+        self.assertEqual(restored["restored"], ["old.txt"])
+        self.assertEqual((self.directories.workspace / "old.txt").read_text(encoding="utf-8"), "old\n")
+        self.assertEqual(restored["changes"], [])
+        self.assertEqual([checkpoint["kind"] for checkpoint in restored["checkpoints"]][-1], "safety")
 
     # ---- 工作区、任务、用量 ----
 
@@ -494,6 +515,145 @@ class WebServerTest(AioHTTPTestCase):
         self.assertEqual(automations[0]["last_status"], "done")
         self.assertEqual(snapshot["title"], "日报")
         self.assertEqual(snapshot["items"][-1]["text"], "日报写好了")
+
+
+class WebRound3Test(WebTestBase):
+    """模型选项、右侧栏概要、文件浏览、联网设置。"""
+
+    async def test_patch_model_options_applies_to_open_sessions(self) -> None:
+        session_id = await self._create_session()
+        response = await self._send_json("PATCH", "/api/models/ds", {"reasoning_effort": "none", "context_window_tokens": 64000})
+        invalid = await self._send_json("PATCH", "/api/models/ds", {"reasoning_effort": "xhigh"})
+        info = await self._get_json("/api/info")
+        snapshot = await self._get_json(f"/api/sessions/{session_id}")
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(invalid.status, 400)
+        model = next(item for item in info["models"] if item["id"] == "ds")
+        self.assertEqual((model["reasoning_effort"], model["context_window_tokens"]), ("none", 64000))
+        self.assertEqual(self.provider_settings[-1].reasoning_effort, "none")
+        self.assertEqual(snapshot["context_window"], 64000)
+
+    async def test_overview_has_usage_and_latest_reply(self) -> None:
+        self.responses.append(LLMResponse(text="最新的回复", usage=Usage(prompt_tokens=100, completion_tokens=5, cached_tokens=60)))
+        session_id = await self._create_session()
+        async with self._connect(session_id) as socket_client:
+            await socket_client.receive_json()
+            await socket_client.send_json({"type": "user_message", "text": "你好"})
+            await self._receive_until(socket_client, is_event("turn_end"))
+
+        overview = await self._get_json(f"/api/sessions/{session_id}/overview")
+
+        self.assertEqual(overview["latest_reply"], "最新的回复")
+        self.assertEqual(overview["usage"]["cached"], 60)
+        self.assertEqual(overview["usage"]["cache_hit_rate"], 0.6)
+
+    async def test_file_tree_preview_and_folder_browsing(self) -> None:
+        workspace = self.directories.workspace
+        (workspace / "src").mkdir()
+        (workspace / "src" / "app.py").write_text("print('hi')\n", encoding="utf-8")
+        (workspace / "logo.png").write_bytes(TINY_PNG)
+        (workspace / ".git").mkdir()
+        unregistered = await self.client.get("/api/files", params={**AUTH, "workspace": str(workspace)})
+        await self._send_json("POST", "/api/workspaces", {"path": str(workspace)})
+        query = {**AUTH, "workspace": str(workspace.resolve())}
+
+        root = await (await self.client.get("/api/files", params=query)).json()
+        nested = await (await self.client.get("/api/files", params={**query, "path": "src"})).json()
+        preview = await (await self.client.get("/api/file", params={**query, "path": "src/app.py"})).json()
+        image = await (await self.client.get("/api/file", params={**query, "path": "logo.png"})).json()
+        raw = await self.client.get("/api/file/raw", params={**query, "path": "logo.png"})
+        escape = await self.client.get("/api/file", params={**query, "path": "../outside.txt"})
+        browse = await (await self.client.get("/api/browse", params={**AUTH, "path": str(workspace)})).json()
+
+        self.assertEqual(unregistered.status, 400)
+        self.assertEqual([(entry["name"], entry["is_dir"]) for entry in root["entries"]], [("src", True), ("logo.png", False)])
+        self.assertEqual(nested["entries"][0]["path"], "src/app.py")
+        self.assertEqual((preview["kind"], preview["content"]), ("text", "print('hi')\n"))
+        self.assertEqual(image["kind"], "image")
+        self.assertEqual(await raw.read(), TINY_PNG)
+        self.assertEqual(escape.status, 400)
+        self.assertEqual([item["name"] for item in browse["directories"]], ["src"])
+
+    async def test_web_search_key_is_kept_when_left_blank(self) -> None:
+        await self._send_json("PUT", "/api/config", {"web_search_api_key": "search-secret-key-1"})
+        await self._send_json("PUT", "/api/config", {"web_search_api_key": "", "web_search_engine": "search_pro"})
+        saved = json.loads((self.directories.home_dir / "config.json").read_text(encoding="utf-8"))
+        config = await self._get_json("/api/config")
+
+        self.assertEqual(saved["web_search_api_key"], "search-secret-key-1")
+        self.assertEqual(saved["web_search_engine"], "search_pro")
+        self.assertNotIn("search-secret-key-1", json.dumps(config))
+        self.assertEqual(config["web_search_key_hint"], "search…ey-1")
+
+
+class WebAccessTest(WebTestBase):
+    """工作目录外的访问、技能、沙箱设置。"""
+
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        # 不读本机的 ~/.claude/skills
+        patcher = mock.patch("pocketagent.skills.USER_SKILL_DIRS", [])
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    async def test_outside_read_asks_once_then_remembers_the_directory(self) -> None:
+        elsewhere = self.directories.workspace.parent / "elsewhere"
+        elsewhere.mkdir(parents=True)
+        (elsewhere / "a.txt").write_text("A\n", encoding="utf-8")
+        (elsewhere / "b.txt").write_text("B\n", encoding="utf-8")
+        self.responses.extend(
+            [
+                LLMResponse(tool_calls=[tool_call("c1", "read_file", json.dumps({"path": str(elsewhere / "a.txt")}))]),
+                LLMResponse(tool_calls=[tool_call("c2", "read_file", json.dumps({"path": str(elsewhere / "b.txt")}))]),
+                LLMResponse(text="都读了"),
+            ]
+        )
+        session_id = await self._create_session(mode="ask")
+        async with self._connect(session_id) as socket_client:
+            await socket_client.receive_json()
+            await socket_client.send_json({"type": "user_message", "text": "读那两个文件"})
+            approval = await self._receive_until(socket_client, is_type("approval_request"))
+            await socket_client.send_json({"type": "approval", "request_id": approval["request_id"], "answer": "allow_always"})
+            await self._receive_until(socket_client, is_event("turn_end"))
+
+        snapshot = await self._get_json(f"/api/sessions/{session_id}")
+        tool_results = [item for item in snapshot["items"] if item["kind"] == "tool"]
+
+        self.assertTrue(any(str(elsewhere / "a.txt") in note for note in approval["notes"]))
+        self.assertIn(str(elsewhere), approval["always_label"])
+        self.assertEqual(len(tool_results), 2)
+        self.assertFalse(any(item["is_error"] for item in tool_results))
+
+    async def test_skills_api_and_settings_round_trip(self) -> None:
+        skill_file = self.directories.workspace / ".claude" / "skills" / "deploy" / "SKILL.md"
+        skill_file.parent.mkdir(parents=True)
+        skill_file.write_text("---\nname: deploy\ndescription: 部署用\n---\n步骤", encoding="utf-8")
+        session_id = await self._create_session()
+        web_session = self.app[MANAGER_KEY].sessions[session_id]
+        workspace = str(self.directories.workspace.resolve())
+
+        listed = await (await self.client.get("/api/skills", params={**AUTH, "workspace": workspace})).json()
+        without_workspace = await self._get_json("/api/skills")
+        tools_before = web_session.agent.context.tools.names()
+        await self._send_json(
+            "PUT",
+            "/api/config",
+            {"disabled_skills": ["deploy"], "skill_dirs": ["~/my-skills"], "sandbox_network": True},
+        )
+        after = await (await self.client.get("/api/skills", params={**AUTH, "workspace": workspace})).json()
+        config = await self._get_json("/api/config")
+
+        self.assertEqual([(skill["name"], skill["source"], skill["enabled"]) for skill in listed["skills"]], [("deploy", "项目", True)])
+        self.assertEqual(without_workspace["skills"], [])
+        self.assertIn("load_skill", tools_before)
+        self.assertEqual(after["skills"][0]["enabled"], False)
+        self.assertNotIn("load_skill", web_session.agent.context.tools.names())
+        self.assertEqual(config["disabled_skills"], ["deploy"])
+        self.assertEqual(config["skill_dirs"], [str(Path("~/my-skills").expanduser().resolve())])
+        self.assertTrue(config["sandbox_network"])
+        if web_session.agent.context.tool_context.sandbox is not None:
+            self.assertTrue(web_session.agent.context.tool_context.sandbox.allow_network)
 
 
 class StartupTest(unittest.IsolatedAsyncioTestCase):

@@ -12,13 +12,25 @@ from typing import Any
 from pocketflow import AsyncNode
 
 from pocketagent.attachments import materialize_messages, message_display
-from pocketagent.compaction import rebuild_messages_with_summary, summarize_history
+from pocketagent.compaction import (
+    PendingCompaction,
+    rebuild_messages_with_summary,
+    rebuild_with_summary_and_tail,
+    shrink_for_summary,
+    summarize_history,
+)
 from pocketagent.context import AgentContext
 from pocketagent.events import EventBus, EventType
-from pocketagent.llm.base import LLMProvider, LLMResponse, ToolCall, build_assistant_message
-from pocketagent.permissions import ApprovalRequest, Decision
+from pocketagent.llm.base import ContextOverflowError, LLMProvider, LLMResponse, ToolCall, build_assistant_message
+from pocketagent.permissions import ApprovalRequest, Decision, PermissionCheck
 from pocketagent.reviewer import ReviewResult, review_tool_call
 from pocketagent.tools.base import Tool, ToolKind, ToolResult, find_missing_arguments, truncate_middle
+
+
+# 一轮里最多压缩几次：系统提示本身就很长时，再压也压不下去，别一直压
+MAX_COMPACTIONS_PER_TURN = 3
+# 做摘要时给历史留的上下文比例（剩下的留给摘要指令和输出）
+SUMMARY_INPUT_RATIO = 0.85
 
 
 def messages_for_model(context: AgentContext) -> list[dict[str, Any]]:
@@ -43,17 +55,123 @@ class AgentNode(AsyncNode):
 
 
 class GuardNode(AgentNode):
-    """每次调模型前的检查：先把用户插的话放进对话，步数到上限就停，上下文快满了就先压缩。"""
+    """每次调模型前的检查：
+    1. 把用户插的话放进对话；后台压缩做好了就换上摘要
+    2. 步数到上限就停
+    3. 上下文超过阈值：开始后台压缩，这一轮照常往下跑；快顶到上限了才停下来等压缩
+    """
 
     async def post_async(self, context: AgentContext, prep_result: Any, exec_result: Any) -> str:
         await _apply_interjections(context)
+        await apply_finished_compaction(context)
         if context.turn.step_count >= context.settings.max_steps:
             context.turn.stop_reason = "step_limit"
             await context.events.emit(EventType.STEP_LIMIT, max_steps=context.settings.max_steps)
             return "stop"
-        if context.estimated_context_tokens() > context.context_limit_tokens():
+        if not _can_compact(context):
+            return "think"
+        usage = context.estimated_context_tokens()
+        if usage > context.blocking_limit_tokens():
+            if context.pending_compaction is not None:
+                await wait_for_compaction(context)
+                if context.estimated_context_tokens() <= context.blocking_limit_tokens():
+                    return "think"
+            context.turn.compact_reason = "auto"
             return "compact"
+        if usage > context.context_limit_tokens() and context.pending_compaction is None:
+            await start_background_compaction(context, reason="auto")
         return "think"
+
+
+def _can_compact(context: AgentContext) -> bool:
+    if not context.settings.auto_compact or context.turn.compactions >= MAX_COMPACTIONS_PER_TURN:
+        return False
+    # 只剩系统提示和摘要两条时再压也没用
+    return len(context.messages) > 2
+
+
+# ---- 后台压缩 ----
+
+
+def _summary_request_messages(context: AgentContext) -> list[dict[str, Any]]:
+    """做摘要用的历史：不发图片；本身超长时先截短、丢掉最早的对话。"""
+    messages = materialize_messages(context.messages, context.attachments_root, supports_images=False)
+    limit = int(context.settings.context_window_tokens * SUMMARY_INPUT_RATIO)
+    return shrink_for_summary(messages, limit)
+
+
+async def start_background_compaction(context: AgentContext, reason: str) -> bool:
+    """拍下当前历史，在后台做摘要。已经有一个在做了就不再开。返回是否开了新的。"""
+    if context.pending_compaction is not None or len(context.messages) <= 2:
+        return False
+    task = asyncio.create_task(summarize_history(context.provider, _summary_request_messages(context)))
+    context.pending_compaction = PendingCompaction(
+        task=task,
+        snapshot_length=len(context.messages),
+        history_version=context.history_version,
+        reason=reason,
+        tokens_before=context.estimated_context_tokens(),
+    )
+    await context.events.emit(EventType.COMPACTION_STARTED, reason=reason, tokens_before=context.estimated_context_tokens())
+    return True
+
+
+async def apply_finished_compaction(context: AgentContext) -> bool:
+    """后台压缩做完了就换上「摘要 + 快照之后的消息」。没做完、做失败、或者已经过期就什么都不改。"""
+    pending = context.pending_compaction
+    if pending is None or not pending.task.done():
+        return False
+    context.pending_compaction = None
+    if pending.task.cancelled():
+        return False
+    error = pending.task.exception()
+    if error is not None:
+        await context.events.emit(EventType.COMPACTION_FAILED, message=f"{type(error).__name__}: {error}")
+        return False
+    if pending.history_version != context.history_version:
+        # 期间历史已经被别的压缩换掉了，这份摘要对不上
+        return False
+    tokens_before = context.estimated_context_tokens()
+    _keep_title(context)
+    context.session.messages = rebuild_with_summary_and_tail(context.messages, pending.snapshot_length, pending.task.result())
+    _after_history_replaced(context)
+    await context.events.emit(
+        EventType.COMPACTION,
+        reason=pending.reason,
+        background=True,
+        tokens_before=tokens_before,
+        tokens_after=context.estimated_context_tokens(),
+    )
+    return True
+
+
+async def wait_for_compaction(context: AgentContext) -> bool:
+    """上下文快顶到上限了，停下来等后台压缩做完再换上。"""
+    pending = context.pending_compaction
+    if pending is None:
+        return False
+    if not pending.task.done():
+        await context.events.emit(EventType.COMPACTION_WAITING)
+        await asyncio.wait([pending.task])
+    return await apply_finished_compaction(context)
+
+
+def cancel_background_compaction(context: AgentContext) -> None:
+    if context.pending_compaction is not None:
+        context.pending_compaction.task.cancel()
+        context.pending_compaction = None
+
+
+def _keep_title(context: AgentContext) -> None:
+    """压缩后第一条 user 消息就成了摘要，标题会跟着变；换之前把原来的标题定下来。"""
+    if not context.session.title:
+        context.session.title = context.session.display_title()
+
+
+def _after_history_replaced(context: AgentContext) -> None:
+    context.history_version += 1
+    context.token_anchor = None
+    context.turn.compactions += 1
 
 
 async def _apply_interjections(context: AgentContext) -> None:
@@ -78,6 +196,15 @@ class _EventStreamListener:
     async def on_reasoning(self, text: str) -> None:
         await self.events.emit(EventType.REASONING_DELTA, text=text)
 
+    async def on_retry(self, attempt: int, error: Exception, wait_seconds: float) -> None:
+        # 界面收到后丢掉已经流出来的半截输出
+        await self.events.emit(
+            EventType.LLM_RETRY,
+            attempt=attempt,
+            error=f"{type(error).__name__}: {error}",
+            wait_seconds=round(wait_seconds, 1),
+        )
+
 
 @dataclass
 class ThinkRequest:
@@ -88,10 +215,8 @@ class ThinkRequest:
 
 
 class ThinkNode(AgentNode):
-    """调一次模型（流式），决定是调工具还是结束这一轮。网络错误按 PocketFlow 的重试机制重试。"""
-
-    def __init__(self, max_retries: int = 3, wait: float = 2) -> None:
-        super().__init__(max_retries=max_retries, wait=wait)
+    """调一次模型（流式），决定是调工具还是结束这一轮。
+    重试在 provider 里做，只重试 429 / 5xx / 断线这类；这里不再用 PocketFlow 的「什么错都重试」。"""
 
     async def prep_async(self, context: AgentContext) -> ThinkRequest:
         context.turn.step_count += 1
@@ -102,21 +227,25 @@ class ThinkNode(AgentNode):
             events=context.events,
         )
 
-    async def exec_async(self, request: ThinkRequest) -> LLMResponse:
+    async def exec_async(self, request: ThinkRequest) -> LLMResponse | ContextOverflowError:
         listener = _EventStreamListener(request.events)
         try:
             return await request.provider.complete(request.messages, request.tool_schemas, listener)
-        except Exception as error:
-            # cur_retry 由 PocketFlow 的重试循环维护；还有重试机会时告诉界面丢掉已经流出来的半截输出
-            if self.cur_retry < self.max_retries - 1:
-                await request.events.emit(
-                    EventType.LLM_RETRY, attempt=self.cur_retry + 2, error=f"{type(error).__name__}: {error}"
-                )
-            raise
+        except ContextOverflowError as overflow:
+            # 交给 post 去走压缩分支
+            return overflow
 
-    async def post_async(self, context: AgentContext, request: ThinkRequest, response: LLMResponse) -> str:
-        if response.usage:
-            context.last_prompt_tokens = response.usage.prompt_tokens
+    async def post_async(
+        self, context: AgentContext, request: ThinkRequest, response: LLMResponse | ContextOverflowError
+    ) -> str:
+        if isinstance(response, ContextOverflowError):
+            # 接口说上下文超长：不管开没开自动压缩，都先压缩再重试；压了几次还超就只能报错
+            if context.turn.compactions >= MAX_COMPACTIONS_PER_TURN or len(context.messages) <= 2:
+                raise response
+            if await wait_for_compaction(context):
+                return "continue"
+            context.turn.compact_reason = "overflow"
+            return "compact"
         await context.events.emit(
             EventType.LLM_RESPONSE,
             text=response.text,
@@ -125,7 +254,11 @@ class ThinkNode(AgentNode):
             finish_reason=response.finish_reason,
             usage=response.usage,
         )
+        if response.finish_reason == "length":
+            return await _handle_truncated_response(context, response)
         context.messages.append(build_assistant_message(response))
+        if response.usage and response.usage.prompt_tokens:
+            context.record_usage(response.usage)
         if response.tool_calls:
             context.turn.pending_tool_calls = response.tool_calls
             return "tool_calls"
@@ -135,6 +268,34 @@ class ThinkNode(AgentNode):
         context.turn.final_text = response.text
         context.turn.stop_reason = "done"
         return "done"
+
+
+# 回复超出输出上限被截断时，最多让模型补救几次
+MAX_TRUNCATION_RECOVERIES = 2
+TRUNCATED_TOOL_NOTE = (
+    "（系统提示：你上一条回复超出了单次输出长度上限，被截断了，工具调用的参数不完整，所以没有执行。"
+    "请把操作拆小：大文件分几次写，改已有文件用 edit_file 只替换需要改的那一段。）"
+)
+TRUNCATED_TEXT_NOTE = "（系统提示：你上一条回复超出了单次输出长度上限，被截断了。请从断开的地方接着写，不要重复已经写过的内容。）"
+
+
+async def _handle_truncated_response(context: AgentContext, response: LLMResponse) -> str:
+    """finish_reason=length：截断的工具调用 JSON 不完整，不能执行；纯文字就让模型接着写。"""
+    context.turn.truncations += 1
+    had_tool_calls = bool(response.tool_calls)
+    gave_up = context.turn.truncations > MAX_TRUNCATION_RECOVERIES
+    await context.events.emit(EventType.LLM_TRUNCATED, had_tool_calls=had_tool_calls, gave_up=gave_up)
+    if gave_up:
+        context.messages.append({"role": "assistant", "content": response.text or "（回复多次超出长度上限，先停下）"})
+        context.turn.final_text = response.text
+        context.turn.stop_reason = "truncated"
+        return "done"
+    if response.text:
+        context.messages.append({"role": "assistant", "content": response.text})
+    note = TRUNCATED_TOOL_NOTE if had_tool_calls else TRUNCATED_TEXT_NOTE
+    # _kind 标成内部提示：界面重放历史时显示成提示行，也不当成用户的原话
+    context.messages.append({"role": "user", "content": note, "_kind": "notice"})
+    return "continue"
 
 
 @dataclass
@@ -249,15 +410,19 @@ async def _check_and_execute(tool: Tool | None, call: ToolCall, summary: str, co
     if missing:
         return _error_outcome(call, f"缺少必填参数：{', '.join(missing)}")
 
-    decision = context.permissions.decide(tool)
-    if decision == Decision.DENY:
+    try:
+        access = tool.access(call.arguments, context.tool_context)
+    except Exception as error:
+        return _error_outcome(call, f"{type(error).__name__}: {error}")
+    check = context.permissions.check(tool, access)
+    if check.decision == Decision.DENY:
         return _denied_outcome(call, context.permissions.denial_reason(tool))
-    if decision in (Decision.ASK, Decision.AI_REVIEW):
+    if check.decision in (Decision.ASK, Decision.AI_REVIEW):
         try:
             preview = tool.preview(call.arguments, context.tool_context)
         except Exception as error:
             return _error_outcome(call, f"{type(error).__name__}: {error}")
-        approval = await _approve(decision, tool, call, summary, preview, context)
+        approval = await _approve(check, tool, call, summary, preview, context)
         if not approval.approved:
             denied = _denied_outcome(call, "用户拒绝了这次调用")
             denied.review = approval.review
@@ -274,11 +439,11 @@ async def _check_and_execute(tool: Tool | None, call: ToolCall, summary: str, co
 
 
 async def _approve(
-    decision: Decision, tool: Tool, call: ToolCall, summary: str, preview: str, context: AgentContext
+    check: PermissionCheck, tool: Tool, call: ToolCall, summary: str, preview: str, context: AgentContext
 ) -> ApprovalOutcome:
     """AI 审批模式先让模型判断，判定安全直接放行；否则（或本来就是询问模式）问用户。"""
     review = None
-    if decision == Decision.AI_REVIEW:
+    if check.decision == Decision.AI_REVIEW:
         review = await review_tool_call(
             context.provider,
             context.messages,
@@ -286,6 +451,7 @@ async def _approve(
             tool.name,
             call.arguments,
             preview,
+            notes=check.notes,
         )
         await context.events.emit(
             EventType.TOOL_REVIEW, call_id=call.id, name=tool.name, allow=review.allow, reason=review.reason
@@ -293,8 +459,10 @@ async def _approve(
         if review.allow:
             return ApprovalOutcome(approved=True, review=review)
         summary = f"{summary}\n（AI 审批没有放行：{review.reason}）"
-    request = ApprovalRequest(tool_name=tool.name, summary=summary, preview=preview)
-    return ApprovalOutcome(approved=await context.permissions.ask(request), review=review)
+    request = ApprovalRequest(
+        tool_name=tool.name, summary=summary, preview=preview, notes=check.notes, always_label=check.always_label()
+    )
+    return ApprovalOutcome(approved=await context.permissions.ask(request, check), review=review)
 
 
 def _error_outcome(call: ToolCall, message: str) -> ToolCallOutcome:
@@ -313,23 +481,29 @@ class CompactRequest:
 
 
 class CompactNode(AgentNode):
-    """让模型把历史总结成摘要，替换掉原来的消息。"""
-
-    def __init__(self, max_retries: int = 2, wait: float = 2) -> None:
-        super().__init__(max_retries=max_retries, wait=wait)
+    """让模型把历史总结成摘要，替换掉原来的消息（当场压缩；平时走后台压缩）。重试在 provider 里做。"""
 
     async def prep_async(self, context: AgentContext) -> CompactRequest:
-        return CompactRequest(provider=context.provider, messages=messages_for_model(context))
+        # 要当场压缩了，后台那份（如果有）不要了，免得两份摘要先后换掉历史
+        cancel_background_compaction(context)
+        return CompactRequest(provider=context.provider, messages=_summary_request_messages(context))
 
     async def exec_async(self, request: CompactRequest) -> str:
         return await summarize_history(request.provider, request.messages)
 
     async def post_async(self, context: AgentContext, request: CompactRequest, summary: str) -> None:
         tokens_before = context.estimated_context_tokens()
+        _keep_title(context)
         context.session.messages = rebuild_messages_with_summary(context.messages, summary)
-        context.last_prompt_tokens = 0
+        _after_history_replaced(context)
+        reason = context.turn.compact_reason or "manual"
+        context.turn.compact_reason = ""
         await context.events.emit(
-            EventType.COMPACTION, tokens_before=tokens_before, tokens_after=context.estimated_context_tokens()
+            EventType.COMPACTION,
+            reason=reason,
+            background=False,
+            tokens_before=tokens_before,
+            tokens_after=context.estimated_context_tokens(),
         )
 
 
