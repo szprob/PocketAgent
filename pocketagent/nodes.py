@@ -11,12 +11,19 @@ from typing import Any
 
 from pocketflow import AsyncNode
 
+from pocketagent.attachments import materialize_messages, message_display
 from pocketagent.compaction import rebuild_messages_with_summary, summarize_history
 from pocketagent.context import AgentContext
 from pocketagent.events import EventBus, EventType
 from pocketagent.llm.base import LLMProvider, LLMResponse, ToolCall, build_assistant_message
 from pocketagent.permissions import ApprovalRequest, Decision
+from pocketagent.reviewer import ReviewResult, review_tool_call
 from pocketagent.tools.base import Tool, ToolKind, ToolResult, find_missing_arguments, truncate_middle
+
+
+def messages_for_model(context: AgentContext) -> list[dict[str, Any]]:
+    """发给模型的消息：去掉内部字段，展开附件引用（不能看图的模型拿到的是文字说明）。"""
+    return materialize_messages(context.messages, context.attachments_root, context.settings.supports_images)
 
 
 class AgentNode(AsyncNode):
@@ -36,9 +43,10 @@ class AgentNode(AsyncNode):
 
 
 class GuardNode(AgentNode):
-    """每次调模型前的检查：步数到上限就停，上下文快满了就先压缩。"""
+    """每次调模型前的检查：先把用户插的话放进对话，步数到上限就停，上下文快满了就先压缩。"""
 
     async def post_async(self, context: AgentContext, prep_result: Any, exec_result: Any) -> str:
+        await _apply_interjections(context)
         if context.turn.step_count >= context.settings.max_steps:
             context.turn.stop_reason = "step_limit"
             await context.events.emit(EventType.STEP_LIMIT, max_steps=context.settings.max_steps)
@@ -46,6 +54,16 @@ class GuardNode(AgentNode):
         if context.estimated_context_tokens() > context.context_limit_tokens():
             return "compact"
         return "think"
+
+
+async def _apply_interjections(context: AgentContext) -> None:
+    while context.pending_interjections:
+        message = context.pending_interjections.pop(0)
+        context.messages.append(message)
+        display = message_display(message)
+        await context.events.emit(
+            EventType.INTERJECTION_APPLIED, user_text=display["text"], attachments=display["attachments"]
+        )
 
 
 class _EventStreamListener:
@@ -79,7 +97,7 @@ class ThinkNode(AgentNode):
         context.turn.step_count += 1
         return ThinkRequest(
             provider=context.provider,
-            messages=list(context.messages),
+            messages=messages_for_model(context),
             tool_schemas=context.tools.openai_schemas(),
             events=context.events,
         )
@@ -111,6 +129,9 @@ class ThinkNode(AgentNode):
         if response.tool_calls:
             context.turn.pending_tool_calls = response.tool_calls
             return "tool_calls"
+        if context.pending_interjections:
+            # 模型以为做完了，但用户刚插了话：回到 guard 把话放进去，再想一轮
+            return "continue"
         context.turn.final_text = response.text
         context.turn.stop_reason = "done"
         return "done"
@@ -121,6 +142,7 @@ class ToolCallOutcome:
     call: ToolCall
     result: ToolResult
     denied: bool = False
+    review: ReviewResult | None = None
 
 
 @dataclass
@@ -177,8 +199,18 @@ def _all_read_only(batch: ToolBatch) -> bool:
 
 
 def append_tool_messages(context: AgentContext, outcomes: list[ToolCallOutcome]) -> None:
+    """下划线开头的字段只给界面重放历史用，发给模型前会去掉。"""
     for outcome in outcomes:
-        context.messages.append({"role": "tool", "tool_call_id": outcome.call.id, "content": outcome.result.content})
+        message = {
+            "role": "tool",
+            "tool_call_id": outcome.call.id,
+            "content": outcome.result.content,
+            "_is_error": outcome.result.is_error,
+            "_denied": outcome.denied,
+        }
+        if outcome.review is not None:
+            message["_review"] = {"allow": outcome.review.allow, "reason": outcome.review.reason}
+        context.messages.append(message)
 
 
 async def run_tool_call(call: ToolCall, context: AgentContext) -> ToolCallOutcome:
@@ -201,6 +233,12 @@ async def run_tool_call(call: ToolCall, context: AgentContext) -> ToolCallOutcom
     return outcome
 
 
+@dataclass
+class ApprovalOutcome:
+    approved: bool
+    review: ReviewResult | None = None
+
+
 async def _check_and_execute(tool: Tool | None, call: ToolCall, summary: str, context: AgentContext) -> ToolCallOutcome:
     if tool is None:
         available = "、".join(context.tools.names())
@@ -214,20 +252,49 @@ async def _check_and_execute(tool: Tool | None, call: ToolCall, summary: str, co
     decision = context.permissions.decide(tool)
     if decision == Decision.DENY:
         return _denied_outcome(call, context.permissions.denial_reason(tool))
-    if decision == Decision.ASK:
+    if decision in (Decision.ASK, Decision.AI_REVIEW):
         try:
             preview = tool.preview(call.arguments, context.tool_context)
         except Exception as error:
             return _error_outcome(call, f"{type(error).__name__}: {error}")
-        request = ApprovalRequest(tool_name=tool.name, summary=summary, preview=preview)
-        if not await context.permissions.ask(request):
-            return _denied_outcome(call, "用户拒绝了这次调用")
+        approval = await _approve(decision, tool, call, summary, preview, context)
+        if not approval.approved:
+            denied = _denied_outcome(call, "用户拒绝了这次调用")
+            denied.review = approval.review
+            return denied
+        review = approval.review
+    else:
+        review = None
 
     try:
         result = await tool.run(call.arguments, context.tool_context)
     except Exception as error:
         result = ToolResult(f"{type(error).__name__}: {error}", is_error=True)
-    return ToolCallOutcome(call=call, result=result)
+    return ToolCallOutcome(call=call, result=result, review=review)
+
+
+async def _approve(
+    decision: Decision, tool: Tool, call: ToolCall, summary: str, preview: str, context: AgentContext
+) -> ApprovalOutcome:
+    """AI 审批模式先让模型判断，判定安全直接放行；否则（或本来就是询问模式）问用户。"""
+    review = None
+    if decision == Decision.AI_REVIEW:
+        review = await review_tool_call(
+            context.provider,
+            context.messages,
+            str(context.settings.workspace),
+            tool.name,
+            call.arguments,
+            preview,
+        )
+        await context.events.emit(
+            EventType.TOOL_REVIEW, call_id=call.id, name=tool.name, allow=review.allow, reason=review.reason
+        )
+        if review.allow:
+            return ApprovalOutcome(approved=True, review=review)
+        summary = f"{summary}\n（AI 审批没有放行：{review.reason}）"
+    request = ApprovalRequest(tool_name=tool.name, summary=summary, preview=preview)
+    return ApprovalOutcome(approved=await context.permissions.ask(request), review=review)
 
 
 def _error_outcome(call: ToolCall, message: str) -> ToolCallOutcome:
@@ -252,7 +319,7 @@ class CompactNode(AgentNode):
         super().__init__(max_retries=max_retries, wait=wait)
 
     async def prep_async(self, context: AgentContext) -> CompactRequest:
-        return CompactRequest(provider=context.provider, messages=list(context.messages))
+        return CompactRequest(provider=context.provider, messages=messages_for_model(context))
 
     async def exec_async(self, request: CompactRequest) -> str:
         return await summarize_history(request.provider, request.messages)

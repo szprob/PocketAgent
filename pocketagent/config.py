@@ -8,11 +8,14 @@
         {"id": "a1b2c3", "name": "DS 4.1 Flash", "model": "deepseek-v4.1-flash",
          "base_url": "https://your-gateway.example.com/v1", "api_key": "sk-...",
          "reasoning_effort": "low", "context_window_tokens": 128000,
-         "temperature": null, "extra_body": {}}
+         "temperature": null, "extra_body": {}, "supports_images": true}
       ],
       "default_model": "a1b2c3",
       "approval_mode": "ask",
+      "busy_input_mode": "interject",
       "max_steps": 50,
+      "workspaces": ["/Users/me/projects/foo"],
+      "user_name": "me",
       "web_token": "..."
     }
 
@@ -35,6 +38,11 @@ DEFAULT_MODEL = "deepseek-v4.1-flash"
 DEFAULT_CONTEXT_WINDOW_TOKENS = 128_000
 DEFAULT_MAX_STEPS = 50
 CONFIG_FILE_NAME = "config.json"
+
+# agent 正在干活时用户又发了一句话：插话（下一次调用模型时带上）还是排队（这一轮结束后再跑）
+BUSY_INPUT_INTERJECT = "interject"
+BUSY_INPUT_QUEUE = "queue"
+BUSY_INPUT_MODES = [BUSY_INPUT_INTERJECT, BUSY_INPUT_QUEUE]
 
 
 class ConfigError(ValueError):
@@ -97,6 +105,30 @@ def _json_object(data: dict[str, Any], key: str, label: str) -> dict[str, Any]:
     return value
 
 
+def _boolean(data: dict[str, Any], key: str) -> bool:
+    value = data.get(key)
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    return bool(value)
+
+
+def _busy_input_mode(value: Any) -> str:
+    mode = value or BUSY_INPUT_INTERJECT
+    if mode not in BUSY_INPUT_MODES:
+        raise ConfigError(f"运行中发消息的处理方式只能是 {' / '.join(BUSY_INPUT_MODES)}：{value}")
+    return mode
+
+
+def _workspace_list(value: Any) -> list[str]:
+    """去重、展开 ~、转成绝对路径；不检查目录是否存在（换电脑后目录可能暂时不在）。"""
+    workspaces: list[str] = []
+    for item in value or []:
+        path = str(Path(str(item)).expanduser().resolve())
+        if path not in workspaces:
+            workspaces.append(path)
+    return workspaces
+
+
 def _approval_mode(value: Any) -> ApprovalMode:
     try:
         return ApprovalMode(value or ApprovalMode.ASK.value)
@@ -125,6 +157,8 @@ class ModelProfile:
     temperature: float | None = None
     context_window_tokens: int = DEFAULT_CONTEXT_WINDOW_TOKENS
     extra_body: dict[str, Any] = field(default_factory=dict)
+    # 能不能看图：不能看的模型，用户上传的图片只以文件路径的形式告诉它
+    supports_images: bool = False
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ModelProfile":
@@ -141,6 +175,7 @@ class ModelProfile:
                 data, "context_window_tokens", DEFAULT_CONTEXT_WINDOW_TOKENS, "上下文长度"
             ),
             extra_body=_json_object(data, "extra_body", "额外请求参数"),
+            supports_images=_boolean(data, "supports_images"),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -169,7 +204,10 @@ class AppConfig:
     models: list[ModelProfile] = field(default_factory=list)
     default_model: str | None = None
     approval_mode: ApprovalMode = ApprovalMode.ASK
+    busy_input_mode: str = BUSY_INPUT_INTERJECT
     max_steps: int = DEFAULT_MAX_STEPS
+    workspaces: list[str] = field(default_factory=list)
+    user_name: str | None = None
     web_token: str | None = None
 
     def find_model(self, key: str | None) -> ModelProfile | None:
@@ -194,7 +232,10 @@ class AppConfig:
             models=models,
             default_model=_optional_text(data, "default_model"),
             approval_mode=_approval_mode(data.get("approval_mode")),
+            busy_input_mode=_busy_input_mode(data.get("busy_input_mode")),
             max_steps=_positive_int(data, "max_steps", DEFAULT_MAX_STEPS, "单轮最多调用模型次数"),
+            workspaces=_workspace_list(data.get("workspaces")),
+            user_name=_optional_text(data, "user_name"),
             web_token=_optional_text(data, "web_token"),
         )
         if config.default_model and config.find_model(config.default_model) is None:
@@ -206,7 +247,10 @@ class AppConfig:
             "models": [profile.to_dict() for profile in self.models],
             "default_model": self.default_model,
             "approval_mode": self.approval_mode.value,
+            "busy_input_mode": self.busy_input_mode,
             "max_steps": self.max_steps,
+            "workspaces": self.workspaces,
+            "user_name": self.user_name,
             "web_token": self.web_token,
         }
 
@@ -215,8 +259,22 @@ class AppConfig:
             "models": [profile.public_dict() for profile in self.models],
             "default_model": self.default_profile().id if self.models else None,
             "approval_mode": self.approval_mode.value,
+            "busy_input_mode": self.busy_input_mode,
             "max_steps": self.max_steps,
+            "workspaces": self.workspaces,
+            "user_name": self.display_user_name(),
         }
+
+    def display_user_name(self) -> str:
+        return self.user_name or os.environ.get("USER") or "我"
+
+    def add_workspace(self, workspace: Path) -> bool:
+        """加进工作区列表，返回是否新加的。"""
+        path = str(workspace.expanduser().resolve())
+        if path in self.workspaces:
+            return False
+        self.workspaces.append(path)
+        return True
 
     @classmethod
     def load(cls, path: Path) -> "AppConfig":
@@ -267,6 +325,7 @@ class Settings:
     temperature: float | None = None
     reasoning_effort: str | None = None
     extra_body: dict[str, Any] = field(default_factory=dict)
+    supports_images: bool = False
     # 当前用的是配置文件里哪个模型；为空表示来自环境变量
     model_profile_id: str | None = None
     model_profile_name: str = ""
@@ -295,6 +354,18 @@ class Settings:
     def config_path(self) -> Path:
         return config_path(self.home_dir)
 
+    @property
+    def attachments_dir(self) -> Path:
+        return self.home_dir / "attachments"
+
+    @property
+    def checkpoints_dir(self) -> Path:
+        return self.home_dir / "checkpoints"
+
+    @property
+    def usage_log_path(self) -> Path:
+        return self.home_dir / "usage.jsonl"
+
     def display_model(self) -> str:
         if self.model_profile_name and self.model_profile_name != self.model:
             return f"{self.model_profile_name}（{self.model}）"
@@ -308,6 +379,7 @@ class Settings:
         self.temperature = profile.temperature
         self.context_window_tokens = profile.context_window_tokens
         self.extra_body = dict(profile.extra_body)
+        self.supports_images = profile.supports_images
         self.model_profile_id = profile.id
         self.model_profile_name = profile.name
 

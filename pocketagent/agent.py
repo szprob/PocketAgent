@@ -3,7 +3,7 @@
 主循环（PocketFlow 的图）：
 
     guard ──think──▶ think ──tool_calls──▶ run_tools ──next──▶ guard
-      │                │                       │
+      │                │  └──continue（模型说完了但用户刚插了话）──▶ guard
       ├──compact──▶ compact ──▶ think          │
       │                │                       │
       └──stop──▶ finish ◀──done────────────────┘ stop（用户拒绝）
@@ -14,6 +14,8 @@ from typing import Any
 
 from pocketflow import AsyncFlow
 
+from pocketagent.attachments import message_display
+from pocketagent.changes import ChangeTracker
 from pocketagent.config import Settings
 from pocketagent.context import AgentContext, TurnState
 from pocketagent.events import EventBus, EventType
@@ -25,6 +27,7 @@ from pocketagent.session import Session, SessionStore
 from pocketagent.tools import default_tool_registry
 from pocketagent.tools.base import ToolContext, ToolRegistry
 from pocketagent.trace import JsonlTracer
+from pocketagent.usage import UsageLog, UsageMetadata, UsageRecordingProvider
 
 INTERRUPTED_TOOL_RESULT = "用户中断了这一轮，这个调用没有执行完"
 
@@ -41,6 +44,7 @@ def build_agent_flow() -> AsyncFlow:
     guard - "stop" >> finish
     compact >> think
     think - "tool_calls" >> run_tools
+    think - "continue" >> guard
     think - "done" >> finish
     run_tools - "next" >> guard
     run_tools - "stop" >> finish
@@ -67,9 +71,10 @@ def close_dangling_tool_calls(messages: list[dict[str, Any]]) -> None:
 
 
 class Agent:
-    def __init__(self, context: AgentContext, session_store: SessionStore) -> None:
+    def __init__(self, context: AgentContext, session_store: SessionStore, usage_log: UsageLog | None = None) -> None:
         self.context = context
         self.session_store = session_store
+        self.usage_log = usage_log
         self.flow = build_agent_flow()
         self.refresh_system_prompt()
 
@@ -90,11 +95,19 @@ class Agent:
         else:
             messages.insert(0, system_message)
 
-    async def run_turn(self, user_text: str) -> str:
+    async def run_turn(self, user_input: str | dict[str, Any]) -> str:
+        """user_input 是一句话，或者 attachments.build_user_message 拼好的带附件的 user 消息。"""
         context = self.context
         context.turn = TurnState()
-        context.messages.append({"role": "user", "content": user_text})
-        await context.events.emit(EventType.TURN_START, session_id=self.session.id, user_text=user_text)
+        message = _as_user_message(user_input)
+        context.messages.append(message)
+        display = message_display(message)
+        await context.events.emit(
+            EventType.TURN_START,
+            session_id=self.session.id,
+            user_text=display["text"],
+            attachments=display["attachments"],
+        )
         try:
             await self.flow.run_async(context)
         except (asyncio.CancelledError, KeyboardInterrupt):
@@ -112,10 +125,44 @@ class Agent:
             )
         return context.turn.final_text
 
+    async def interject(self, user_input: str | dict[str, Any]) -> None:
+        """agent 干活时用户插话：下一次调用模型前放进对话，模型就能看到。"""
+        message = _as_user_message(user_input)
+        self.context.pending_interjections.append(message)
+        display = message_display(message)
+        await self.context.events.emit(
+            EventType.INTERJECTION_QUEUED, user_text=display["text"], attachments=display["attachments"]
+        )
+
     async def compact(self) -> None:
         """手动压缩（/compact），复用 CompactNode 的重试和 trace。"""
         await AsyncFlow(start=CompactNode()).run_async(self.context)
         self.session_store.save(self.session)
+
+    def replace_provider(self, provider: LLMProvider) -> None:
+        """换模型时用：新的 provider 同样包上用量记录。"""
+        self.context.provider = _with_usage_recording(provider, self.usage_log, self.context.settings, self.session)
+
+
+def _as_user_message(user_input: str | dict[str, Any]) -> dict[str, Any]:
+    if isinstance(user_input, str):
+        return {"role": "user", "content": user_input}
+    return user_input
+
+
+def _with_usage_recording(
+    provider: LLMProvider, usage_log: UsageLog | None, settings: Settings, session: Session
+) -> LLMProvider:
+    if usage_log is None:
+        return provider
+    metadata = UsageMetadata(
+        model=settings.model,
+        model_name=settings.model_profile_name,
+        model_id=settings.model_profile_id,
+        session_id=session.id,
+        workspace=str(settings.workspace),
+    )
+    return UsageRecordingProvider(provider, usage_log, metadata)
 
 
 def create_agent(
@@ -125,29 +172,43 @@ def create_agent(
     tools: ToolRegistry | None = None,
     session: Session | None = None,
     enable_trace: bool = True,
+    record_usage: bool = True,
 ) -> Agent:
-    """组装一个 Agent。provider / tools 留空就用默认的（OpenAI 兼容接口 + 内置工具）。"""
+    """组装一个 Agent。provider / tools 留空就用默认的（OpenAI 兼容接口 + 内置工具）。
+
+    同时接好：trace（~/.pocketagent/traces）、用量记录（usage.jsonl）、
+    文件变更跟踪（checkpoints/<会话>）、附件目录（attachments/<会话>，只读工具可以读）。
+    """
     session_store = SessionStore(settings.sessions_dir)
     if session is None:
         session = session_store.new_session(settings.workspace)
     session.model_profile = settings.model_profile_id
+    session.approval_mode = settings.approval_mode.value
     if provider is None:
         provider = create_provider(settings)
+    usage_log = UsageLog(settings.usage_log_path) if record_usage else None
 
     events = EventBus()
     if enable_trace:
         events.subscribe(JsonlTracer(settings.traces_dir / f"{session.id}.jsonl"))
 
+    tool_context = ToolContext(
+        workspace=settings.workspace,
+        shell_timeout_seconds=settings.shell_timeout_seconds,
+        extra_read_dirs=[settings.attachments_dir / session.id],
+        write_observer=ChangeTracker(settings.checkpoints_dir / session.id, settings.workspace),
+    )
     context = AgentContext(
         settings=settings,
-        provider=provider,
+        provider=_with_usage_recording(provider, usage_log, settings, session),
         tools=tools or default_tool_registry(),
-        tool_context=ToolContext(workspace=settings.workspace, shell_timeout_seconds=settings.shell_timeout_seconds),
+        tool_context=tool_context,
         permissions=PermissionGate(mode=settings.approval_mode, approver=approver),
         events=events,
         session=session,
+        attachments_root=settings.attachments_dir,
     )
-    return Agent(context, session_store)
+    return Agent(context, session_store, usage_log)
 
 
 def create_provider(settings: Settings) -> LLMProvider:

@@ -7,6 +7,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from pocketagent.attachments import message_display
+
 
 def _now_text() -> str:
     return datetime.now().isoformat(timespec="seconds")
@@ -20,13 +22,25 @@ class Session:
     updated_at: str = field(default_factory=_now_text)
     # 用的是配置文件里哪个模型（id），续跑时接着用它
     model_profile: str | None = None
+    # 审批模式，续跑时接着用
+    approval_mode: str | None = None
+    # 用户改过的标题；没改就用第一句话
+    title: str | None = None
+    # 谁建的：空是用户，"automation:<id>" 是定时任务
+    source: str | None = None
     messages: list[dict[str, Any]] = field(default_factory=list)
 
     def first_user_text(self) -> str:
         for message in self.messages:
-            if message.get("role") == "user" and isinstance(message.get("content"), str):
-                return message["content"]
+            if message.get("role") == "user":
+                return message_display(message)["text"]
         return ""
+
+    def display_title(self) -> str:
+        if self.title:
+            return self.title
+        first_text = self.first_user_text().strip()
+        return first_text.splitlines()[0][:80] if first_text else "新任务"
 
 
 class SessionStore:
@@ -52,6 +66,12 @@ class SessionStore:
     def load(self, session_id: str) -> Session:
         data = json.loads(self.path_for(session_id).read_text(encoding="utf-8"))
         return Session(**data)
+
+    def exists(self, session_id: str) -> bool:
+        return self.path_for(session_id).is_file()
+
+    def delete(self, session_id: str) -> None:
+        self.path_for(session_id).unlink(missing_ok=True)
 
     def list_sessions(self, workspace: Path | None = None) -> list[Session]:
         """按最近更新排序；给了 workspace 就只要这个目录下的会话。"""

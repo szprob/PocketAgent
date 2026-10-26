@@ -8,7 +8,8 @@ version = "0.1.0"
 description = "基于 PocketFlow 的编程 agent（类 Codex / Claude Code）"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = ["openai>=1.40"]
+# httpx 是 openai 本来就带的依赖，查余额时直接用
+dependencies = ["openai>=1.40", "httpx"]
 
 [project.optional-dependencies]
 web = ["aiohttp>=3.9"]

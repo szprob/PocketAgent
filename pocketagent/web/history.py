@@ -1,8 +1,9 @@
-"""把存下来的 OpenAI 格式消息转成前端渲染用的条目，用于刷新页面或切换会话时重放历史。"""
+"""把存下来的消息转成前端渲染用的条目，用于刷新页面或切换任务时重放历史。"""
 
 import json
 from typing import Any
 
+from pocketagent.attachments import message_display
 from pocketagent.compaction import SUMMARY_PREFIX
 from pocketagent.tools.base import ToolRegistry
 
@@ -21,13 +22,30 @@ def _tool_call_item(tool_call: dict[str, Any], tools: ToolRegistry) -> dict[str,
     raw_arguments = function.get("arguments", "")
     tool = tools.get(name)
     summary = tool.describe(_parse_arguments(raw_arguments)) if tool else raw_arguments
-    return {"kind": "tool", "call_id": tool_call.get("id"), "name": name, "summary": summary, "result": None}
+    return {
+        "kind": "tool",
+        "call_id": tool_call.get("id"),
+        "name": name,
+        "summary": summary,
+        "result": None,
+        "is_error": False,
+        "denied": False,
+        "review": None,
+    }
 
 
-def _user_item(content: str) -> dict[str, Any]:
-    if content.startswith(SUMMARY_PREFIX):
-        return {"kind": "summary", "text": content[len(SUMMARY_PREFIX) :]}
-    return {"kind": "user", "text": content}
+def _user_item(message: dict[str, Any]) -> dict[str, Any]:
+    display = message_display(message)
+    if display["text"].startswith(SUMMARY_PREFIX):
+        return {"kind": "summary", "text": display["text"][len(SUMMARY_PREFIX) :]}
+    return {"kind": "user", "text": display["text"], "attachments": display["attachments"]}
+
+
+def _fill_tool_result(item: dict[str, Any], message: dict[str, Any]) -> None:
+    item["result"] = message.get("content") or ""
+    item["is_error"] = bool(message.get("_is_error"))
+    item["denied"] = bool(message.get("_denied"))
+    item["review"] = message.get("_review")
 
 
 def history_items(messages: list[dict[str, Any]], tools: ToolRegistry) -> list[dict[str, Any]]:
@@ -35,10 +53,10 @@ def history_items(messages: list[dict[str, Any]], tools: ToolRegistry) -> list[d
     tool_items_by_call_id: dict[str, dict[str, Any]] = {}
     for message in messages:
         role = message.get("role")
-        content = message.get("content") or ""
         if role == "user":
-            items.append(_user_item(content))
+            items.append(_user_item(message))
         elif role == "assistant":
+            content = message.get("content") or ""
             if content:
                 items.append({"kind": "assistant", "text": content})
             for tool_call in message.get("tool_calls") or []:
@@ -48,5 +66,5 @@ def history_items(messages: list[dict[str, Any]], tools: ToolRegistry) -> list[d
         elif role == "tool":
             item = tool_items_by_call_id.get(message.get("tool_call_id"))
             if item is not None:
-                item["result"] = content
+                _fill_tool_result(item, message)
     return items

@@ -5,10 +5,10 @@
 
 import json
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 
 class ToolKind(str, Enum):
@@ -29,21 +29,42 @@ class PathOutsideWorkspaceError(ValueError):
     pass
 
 
+class WriteObserver(Protocol):
+    """改文件前要通知的对象（见 changes.ChangeTracker）。"""
+
+    def remember_original(self, path: Path) -> None: ...
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    return path == root or root in path.parents
+
+
 @dataclass
 class ToolContext:
     workspace: Path
     shell_timeout_seconds: int = 120
+    # 只读工具额外能读的目录，例如这个会话的附件目录
+    extra_read_dirs: list[Path] = field(default_factory=list)
+    # 写文件前通知它记下原始内容，右侧栏的「变更」靠这个
+    write_observer: WriteObserver | None = None
 
-    def resolve_path(self, raw_path: str) -> Path:
-        """相对路径按工作目录解析；骨架阶段所有文件工具都限制在工作目录内。"""
+    def resolve_path(self, raw_path: str, for_write: bool = False) -> Path:
+        """相对路径按工作目录解析。写只能写工作目录内；读还可以读 extra_read_dirs。"""
         path = Path(raw_path).expanduser()
         if not path.is_absolute():
             path = self.workspace / path
         resolved = path.resolve()
         workspace = self.workspace.resolve()
-        if resolved != workspace and workspace not in resolved.parents:
+        allowed_roots = [workspace]
+        if not for_write:
+            allowed_roots += [directory.resolve() for directory in self.extra_read_dirs]
+        if not any(_is_within(resolved, root) for root in allowed_roots):
             raise PathOutsideWorkspaceError(f"路径不在工作目录 {workspace} 内：{raw_path}")
         return resolved
+
+    def before_write(self, path: Path) -> None:
+        if self.write_observer is not None:
+            self.write_observer.remember_original(path)
 
     def display_path(self, path: Path) -> str:
         try:

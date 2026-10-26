@@ -5,6 +5,7 @@ PocketFlow 只要求 shared 是个对象、原样传给每个节点；这里用 
 """
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from pocketagent.compaction import estimate_tokens
@@ -35,9 +36,13 @@ class AgentContext:
     permissions: PermissionGate
     events: EventBus
     session: Session
+    # 用户上传的附件放在这里，发给模型前从这里读图片
+    attachments_root: Path | None = None
     turn: TurnState = field(default_factory=TurnState)
     # 最近一次模型调用报告的 prompt token 数，比字符估算准
     last_prompt_tokens: int = 0
+    # agent 干活时用户插的话（完整的 user 消息），下一次调用模型前由 GuardNode 放进对话
+    pending_interjections: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def messages(self) -> list[dict[str, Any]]:

@@ -61,7 +61,7 @@ class WriteFileTool(Tool):
         return str(arguments.get("path", ""))
 
     def preview(self, arguments: dict[str, Any], context: ToolContext) -> str:
-        path = context.resolve_path(arguments["path"])
+        path = context.resolve_path(arguments["path"], for_write=True)
         new_text = arguments["content"]
         if not path.exists():
             return f"新建 {context.display_path(path)}（{len(new_text.splitlines())} 行）"
@@ -69,8 +69,9 @@ class WriteFileTool(Tool):
         return _unified_diff(old_text, new_text, context.display_path(path))
 
     async def run(self, arguments: dict[str, Any], context: ToolContext) -> ToolResult:
-        path = context.resolve_path(arguments["path"])
+        path = context.resolve_path(arguments["path"], for_write=True)
         existed = path.exists()
+        context.before_write(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(arguments["content"], encoding="utf-8")
         action = "覆盖" if existed else "新建"
@@ -99,7 +100,7 @@ class EditFileTool(Tool):
         return str(arguments.get("path", ""))
 
     def preview(self, arguments: dict[str, Any], context: ToolContext) -> str:
-        path = context.resolve_path(arguments["path"])
+        path = context.resolve_path(arguments["path"], for_write=True)
         old_text = path.read_text(encoding="utf-8", errors="replace")
         new_text, error = _apply_edit(old_text, arguments)
         if error:
@@ -107,13 +108,14 @@ class EditFileTool(Tool):
         return _unified_diff(old_text, new_text, context.display_path(path))
 
     async def run(self, arguments: dict[str, Any], context: ToolContext) -> ToolResult:
-        path = context.resolve_path(arguments["path"])
+        path = context.resolve_path(arguments["path"], for_write=True)
         if not path.is_file():
             return ToolResult(f"文件不存在：{arguments['path']}", is_error=True)
         old_text = path.read_text(encoding="utf-8")
         new_text, error = _apply_edit(old_text, arguments)
         if error:
             return ToolResult(error, is_error=True)
+        context.before_write(path)
         path.write_text(new_text, encoding="utf-8")
         return ToolResult(f"已修改 {context.display_path(path)}")
 

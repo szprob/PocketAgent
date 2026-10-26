@@ -8,134 +8,191 @@
 </head>
 <body>
   <div class="app" id="app">
+    <!-- 左侧栏 -->
     <aside class="sidebar">
-      <div class="brand">PocketAgent</div>
-      <button id="new-session" class="primary-button" type="button">＋ 新会话</button>
-      <div class="sidebar-label">这个目录的会话</div>
-      <nav id="session-list" class="session-list"></nav>
+      <div class="sidebar-top">
+        <button class="icon-button" type="button" data-action="toggle-sidebar" data-icon="panelLeft" title="收起侧栏" aria-label="收起侧栏"></button>
+        <span class="brand">PocketAgent</span>
+      </div>
+      <nav class="sidebar-nav">
+        <button class="nav-item" id="nav-new-task" type="button" data-icon="newTask"><span>新任务</span></button>
+        <button class="nav-item" id="nav-automations" type="button" data-icon="clock"><span>自动化</span></button>
+      </nav>
+      <div class="sidebar-scroll">
+        <div class="sidebar-section-header">
+          <span>工作区</span>
+          <button class="icon-button small" id="add-workspace" type="button" data-icon="plus" title="添加工作区" aria-label="添加工作区"></button>
+        </div>
+        <div class="workspace-list" id="workspace-list"></div>
+        <div class="sidebar-section-header"><span>最近任务</span></div>
+        <div class="recent-list" id="recent-list"></div>
+      </div>
+      <div class="account">
+        <button class="account-button" id="account-button" type="button" title="账户和用量">
+          <span class="avatar" id="avatar"></span>
+          <span class="account-name" id="account-name"></span>
+        </button>
+        <button class="icon-button" id="open-settings" type="button" data-icon="settings" title="设置" aria-label="设置"></button>
+      </div>
     </aside>
     <div class="sidebar-backdrop" id="sidebar-backdrop"></div>
 
+    <!-- 中间 -->
     <main class="main">
-      <header class="topbar">
-        <button id="toggle-sidebar" class="icon-button" type="button" title="会话列表" aria-label="会话列表">☰</button>
-        <div class="topbar-info">
-          <div id="workspace" class="workspace"></div>
-        </div>
-        <label class="picker" title="当前会话用的模型">
-          <span>模型</span>
-          <select id="model-select"></select>
-        </label>
-        <label class="picker" title="审批模式">
-          <span>审批</span>
-          <select id="mode-select"></select>
-        </label>
-        <button id="compact-button" class="ghost-button" type="button" title="把历史压缩成摘要，腾出上下文">压缩</button>
-        <button id="settings-button" class="icon-button" type="button" title="设置：模型、密钥、默认审批模式" aria-label="设置">⚙</button>
-      </header>
-
-      <section id="transcript" class="transcript" aria-live="polite">
-        <div class="transcript-inner" id="transcript-inner">
-          <div id="empty-hint" class="empty-hint"></div>
+      <section class="view" id="new-task-view">
+        <header class="view-header">
+          <button class="icon-button sidebar-opener" type="button" data-action="toggle-sidebar" data-icon="panelLeft" title="展开侧栏" aria-label="展开侧栏"></button>
+          <div class="header-spacer"></div>
+        </header>
+        <div class="new-task-body">
+          <h1 class="greeting" id="greeting">今天要做点什么？</h1>
+          <div id="new-task-composer"></div>
+          <div class="new-task-hint" id="new-task-hint"></div>
         </div>
       </section>
 
-      <footer class="composer">
-        <div id="connection-banner" class="connection-banner hidden">连接已断开，正在重连…</div>
-        <div class="composer-box">
-          <textarea id="input" rows="1" placeholder="让 agent 做点什么…  Enter 发送，Shift+Enter 换行"></textarea>
-          <button id="send-button" class="send-button" type="button">发送</button>
+      <section class="view hidden" id="chat-view">
+        <header class="view-header">
+          <button class="icon-button sidebar-opener" type="button" data-action="toggle-sidebar" data-icon="panelLeft" title="展开侧栏" aria-label="展开侧栏"></button>
+          <div class="view-title" id="chat-title"></div>
+          <div class="menu-wrapper">
+            <button class="icon-button" id="chat-menu-button" type="button" data-icon="more" title="更多" aria-label="更多"></button>
+            <div class="menu hidden" id="chat-menu">
+              <button type="button" data-action="rename">重命名</button>
+              <button type="button" data-action="compact">压缩上下文</button>
+              <button type="button" data-action="delete" class="danger-text">删除任务</button>
+            </div>
+          </div>
+          <div class="header-spacer"></div>
+          <button class="icon-button" id="toggle-right-panel" type="button" data-icon="panelRight" title="显示 / 隐藏右侧栏" aria-label="显示或隐藏右侧栏"></button>
+        </header>
+        <div class="transcript" id="transcript">
+          <div class="transcript-inner" id="transcript-inner"></div>
         </div>
-        <div class="composer-status" id="status-text">空闲</div>
-      </footer>
+        <div class="chat-bottom">
+          <div class="connection-banner hidden" id="connection-banner">连接已断开，正在重连…</div>
+          <div class="pending-inputs hidden" id="pending-inputs"></div>
+          <div id="chat-composer"></div>
+        </div>
+      </section>
+
+      <section class="view hidden" id="automations-view">
+        <header class="view-header">
+          <button class="icon-button sidebar-opener" type="button" data-action="toggle-sidebar" data-icon="panelLeft" title="展开侧栏" aria-label="展开侧栏"></button>
+          <div class="view-title">自动化</div>
+          <div class="header-spacer"></div>
+          <button class="primary-button" id="new-automation" type="button" data-icon="plus"><span>新建自动化</span></button>
+        </header>
+        <div class="automations-body">
+          <p class="muted">按计划在工作区里自动开一个任务、交给 agent 去做。只在 PocketAgent 服务开着时运行，错过的计划会在下次启动后补跑一次。</p>
+          <div class="automation-list" id="automation-list"></div>
+        </div>
+      </section>
     </main>
+
+    <!-- 右侧栏 -->
+    <aside class="right-panel">
+      <section class="panel-card" id="overview-card"></section>
+      <section class="panel-section">
+        <div class="panel-section-title">
+          <span>变更</span><span class="panel-count" id="changes-count"></span>
+          <span class="header-spacer"></span>
+          <button class="icon-button small" id="refresh-changes" type="button" data-icon="refresh" title="刷新" aria-label="刷新变更"></button>
+        </div>
+        <div id="change-list"></div>
+      </section>
+      <section class="panel-section">
+        <div class="panel-section-title"><span>产出</span></div>
+        <div id="output-list"></div>
+      </section>
+    </aside>
   </div>
 
+  <!-- 设置 -->
   <div class="modal hidden" id="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
-    <div class="modal-panel">
+    <div class="modal-panel settings-panel">
       <header class="modal-header">
         <h2 id="settings-title">设置</h2>
-        <button id="settings-close" class="icon-button" type="button" aria-label="关闭">✕</button>
+        <button class="icon-button" id="settings-close" type="button" data-icon="close" aria-label="关闭"></button>
       </header>
-      <div class="modal-body">
-        <section>
-          <div class="settings-section-title">模型</div>
-          <div class="model-layout">
-            <div class="model-sidebar">
-              <div id="model-list" class="model-list"></div>
-              <button id="add-model" class="ghost-button full-width" type="button">＋ 添加模型</button>
-            </div>
-            <form id="model-form" class="model-form" autocomplete="off">
-              <div id="model-form-empty" class="model-form-empty">还没有模型，点「添加模型」</div>
-              <div id="model-form-fields">
-                <label class="field">
-                  <span>名称</span>
-                  <input name="name" type="text" placeholder="界面上显示的名字，如 DS 4.1 Flash">
-                </label>
-                <label class="field">
-                  <span>模型名 *</span>
-                  <input name="model" type="text" placeholder="发给接口的 model 参数，如 deepseek-v4.1-flash">
-                </label>
-                <label class="field">
-                  <span>接口地址</span>
-                  <input name="base_url" type="text" placeholder="OpenAI 兼容接口，如 https://your-gateway.example.com/v1">
-                </label>
-                <label class="field">
-                  <span>API Key</span>
-                  <input name="api_key" type="password" placeholder="sk-...">
-                  <span class="field-hint" id="api-key-hint"></span>
-                </label>
-                <div class="field-row">
-                  <label class="field">
-                    <span>思考档位</span>
-                    <input name="reasoning_effort" type="text" list="reasoning-options" placeholder="不填就不传">
-                  </label>
-                  <label class="field">
-                    <span>上下文长度（token）</span>
-                    <input name="context_window_tokens" type="number" min="1000" step="1000">
-                  </label>
-                  <label class="field">
-                    <span>温度</span>
-                    <input name="temperature" type="number" min="0" max="2" step="0.1" placeholder="不填用接口默认">
-                  </label>
-                </div>
-                <label class="field">
-                  <span>额外请求参数（JSON）</span>
-                  <textarea name="extra_body" rows="3" placeholder='如 {"chat_template_kwargs": {"enable_thinking": true}}'></textarea>
-                </label>
-                <div class="model-actions">
-                  <button id="test-model" class="ghost-button" type="button">测试连接</button>
-                  <button id="make-default" class="ghost-button" type="button">设为默认</button>
-                  <button id="delete-model" class="ghost-button danger-text" type="button">删除</button>
-                  <span id="test-result" class="test-result"></span>
-                </div>
+      <div class="settings-layout">
+        <nav class="settings-tabs">
+          <button class="settings-tab active" type="button" data-tab="models">模型</button>
+          <button class="settings-tab" type="button" data-tab="general">通用</button>
+          <button class="settings-tab" type="button" data-tab="usage">用量</button>
+        </nav>
+        <div class="settings-content">
+          <div class="settings-page" data-page="models">
+            <div class="model-layout">
+              <div class="model-sidebar">
+                <div id="model-list" class="model-list"></div>
+                <button id="add-model" class="ghost-button full-width" type="button" data-icon="plus"><span>添加模型</span></button>
               </div>
-            </form>
+              <form id="model-form" class="model-form" autocomplete="off">
+                <div id="model-form-empty" class="muted">还没有模型，点「添加模型」</div>
+                <div id="model-form-fields" class="form-fields">
+                  <label class="field"><span>名称</span>
+                    <input name="name" type="text" placeholder="界面上显示的名字，如 DS 4.1 Flash"></label>
+                  <label class="field"><span>模型名 *</span>
+                    <input name="model" type="text" placeholder="发给接口的 model 参数，如 deepseek-v4.1-flash"></label>
+                  <label class="field"><span>接口地址</span>
+                    <input name="base_url" type="text" placeholder="OpenAI 兼容接口，如 https://your-gateway.example.com/v1"></label>
+                  <label class="field"><span>API Key</span>
+                    <input name="api_key" type="password" placeholder="sk-...">
+                    <span class="field-hint" id="api-key-hint"></span></label>
+                  <div class="field-row">
+                    <label class="field"><span>思考档位</span>
+                      <input name="reasoning_effort" type="text" list="reasoning-options" placeholder="不填就不传"></label>
+                    <label class="field"><span>上下文长度（token）</span>
+                      <input name="context_window_tokens" type="number" min="1000" step="1000"></label>
+                    <label class="field"><span>温度</span>
+                      <input name="temperature" type="number" min="0" max="2" step="0.1" placeholder="不填用接口默认"></label>
+                  </div>
+                  <label class="field"><span>额外请求参数（JSON）</span>
+                    <textarea name="extra_body" rows="2" placeholder='如 {"chat_template_kwargs": {"enable_thinking": true}}'></textarea></label>
+                  <label class="checkbox-field"><input type="checkbox" id="supports-images"><span>能看图（上传的图片直接发给模型；不勾就只告诉它文件路径）</span></label>
+                  <div class="model-actions">
+                    <button id="test-model" class="ghost-button" type="button">测试连接</button>
+                    <button id="make-default" class="ghost-button" type="button">设为默认</button>
+                    <button id="delete-model" class="ghost-button danger-text" type="button">删除</button>
+                    <span id="test-result" class="test-result"></span>
+                  </div>
+                </div>
+              </form>
+            </div>
+            <datalist id="reasoning-options">
+              <option value="none"></option><option value="low"></option><option value="medium"></option>
+              <option value="high"></option><option value="max"></option>
+            </datalist>
           </div>
-          <datalist id="reasoning-options">
-            <option value="none"></option>
-            <option value="low"></option>
-            <option value="medium"></option>
-            <option value="high"></option>
-            <option value="max"></option>
-          </datalist>
-        </section>
-        <section>
-          <div class="settings-section-title">通用</div>
-          <div class="field-row">
-            <label class="field">
-              <span>新会话的默认审批模式</span>
-              <select id="default-mode-select"></select>
-            </label>
-            <label class="field">
-              <span>单轮最多调用模型次数</span>
-              <input id="max-steps-input" type="number" min="1" step="1">
-            </label>
+
+          <div class="settings-page hidden" data-page="general">
+            <div class="form-fields">
+              <label class="field"><span>账户名称（左下角显示）</span>
+                <input id="user-name-input" type="text"></label>
+              <div class="field-row">
+                <label class="field"><span>新任务的默认权限</span>
+                  <select id="default-mode-select"></select></label>
+                <label class="field"><span>单轮最多调用模型次数</span>
+                  <input id="max-steps-input" type="number" min="1" step="1"></label>
+              </div>
+              <fieldset class="radio-group">
+                <legend>agent 正在干活时，我又发了一句话</legend>
+                <label class="radio-option"><input type="radio" name="busy-input-mode" value="interject">
+                  <span><strong>插话</strong>：马上放进对话，模型下一步就能看到（适合纠正方向、补充要求）</span></label>
+                <label class="radio-option"><input type="radio" name="busy-input-mode" value="queue">
+                  <span><strong>排队</strong>：等这一轮做完再作为新的一轮执行（适合接着布置下一件事）</span></label>
+              </fieldset>
+              <div class="field-hint" id="config-path"></div>
+            </div>
           </div>
-          <div class="field-hint" id="config-path"></div>
-        </section>
+
+          <div class="settings-page hidden" data-page="usage">
+            <div id="usage-content"></div>
+          </div>
+        </div>
       </div>
-      <footer class="modal-footer">
+      <footer class="modal-footer" id="settings-footer">
         <span id="settings-message" class="settings-message"></span>
         <button id="settings-cancel" class="ghost-button" type="button">取消</button>
         <button id="settings-save" class="primary-button" type="button">保存</button>
@@ -143,6 +200,58 @@
     </div>
   </div>
 
-  <script src="static/app.js"></script>
+  <!-- 添加工作区 -->
+  <div class="modal hidden" id="workspace-modal" role="dialog" aria-modal="true" aria-labelledby="workspace-modal-title">
+    <div class="modal-panel small-panel">
+      <header class="modal-header"><h2 id="workspace-modal-title">添加工作区</h2></header>
+      <div class="modal-body">
+        <label class="field"><span>本机目录（绝对路径，可以用 ~）</span>
+          <input id="workspace-path-input" type="text" placeholder="~/projects/foo"></label>
+        <div class="error-text" id="workspace-error"></div>
+      </div>
+      <footer class="modal-footer">
+        <button id="workspace-cancel" class="ghost-button" type="button">取消</button>
+        <button id="workspace-save" class="primary-button" type="button">添加</button>
+      </footer>
+    </div>
+  </div>
+
+  <!-- 自动化编辑 -->
+  <div class="modal hidden" id="automation-modal" role="dialog" aria-modal="true" aria-labelledby="automation-modal-title">
+    <div class="modal-panel">
+      <header class="modal-header"><h2 id="automation-modal-title">新建自动化</h2></header>
+      <form class="modal-body form-fields" id="automation-form" autocomplete="off">
+        <label class="field"><span>名称</span><input name="name" type="text" placeholder="如：每日巡检"></label>
+        <label class="field"><span>要做的事（每次运行都发给 agent 的话）</span>
+          <textarea name="prompt" rows="4" placeholder="如：看看最近一天的提交，跑一遍测试，有失败就修，最后总结做了什么"></textarea></label>
+        <div class="field-row">
+          <label class="field"><span>工作区</span><select name="workspace"></select></label>
+          <label class="field"><span>模型</span><select name="model_id"></select></label>
+          <label class="field"><span>权限</span><select name="approval_mode"></select></label>
+        </div>
+        <fieldset class="radio-group">
+          <legend>计划</legend>
+          <label class="radio-option inline"><input type="radio" name="schedule_kind" value="daily"><span>每天定时</span></label>
+          <label class="radio-option inline"><input type="radio" name="schedule_kind" value="interval"><span>每隔一段时间</span></label>
+          <div class="schedule-fields" id="daily-fields">
+            <input name="daily_time" type="time">
+            <div class="weekday-picker" id="weekday-picker"></div>
+          </div>
+          <div class="schedule-fields hidden" id="interval-fields">
+            <span>每</span><input name="interval_minutes" type="number" min="5" step="5"><span>分钟</span>
+          </div>
+        </fieldset>
+        <label class="checkbox-field"><input type="checkbox" name="enabled"><span>启用</span></label>
+        <div class="field-hint">没人在场审批：AI 自动审批不放行的操作会等你 10 分钟，没人处理就拒绝。</div>
+      </form>
+      <footer class="modal-footer">
+        <span id="automation-message" class="settings-message"></span>
+        <button id="automation-cancel" class="ghost-button" type="button">取消</button>
+        <button id="automation-save" class="primary-button" type="button">保存</button>
+      </footer>
+    </div>
+  </div>
+
+  <script type="module" src="static/js/main.js"></script>
 </body>
 </html>

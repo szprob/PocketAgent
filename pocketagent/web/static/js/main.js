@@ -1,0 +1,243 @@
+// 入口：页面路由（#/new、#/task/<id>、#/automations）、把各模块接起来、侧栏和右侧栏的开关。
+
+import { sendJson } from "./api.js";
+import { closeEditor, initAutomations, isAutomationEditorOpen, showAutomations } from "./automations.js";
+import { initChat, interrupt, isChatRunning, leaveTask, openTask, updateChatOptions } from "./chat.js";
+import { Composer } from "./composer.js";
+import { el, icon, show } from "./dom.js";
+import { initRightPanel, setRightPanelVisible, showTaskInPanel } from "./rightpanel.js";
+import { closeSettings, initSettings, isSettingsOpen, openSettings } from "./settings.js";
+import { initSidebar, setActiveView } from "./sidebar.js";
+import { loadPreference, on, reloadInfo, reloadTasks, savePreference, state } from "./state.js";
+
+const TASK_POLL_MILLISECONDS = 5000;
+
+const views = {
+  new: document.getElementById("new-task-view"),
+  chat: document.getElementById("chat-view"),
+  automations: document.getElementById("automations-view"),
+};
+const app = document.getElementById("app");
+let newTaskComposer = null;
+
+// ===================== 路由 =====================
+
+function navigate(hash) {
+  if (window.location.hash === hash) {
+    route();
+  } else {
+    window.location.hash = hash;
+  }
+}
+
+function parseRoute() {
+  const hash = window.location.hash.replace(/^#/, "");
+  const [path, query] = hash.split("?");
+  const params = new URLSearchParams(query || "");
+  const taskMatch = path.match(/^\/task\/(.+)$/);
+  if (taskMatch) {
+    return { view: "chat", taskId: decodeURIComponent(taskMatch[1]) };
+  }
+  if (path === "/automations") {
+    return { view: "automations" };
+  }
+  return { view: "new", workspace: params.get("workspace") };
+}
+
+function showView(view) {
+  for (const [name, element] of Object.entries(views)) {
+    show(element, name === view);
+  }
+  app.classList.toggle("in-task", view === "chat");
+  setActiveView(view === "chat" ? "task" : view);
+  closeMobileSidebar();
+}
+
+function route() {
+  const target = parseRoute();
+  if (target.view !== "chat") {
+    leaveTask();
+  }
+  if (target.view === "chat") {
+    openTask(target.taskId, pendingFirstMessages.get(target.taskId));
+    pendingFirstMessages.delete(target.taskId);
+    showView("chat");
+    showTaskInPanel(target.taskId);
+  } else if (target.view === "automations") {
+    showView("automations");
+    document.title = "自动化 · PocketAgent";
+    showAutomations();
+  } else {
+    showView("new");
+    document.title = "新任务 · PocketAgent";
+    prepareNewTask(target.workspace);
+  }
+}
+
+// ===================== 新任务页 =====================
+
+// 新任务页发的第一句话：建好任务、跳到任务页、连上之后再发
+const pendingFirstMessages = new Map();
+
+function initNewTask() {
+  newTaskComposer = new Composer(document.getElementById("new-task-composer"), {
+    kind: "new",
+    placeholder: "描述你要做的事，比如「看看这个仓库是做什么的」…  Enter 发送",
+    onSubmit: startNewTask,
+  });
+}
+
+function prepareNewTask(workspacePath) {
+  const info = state.info;
+  document.getElementById("greeting").textContent = `${info.user_name}，今天要做点什么？`;
+  newTaskComposer.setModes(info.modes);
+  newTaskComposer.setMode(info.default_mode);
+  newTaskComposer.setModels(info.models, info.fallback_model);
+  newTaskComposer.setModel(info.default_model);
+  newTaskComposer.setWorkspaces(info.workspaces, workspacePath || info.default_workspace);
+  const hint = document.getElementById("new-task-hint");
+  hint.replaceChildren();
+  if (info.models.length === 0) {
+    const settingsLink = el("button", "link-button", "去设置里添加");
+    settingsLink.type = "button";
+    settingsLink.addEventListener("click", () => openSettings("models"));
+    hint.append("还没配置模型，", settingsLink);
+  }
+  newTaskComposer.focus();
+}
+
+async function startNewTask({ text, files }) {
+  let created;
+  try {
+    created = await sendJson("api/sessions", "POST", {
+      workspace: newTaskComposer.getWorkspace(),
+      model_id: newTaskComposer.getModel(),
+      mode: newTaskComposer.getMode(),
+    });
+  } catch (error) {
+    window.alert(`新建任务失败：${error.message}`);
+    return false;
+  }
+  pendingFirstMessages.set(created.id, { text, files });
+  navigate(`#/task/${encodeURIComponent(created.id)}`);
+  return true;
+}
+
+// ===================== 侧栏 / 右侧栏开关 =====================
+
+function isMobileLayout() {
+  return window.matchMedia("(max-width: 860px)").matches;
+}
+
+function toggleSidebar() {
+  if (isMobileLayout()) {
+    app.classList.toggle("sidebar-open");
+    return;
+  }
+  const hidden = !app.classList.contains("sidebar-hidden");
+  app.classList.toggle("sidebar-hidden", hidden);
+  savePreference("sidebarHidden", hidden);
+}
+
+function closeMobileSidebar() {
+  app.classList.remove("sidebar-open");
+}
+
+function bindLayoutControls() {
+  app.classList.toggle("sidebar-hidden", loadPreference("sidebarHidden", false));
+  // 手机上右侧栏是抽屉，默认收起，也不改电脑上记住的偏好
+  if (isMobileLayout()) {
+    setRightPanelVisible(false, { remember: false });
+  } else {
+    setRightPanelVisible(loadPreference("rightPanel", true));
+  }
+  for (const toggle of document.querySelectorAll('[data-action="toggle-sidebar"]')) {
+    toggle.addEventListener("click", toggleSidebar);
+  }
+  // 手机上点遮罩：收起左侧栏和右侧抽屉
+  document.getElementById("sidebar-backdrop").addEventListener("click", () => {
+    closeMobileSidebar();
+    setRightPanelVisible(false, { remember: false });
+  });
+  // 窗口缩到手机宽度时右侧栏变成抽屉，先收起来，免得盖住对话
+  window.matchMedia("(max-width: 860px)").addEventListener("change", (query) => {
+    if (query.matches) {
+      setRightPanelVisible(false, { remember: false });
+    } else {
+      setRightPanelVisible(loadPreference("rightPanel", true), { remember: false });
+    }
+  });
+  document.getElementById("toggle-right-panel").addEventListener("click", () => {
+    setRightPanelVisible(app.classList.contains("right-panel-hidden"), { remember: !isMobileLayout() });
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") {
+      return;
+    }
+    if (isSettingsOpen()) {
+      closeSettings();
+    } else if (isAutomationEditorOpen()) {
+      closeEditor();
+    } else if (isChatRunning()) {
+      interrupt();
+    }
+  });
+}
+
+// ===================== 启动 =====================
+
+// 页面里静态写的按钮只带 data-icon，图标在这里统一补上
+function fillStaticIcons() {
+  for (const element of document.querySelectorAll("[data-icon]")) {
+    element.prepend(icon(element.dataset.icon));
+  }
+}
+
+function onInfoChanged(info) {
+  updateChatOptions(info);
+  if (parseRoute().view === "new") {
+    prepareNewTask(newTaskComposer.getWorkspace());
+  }
+}
+
+function startTaskPolling() {
+  // 侧栏的运行中标记、自动化跑出来的新任务靠轮询刷新
+  setInterval(() => {
+    if (document.visibilityState === "visible") {
+      reloadTasks().catch(() => {});
+    }
+  }, TASK_POLL_MILLISECONDS);
+}
+
+async function init() {
+  fillStaticIcons();
+  state.expandedWorkspaces = new Set(loadPreference("expandedWorkspaces", []));
+  initSidebar({
+    onNewTask: (workspace) => navigate(workspace ? `#/new?workspace=${encodeURIComponent(workspace)}` : "#/new"),
+    onOpenTask: (taskId) => navigate(`#/task/${encodeURIComponent(taskId)}`),
+    onAutomations: () => navigate("#/automations"),
+    onSettings: (tab) => openSettings(tab),
+  });
+  initChat({ onDeleted: () => navigate("#/new") });
+  initRightPanel();
+  initSettings();
+  initAutomations({ onOpenTask: (taskId) => navigate(`#/task/${encodeURIComponent(taskId)}`) });
+  initNewTask();
+  bindLayoutControls();
+
+  await reloadInfo();
+  if (state.expandedWorkspaces.size === 0 && state.info.workspaces.length > 0) {
+    state.expandedWorkspaces.add(state.info.workspaces[0].path);
+  }
+  await reloadTasks();
+  on("info-changed", onInfoChanged);
+  on("turn-finished", () => reloadTasks());
+  updateChatOptions(state.info);
+  window.addEventListener("hashchange", route);
+  route();
+  startTaskPolling();
+}
+
+init().catch((error) => {
+  document.body.prepend(el("div", "fatal-error", `页面初始化失败：${error.message}`));
+});
