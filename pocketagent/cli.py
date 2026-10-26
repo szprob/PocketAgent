@@ -23,6 +23,7 @@ from pocketagent.permissions import (
     Approver,
     DenyAllApprover,
 )
+from pocketagent.questions import Question, QuestionAnswer
 from pocketagent.session import Session, SessionStore
 
 TOOL_RESULT_PREVIEW_LINES = 4
@@ -165,6 +166,39 @@ class ConsoleApprover:
         if answer in ("a", "always") and request.always_label:
             return ApprovalAnswer.ALLOW_ALWAYS
         return ApprovalAnswer.DENY
+
+    async def ask_questions(self, questions: list[Question]) -> list[QuestionAnswer] | None:
+        """一题一题问：输入编号（多选用逗号隔开），0 自己写，直接回车跳过这一题。"""
+        print(self.style.yellow("\n有几个问题想问你（直接回车跳过这一题）："))
+        answers = []
+        try:
+            for index, question in enumerate(questions, start=1):
+                answers.append(self._ask_one(index, question))
+        except (EOFError, KeyboardInterrupt):
+            return None
+        return answers
+
+    def _ask_one(self, index: int, question: Question) -> QuestionAnswer:
+        header = f"〔{question.header}〕" if question.header else ""
+        print(f"\n{index}. {header}{question.question}" + ("（可多选，用逗号隔开）" if question.multi_select else ""))
+        for number, option in enumerate(question.options, start=1):
+            description = self.style.dim(f" — {option.description}") if option.description else ""
+            print(f"   {number}. {option.label}{description}")
+        print("   0. 其他（自己写）")
+        while True:
+            raw = input("> ").strip()
+            if not raw:
+                return QuestionAnswer()
+            numbers = [part.strip() for part in raw.replace("，", ",").split(",") if part.strip()]
+            if not all(part.isdigit() and 0 <= int(part) <= len(question.options) for part in numbers):
+                print(self.style.yellow(f"输入 0–{len(question.options)} 的编号"))
+                continue
+            if len(numbers) > 1 and not question.multi_select:
+                print(self.style.yellow("这一题只能选一个"))
+                continue
+            selected = [question.options[int(part) - 1].label for part in numbers if part != "0"]
+            other = input("自己写：").strip() if "0" in numbers else ""
+            return QuestionAnswer(selected=selected, other=other)
 
     def _colorize_preview(self, preview: str) -> str:
         colored_lines = []

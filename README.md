@@ -3,7 +3,7 @@
 基于 [PocketFlow](https://github.com/The-Pocket/PocketFlow) 的编程 agent，目标是做成 Codex / Claude Code / WorkBuddy / Qoder 这一类：
 在本地仓库里读代码、改文件、跑命令，用户在旁边审批。
 
-已经能用的：主循环、内置工具（文件、搜索、bash、联网搜索、读网页、技能）、三档权限（含 AI 自动审批）、
+已经能用的：主循环、内置工具（文件、搜索、bash、联网搜索、读网页、技能、向用户提问）、三档权限（含 AI 自动审批）、
 bash 沙箱、工作目录外的访问审批、影子 git 检查点（看变更、撤销、整体恢复）、技能（Agent Skills 标准）、项目记忆、
 流式事件、trace、会话续跑、后台自动压缩上下文、多模型配置（思考档位 / 上下文长度随模型走）、
 附件（图片 / 文件）、插话和排队、token 用量和缓存命中统计、定时自动化，以及命令行和 web 两套界面。
@@ -134,6 +134,13 @@ bash 默认关在沙箱里（macOS 用系统自带的 `sandbox-exec`，Linux 用
 - 重试只针对 429 / 5xx / 连接错误，指数退避加抖动，有 `Retry-After` 就按它等；400 / 401 不重试
 - 回复超出输出上限（`finish_reason=length`）时，截断的工具调用不执行，让模型拆小了重来；纯文字就让它接着写
 
+### 向你提问
+
+需求有歧义、有几种合理做法要你拍板时，agent 会用 `ask_user` 一次问 1–4 个问题，每个问题 2–4 个选项（推荐的放第一个），
+可以单选或多选；每个问题最后都有「其他」，可以自己写。全部选好点提交，也可以跳过让它自己判断（它会在最后说明做了哪些假设）。
+问题卡片刷新页面后还在；命令行里按编号回答，0 是自己写，直接回车跳过。没人能回答的时候（单次执行、自动化等太久），
+它会自己判断着往下做。
+
 ### agent 干活时又发了一句话
 
 在 ⚙ 设置 → 通用里选：
@@ -248,12 +255,13 @@ pocketagent/
   context.py           AgentContext：节点间共享的状态（PocketFlow 的 shared store），含 token 锚点
   config.py            配置文件（多个模型、默认值、工作区、沙箱、技能）和运行时 Settings
   llm/                 模型接口：openai_compat（流式、工具调用拼接、重试）、scripted（测试用假模型）
-  tools/               工具基类 + 注册表；files / search / shell / web / skill
+  tools/               工具基类 + 注册表；files / search / shell / web / skill / ask
   permissions.py       权限模式、审批接口；按工具类别和这次调用碰到的地方（工作目录外、沙箱外、密钥）决定
   sandbox.py           bash 沙箱：macOS Seatbelt 规则、Linux bubblewrap 参数
   checkpoints.py       影子 git 检查点：拍快照、列变更、diff、撤销、整体恢复；嵌套仓库各一个影子仓库
   skills.py            技能：找技能、校验、<available_skills> 清单、<skill_content> 正文、/技能名、压缩时保留
   memory.py            项目记忆：目录位置、系统提示里的说明和索引、列出 / 删除
+  questions.py         ask_user 的问题和回答：校验、整理成给模型看的结果
   frontmatter.py       解析 Markdown 开头 --- 包着的元数据（技能、记忆共用）
   reviewer.py          AI 自动审批：让模型判断一次工具调用能不能放行
   attachments.py       附件存储；消息里只放引用，发给模型前展开（图片缩小 + 编码缓存）
@@ -294,7 +302,7 @@ tests/                 unittest；vendor_pocketflow/ 是上游测试
   工作目录外、密钥目录的审批就自动生效。改了文件不用做什么，检查点拍整个工作区。
 - **加技能**：不用写代码，放一个带 `SKILL.md` 的目录进技能目录。
 - **换模型协议**：实现 `LLMProvider.complete(messages, tools, listener) -> LLMResponse`，传给 `create_agent(provider=...)`。
-- **换界面**：订阅 `agent.context.events`，实现 `Approver.request_approval`。
+- **换界面**：订阅 `agent.context.events`，实现 `Approver.request_approval` 和 `Approver.ask_questions`。
 - **改流程**：在 `nodes.py` 加节点、在 `agent.py` 的 `build_agent_flow` 里连线。子流程可以直接用 PocketFlow 的 Flow 嵌套。
 
 ## 路线图

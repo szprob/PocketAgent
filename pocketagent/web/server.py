@@ -3,11 +3,13 @@
 浏览器 → 服务（WebSocket，JSON）：
   {"type": "user_message", "text": ..., "attachment_ids": [...]}   空闲就开一轮；忙着就按设置插话或排队
   {"type": "approval", "request_id": ..., "answer": "allow_once" | "allow_always" | "deny"}
+  {"type": "question_answer", "request_id": ..., "answers": [{"selected": [...], "other": "..."}, ...] | null（跳过）}
   {"type": "interrupt"} / {"type": "compact"} / {"type": "remove_queued", "index": n}
   {"type": "set_mode", "mode": ...} / {"type": "set_model", "model_id": ...}
 服务 → 浏览器：
   snapshot（连上时的完整历史）、state（是否在跑、模型、审批模式、上下文占用、排队和插话）、
-  event（agent 事件，见 events.py）、approval_request / approval_resolved、returned_inputs（中断时退回的输入）、error
+  event（agent 事件，见 events.py）、approval_request / approval_resolved、question_request / question_resolved、
+  returned_inputs（中断时退回的输入）、error
 
 REST（都在 /api 下）：
   info                                   工作区、模型（含可选思考档位、上下文长度）、审批模式、用户名
@@ -437,6 +439,8 @@ async def _handle_client_message(
                 await web_session.submit(user_message, manager.app_config.busy_input_mode)
         elif message_type == "approval":
             web_session.answer_approval(message["request_id"], message["answer"])
+        elif message_type == "question_answer":
+            web_session.answer_questions(message["request_id"], message.get("answers"))
         elif message_type == "interrupt":
             await web_session.interrupt()
         elif message_type == "compact":

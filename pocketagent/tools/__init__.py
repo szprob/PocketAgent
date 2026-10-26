@@ -7,6 +7,7 @@ from pocketagent.tools.base import (
     ToolRegistry,
     ToolResult,
 )
+from pocketagent.tools.ask import AskUserTool
 from pocketagent.tools.files import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
 from pocketagent.tools.search import GlobTool, GrepTool
 from pocketagent.tools.shell import BashTool
@@ -29,6 +30,7 @@ def default_tool_registry(
         EditFileTool(),
         WriteFileTool(),
         BashTool(sandboxed=sandboxed),
+        AskUserTool(),
     ]
     if web_search is not None:
         tools.append(WebSearchTool(web_search))

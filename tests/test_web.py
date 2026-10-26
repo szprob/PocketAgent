@@ -716,6 +716,62 @@ class WebSkillsMemoryTest(WebTestBase):
         self.assertFalse(saved["memory_enabled"])
 
 
+class WebQuestionsTest(WebTestBase):
+    """ask_user：问题推到浏览器，选完提交，模型拿到回答；刷新页面问题还在；可以跳过。"""
+
+    QUESTIONS = {
+        "questions": [
+            {"question": "用哪个数据库？", "header": "数据库", "options": [{"label": "PostgreSQL"}, {"label": "SQLite"}]},
+            {"question": "要哪些测试？", "multi_select": True, "options": [{"label": "单元"}, {"label": "集成"}]},
+        ]
+    }
+
+    async def _run_until_question(self, socket_client, session_id):
+        await socket_client.receive_json()
+        await socket_client.send_json({"type": "user_message", "text": "搭个后端"})
+        return await self._receive_until(socket_client, is_type("question_request"))
+
+    async def test_answers_reach_the_model(self) -> None:
+        self.responses.extend(
+            [
+                LLMResponse(tool_calls=[tool_call("c1", "ask_user", json.dumps(self.QUESTIONS, ensure_ascii=False))]),
+                LLMResponse(text="收到"),
+            ]
+        )
+        session_id = await self._create_session(mode="ask")
+        async with self._connect(session_id) as socket_client:
+            question = await self._run_until_question(socket_client, session_id)
+            snapshot = await self._get_json(f"/api/sessions/{session_id}")
+            answers = [{"selected": ["SQLite"]}, {"selected": ["单元", "集成"], "other": "还要压测"}]
+            await socket_client.send_json({"type": "question_answer", "request_id": question["request_id"], "answers": answers})
+            await self._receive_until(socket_client, is_type("question_resolved"))
+            await self._receive_until(socket_client, is_event("turn_end"))
+
+        sent = self.scripted_providers[-1].received_messages[-1]
+        tool_message = next(message for message in sent if message["role"] == "tool")
+        self.assertEqual([item["header"] for item in question["questions"]], ["数据库", ""])
+        self.assertEqual(snapshot["pending_questions"][0]["request_id"], question["request_id"])
+        self.assertIn("→ SQLite", tool_message["content"])
+        self.assertIn("单元、集成；用户自己写的：还要压测", tool_message["content"])
+
+    async def test_skipping_tells_the_model_to_decide(self) -> None:
+        self.responses.extend(
+            [
+                LLMResponse(tool_calls=[tool_call("c1", "ask_user", json.dumps(self.QUESTIONS, ensure_ascii=False))]),
+                LLMResponse(text="我自己定了"),
+            ]
+        )
+        session_id = await self._create_session(mode="ask")
+        async with self._connect(session_id) as socket_client:
+            question = await self._run_until_question(socket_client, session_id)
+            await socket_client.send_json({"type": "question_answer", "request_id": question["request_id"], "answers": None})
+            await self._receive_until(socket_client, is_event("turn_end"))
+
+        sent = self.scripted_providers[-1].received_messages[-1]
+        tool_message = next(message for message in sent if message["role"] == "tool")
+        self.assertIn("跳过", tool_message["content"])
+
+
 class StartupTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.directories = TemporaryDirectories()

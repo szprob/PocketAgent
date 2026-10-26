@@ -8,8 +8,9 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
+from pocketagent.questions import Question, QuestionAnswer
 from pocketagent.sandbox import SandboxPolicy, default_secret_dirs
 
 
@@ -60,6 +61,8 @@ class ToolContext:
     memory_dir: Path | None = None
     # 取当前对话的消息（activate_skill 用来判断技能是不是已经加载过）
     history: Callable[[], list[dict[str, Any]]] = field(default=lambda: [])
+    # 向用户提问（ask_user 用）；None 表示没人能回答（单次执行、测试）。返回 None 表示用户跳过
+    ask_user: Callable[[list[Question]], Awaitable[list[QuestionAnswer] | None]] | None = None
 
     def resolve_path(self, raw_path: str) -> Path:
         """相对路径按工作目录解析。工作目录外的路径也能用，要不要确认由权限审批决定（见 path_access）。"""

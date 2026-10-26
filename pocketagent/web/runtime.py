@@ -28,6 +28,7 @@ from pocketagent.config import BUSY_INPUT_INTERJECT, AppConfig, ConfigError, Mod
 from pocketagent.events import Event, EventType, json_default
 from pocketagent.llm.base import LLMProvider, SilentListener
 from pocketagent.permissions import ApprovalAnswer, ApprovalMode, ApprovalRequest
+from pocketagent.questions import Question, QuestionAnswer
 from pocketagent.memory import delete_memory, list_memories, memory_file_path, project_memory_dir, read_index
 from pocketagent.frontmatter import split_frontmatter
 from pocketagent.skills import discover_skills, skill_directories
@@ -67,14 +68,33 @@ class PendingApproval:
         }
 
 
+@dataclass
+class PendingQuestions:
+    """ask_user 发出的一组问题，等浏览器那边选完提交。"""
+
+    request_id: str
+    questions: list[Question]
+    answer: asyncio.Future
+
+    def to_message(self) -> dict[str, Any]:
+        return {
+            "type": "question_request",
+            "request_id": self.request_id,
+            "questions": [question.to_dict() for question in self.questions],
+        }
+
+
 class WebApprover:
-    """Approver 的 web 实现：把请求推给浏览器，等用户点按钮。"""
+    """Approver 的 web 实现：把审批请求和问题推给浏览器，等用户点按钮。"""
 
     def __init__(self, web_session: "WebSession") -> None:
         self.web_session = web_session
 
     async def request_approval(self, request: ApprovalRequest) -> ApprovalAnswer:
         return await self.web_session.wait_for_approval(request)
+
+    async def ask_questions(self, questions: list[Question]) -> list[QuestionAnswer] | None:
+        return await self.web_session.wait_for_answers(questions)
 
 
 class WebSession:
@@ -83,6 +103,7 @@ class WebSession:
         self.agent.context.events.subscribe(self._forward_event)
         self.clients: set[web.WebSocketResponse] = set()
         self.pending_approvals: dict[str, PendingApproval] = {}
+        self.pending_questions: dict[str, PendingQuestions] = {}
         self.background_task: asyncio.Task | None = None
         # 排队等这一轮结束后再跑的 user 消息
         self.queued_messages: list[dict[str, Any]] = []
@@ -154,13 +175,14 @@ class WebSession:
         return {"type": "state", **self.status_fields()}
 
     def snapshot_message(self) -> dict[str, Any]:
-        """新连接进来时发一次：完整历史 + 当前状态 + 还没答复的审批。"""
+        """新连接进来时发一次：完整历史 + 当前状态 + 还没答复的审批和问题。"""
         return {
             "type": "snapshot",
             "session_id": self.id,
             **self.status_fields(),
             "items": history_items(self.agent.context.messages, self.agent.context.tools),
             "pending_approvals": [pending.to_message() for pending in self.pending_approvals.values()],
+            "pending_questions": [pending.to_message() for pending in self.pending_questions.values()],
         }
 
     async def broadcast_state(self) -> None:
@@ -289,6 +311,33 @@ class WebSession:
         if pending is None or pending.answer.done():
             return
         pending.answer.set_result(ApprovalAnswer(answer_name))
+
+    async def wait_for_answers(self, questions: list[Question]) -> list[QuestionAnswer] | None:
+        """问题推给所有标签页，等任意一个提交；自动化任务有超时，没人答就当跳过。"""
+        pending = PendingQuestions(
+            request_id=uuid.uuid4().hex, questions=questions, answer=asyncio.get_running_loop().create_future()
+        )
+        self.pending_questions[pending.request_id] = pending
+        await self.broadcast(pending.to_message())
+        try:
+            if self.approval_timeout_seconds is None:
+                return await pending.answer
+            return await asyncio.wait_for(pending.answer, timeout=self.approval_timeout_seconds)
+        except asyncio.TimeoutError:
+            return None
+        finally:
+            self.pending_questions.pop(pending.request_id, None)
+            await self.broadcast({"type": "question_resolved", "request_id": pending.request_id})
+
+    def answer_questions(self, request_id: str, answers: Any) -> None:
+        """answers 是每个问题的 {selected: [...], other: "..."}；None 表示跳过。"""
+        pending = self.pending_questions.get(request_id)
+        if pending is None or pending.answer.done():
+            return
+        if answers is None:
+            pending.answer.set_result(None)
+            return
+        pending.answer.set_result([QuestionAnswer.from_dict(item) for item in answers])
 
 
 class SessionManager:

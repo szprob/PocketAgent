@@ -20,6 +20,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Protocol
 
+from pocketagent.questions import Question, QuestionAnswer
 from pocketagent.tools.base import Tool, ToolAccess, ToolKind
 
 
@@ -69,21 +70,32 @@ class ApprovalRequest:
 
 
 class Approver(Protocol):
-    """向用户请求批准。CLI 用 input()，以后的 IDE / Web 前端各自实现。"""
+    """「问人」的通道：请求批准，以及 ask_user 工具的提问。CLI 用 input()，web 推给浏览器。
+
+    ask_questions 返回每个问题的回答；返回 None 表示用户跳过（或者没人能回答）。
+    """
 
     async def request_approval(self, request: ApprovalRequest) -> ApprovalAnswer: ...
 
+    async def ask_questions(self, questions: list[Question]) -> list[QuestionAnswer] | None: ...
+
 
 class DenyAllApprover:
-    """非交互场景（-p 单次执行、测试）用：需要确认的一律拒绝。"""
+    """非交互场景（-p 单次执行、测试）用：需要确认的一律拒绝，问题没人回答。"""
 
     async def request_approval(self, request: ApprovalRequest) -> ApprovalAnswer:
         return ApprovalAnswer.DENY
+
+    async def ask_questions(self, questions: list[Question]) -> list[QuestionAnswer] | None:
+        return None
 
 
 class AllowAllApprover:
     async def request_approval(self, request: ApprovalRequest) -> ApprovalAnswer:
         return ApprovalAnswer.ALLOW_ONCE
+
+    async def ask_questions(self, questions: list[Question]) -> list[QuestionAnswer] | None:
+        return None
 
 
 def decide_by_mode(mode: ApprovalMode, kind: ToolKind) -> Decision:

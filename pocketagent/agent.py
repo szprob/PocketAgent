@@ -94,7 +94,7 @@ def sandbox_active(settings: Settings) -> bool:
     return settings.sandbox_enabled and available_sandbox() is not None
 
 
-def build_tool_context(settings: Settings, session: Session, skills: list[Skill]) -> ToolContext:
+def build_tool_context(settings: Settings, session: Session, skills: list[Skill], approver: Approver) -> ToolContext:
     """附件目录、技能目录不用确认就能读，项目记忆目录读写都不用确认；
     PocketAgent 自己的目录（有密钥）和 ~/.ssh 这类算密钥目录。"""
     extra_read_dirs = [settings.attachments_dir / session.id] + [skill.directory for skill in skills]
@@ -113,6 +113,7 @@ def build_tool_context(settings: Settings, session: Session, skills: list[Skill]
         )
     return ToolContext(
         workspace=settings.workspace,
+        ask_user=getattr(approver, "ask_questions", None),
         shell_timeout_seconds=settings.shell_timeout_seconds,
         extra_read_dirs=extra_read_dirs,
         secret_dirs=secret_dirs,
@@ -291,7 +292,9 @@ class Agent:
         settings = self.context.settings
         self.skills = enabled_skills(settings)
         self.context.tools = build_tool_registry(settings, self.skills)
-        self.context.tool_context = build_tool_context(settings, self.session, self.skills)
+        self.context.tool_context = build_tool_context(
+            settings, self.session, self.skills, self.context.permissions.approver
+        )
         self.refresh_system_prompt()
 
 
@@ -348,7 +351,7 @@ def create_agent(
         settings=settings,
         provider=_with_usage_recording(provider, usage_log, settings, session),
         tools=tools or build_tool_registry(settings, skills),
-        tool_context=build_tool_context(settings, session, skills),
+        tool_context=build_tool_context(settings, session, skills, approver),
         permissions=PermissionGate(mode=settings.approval_mode, approver=approver),
         events=events,
         session=session,

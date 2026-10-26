@@ -4,6 +4,7 @@ import { attachmentUrl, requestJson, sendJson, socketUrl, uploadFiles } from "./
 import { Composer } from "./composer.js";
 import { button, el, icon, renderDiff, show } from "./dom.js";
 import { renderMarkdown } from "./markdown.js";
+import { renderQuestionCard } from "./questions.js";
 import { emit, reloadTasks, state } from "./state.js";
 
 const elements = {};
@@ -19,6 +20,7 @@ const chat = {
   currentReasoning: null,
   toolCards: new Map(),
   approvalCards: new Map(),
+  questionCards: new Map(),
   // 新任务页发的第一句话：等连上、拿到快照后再发
   pendingFirstMessage: null,
   // 对话末尾的「等待中」提示
@@ -195,6 +197,12 @@ function handleServerMessage(message) {
       break;
     case "approval_resolved":
       resolveApproval(message.request_id);
+      break;
+    case "question_request":
+      showQuestions(message);
+      break;
+    case "question_resolved":
+      resolveQuestions(message.request_id);
       break;
     case "returned_inputs":
       chat.composer.restoreTexts(message.inputs.map((input) => input.text));
@@ -381,6 +389,7 @@ function clearTranscript() {
   chat.currentReasoning = null;
   chat.toolCards.clear();
   chat.approvalCards.clear();
+  chat.questionCards.clear();
   show(elements.pendingInputs, false);
 }
 
@@ -689,6 +698,28 @@ function resolveApproval(requestId) {
   chat.approvalCards.delete(requestId);
 }
 
+function showQuestions(request) {
+  if (chat.questionCards.has(request.request_id)) {
+    return;
+  }
+  hideActivity();
+  const card = renderQuestionCard(request, (answers) => {
+    sendToServer({ type: "question_answer", request_id: request.request_id, answers });
+  });
+  chat.questionCards.set(request.request_id, card);
+  appendToTranscript(card);
+  scrollToBottom();
+}
+
+function resolveQuestions(requestId) {
+  // 回答过的内容会出现在 ask_user 工具卡片的结果里，这张卡片收起来就行
+  chat.questionCards.get(requestId)?.remove();
+  chat.questionCards.delete(requestId);
+  if (chat.running) {
+    showActivity("等待模型响应");
+  }
+}
+
 function renderHistoryItem(item) {
   if (item.kind === "user") {
     addUserMessage(item.text, item.attachments);
@@ -714,8 +745,9 @@ function renderSnapshot(snapshot) {
     elements.transcriptInner.appendChild(el("div", "empty-chat", "说说要做什么，agent 会在这个工作区里读代码、改文件、跑命令。"));
   }
   snapshot.pending_approvals.forEach(showApproval);
+  (snapshot.pending_questions || []).forEach(showQuestions);
   applyStatus(snapshot);
-  if (snapshot.running && snapshot.pending_approvals.length === 0) {
+  if (snapshot.running && snapshot.pending_approvals.length === 0 && !(snapshot.pending_questions || []).length) {
     // 中途连上来的：前面流式的那段没了，给个提示，后面的照常显示
     showActivity("运行中");
   }
