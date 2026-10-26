@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
+from pocketagent.memory import memory_prompt_section
 from pocketagent.sandbox import SandboxPolicy
 from pocketagent.skills import Skill, skills_prompt_section
 from pocketagent.tools.base import ToolRegistry
@@ -76,12 +77,15 @@ def build_system_prompt(
     tools: ToolRegistry,
     skills: list[Skill] | None = None,
     sandbox: SandboxPolicy | None = None,
+    memory_dir: Path | None = None,
 ) -> str:
     sections = [BASE_PROMPT, _environment_section(workspace), _tools_section(tools)]
     if "bash" in tools.names():
         sections.append(_sandbox_section(sandbox))
-    if skills and "load_skill" in tools.names():
+    if skills and "activate_skill" in tools.names():
         sections.append(skills_prompt_section(skills))
+    if memory_dir is not None:
+        sections.append(memory_prompt_section(memory_dir))
     for instruction_file in load_instruction_files(workspace, home_dir):
         sections.append(f"以下是 {instruction_file.path} 里的说明，请遵守：\n\n{instruction_file.content.strip()}")
     return "\n\n".join(sections)

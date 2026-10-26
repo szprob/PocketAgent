@@ -4,6 +4,7 @@ PocketFlow 只要求 shared 是个对象、原样传给每个节点；这里用 
 每个字段是谁读谁写一目了然，IDE 也能补全。
 """
 
+import asyncio
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -65,6 +66,16 @@ class AgentContext:
     # 后台正在做的压缩；历史每被压缩换掉一次版本号加一
     pending_compaction: PendingCompaction | None = None
     history_version: int = 0
+    # 这一轮开始时拍的检查点：和第一次调用模型同时进行，执行第一个工具之前必须拍完
+    pending_checkpoint: "asyncio.Task[None] | None" = None
+
+    async def wait_for_turn_checkpoint(self) -> None:
+        """工具要动工作区了，等这一轮的检查点拍完（被中断也让它拍完，git 拍到一半被杀会留下锁文件）。"""
+        task = self.pending_checkpoint
+        if task is None:
+            return
+        await asyncio.shield(task)
+        self.pending_checkpoint = None
 
     @property
     def messages(self) -> list[dict[str, Any]]:

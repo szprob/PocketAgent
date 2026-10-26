@@ -4,7 +4,7 @@ import json
 from typing import Any
 
 from pocketagent.attachments import message_display
-from pocketagent.compaction import SUMMARY_PREFIX
+from pocketagent.compaction import PRESERVED_SKILLS_HEADER, SUMMARY_PREFIX
 from pocketagent.tools.base import ToolRegistry
 
 
@@ -39,7 +39,9 @@ def _user_item(message: dict[str, Any]) -> dict[str, Any]:
         return {"kind": "notice", "text": message.get("content") or ""}
     display = message_display(message)
     if display["text"].startswith(SUMMARY_PREFIX):
-        return {"kind": "summary", "text": display["text"][len(SUMMARY_PREFIX) :]}
+        # 摘要后面保留的技能正文不用显示给用户
+        summary = display["text"][len(SUMMARY_PREFIX) :].split(PRESERVED_SKILLS_HEADER)[0]
+        return {"kind": "summary", "text": summary}
     return {"kind": "user", "text": display["text"], "attachments": display["attachments"]}
 
 

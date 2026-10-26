@@ -253,6 +253,15 @@ button:disabled { cursor: default; opacity: 0.5; }
 
 .sidebar-empty { padding: 4px 10px; font-size: 12px; color: var(--text-muted); }
 
+/* 工作区、最近任务两段可以折叠 */
+.section-toggle { display: flex; align-items: center; gap: 4px; padding: 2px 4px 2px 0; border: 0; background: none; color: inherit; font: inherit; cursor: pointer; border-radius: 6px; }
+.section-toggle:hover { color: var(--text-secondary); }
+.section-toggle svg { width: 13px; height: 13px; transition: transform 0.15s ease; }
+.sidebar-section.collapsed .section-toggle svg { transform: rotate(-90deg); }
+.sidebar-section.collapsed .section-body { display: none; }
+.section-count { margin-left: 2px; font-variant-numeric: tabular-nums; }
+.sidebar-section:not(.collapsed) .section-count { display: none; }
+
 .workspace-row { display: flex; align-items: center; border-radius: 9px; }
 .workspace-row:hover { background: var(--surface-hover); }
 .workspace-row.missing { opacity: 0.55; }
@@ -304,6 +313,10 @@ button:disabled { cursor: default; opacity: 0.5; }
 }
 
 .task-row:hover { background: var(--surface-hover); }
+.task-item { position: relative; }
+.task-item .task-delete { position: absolute; top: 50%; right: 6px; transform: translateY(-50%); }
+.task-item:hover .task-delete, .task-delete:focus-visible { display: inline-flex; }
+.task-item:hover .task-row { padding-right: 34px; }
 .task-row.active { background: var(--surface); box-shadow: var(--shadow); }
 .task-kind { color: var(--text-muted); }
 .task-text { display: flex; flex-direction: column; flex: 1; min-width: 0; }
@@ -495,22 +508,22 @@ button:disabled { cursor: default; opacity: 0.5; }
 .message-attachment.image { padding: 0; max-width: 180px; }
 .message-attachment.image img { display: block; max-width: 180px; max-height: 140px; object-fit: cover; }
 
-.message-assistant { overflow-wrap: anywhere; }
-.message-assistant > :first-child { margin-top: 0; }
-.message-assistant > :last-child { margin-bottom: 0; }
-.message-assistant p { margin: 0.5em 0; }
-.message-assistant h1, .message-assistant h2, .message-assistant h3, .message-assistant h4 { margin: 0.9em 0 0.4em; line-height: 1.35; }
-.message-assistant h1 { font-size: 1.3em; }
-.message-assistant h2 { font-size: 1.15em; }
-.message-assistant h3, .message-assistant h4 { font-size: 1.05em; }
-.message-assistant ul, .message-assistant ol { margin: 0.4em 0; padding-left: 1.5em; }
-.message-assistant blockquote { margin: 0.5em 0; padding-left: 12px; border-left: 3px solid var(--border-strong); color: var(--text-secondary); }
-.message-assistant a { color: var(--info); }
-.message-assistant hr { border: 0; border-top: 1px solid var(--border); }
-.message-assistant table { display: block; max-width: 100%; overflow-x: auto; margin: 0.6em 0; border-collapse: separate; border-spacing: 0; border: 1px solid var(--border); border-radius: 10px; }
-.message-assistant th, .message-assistant td { padding: 6px 12px; text-align: left; border-bottom: 1px solid var(--border); }
-.message-assistant tr:last-child td { border-bottom: 0; }
-.message-assistant th { background: var(--surface-muted); font-weight: 600; }
+.message-assistant, .markdown-view { overflow-wrap: anywhere; }
+.message-assistant > :first-child, .markdown-view > :first-child { margin-top: 0; }
+.message-assistant > :last-child, .markdown-view > :last-child { margin-bottom: 0; }
+.message-assistant p, .markdown-view p { margin: 0.5em 0; }
+.message-assistant h1, .markdown-view h1, .message-assistant h2, .markdown-view h2, .message-assistant h3, .markdown-view h3, .message-assistant h4, .markdown-view h4 { margin: 0.9em 0 0.4em; line-height: 1.35; }
+.message-assistant h1, .markdown-view h1 { font-size: 1.3em; }
+.message-assistant h2, .markdown-view h2 { font-size: 1.15em; }
+.message-assistant h3, .markdown-view h3, .message-assistant h4, .markdown-view h4 { font-size: 1.05em; }
+.message-assistant ul, .markdown-view ul, .message-assistant ol, .markdown-view ol { margin: 0.4em 0; padding-left: 1.5em; }
+.message-assistant blockquote, .markdown-view blockquote { margin: 0.5em 0; padding-left: 12px; border-left: 3px solid var(--border-strong); color: var(--text-secondary); }
+.message-assistant a, .markdown-view a { color: var(--info); }
+.message-assistant hr, .markdown-view hr { border: 0; border-top: 1px solid var(--border); }
+.message-assistant table, .markdown-view table { display: block; max-width: 100%; overflow-x: auto; margin: 0.6em 0; border-collapse: separate; border-spacing: 0; border: 1px solid var(--border); border-radius: 10px; }
+.message-assistant th, .markdown-view th, .message-assistant td, .markdown-view td { padding: 6px 12px; text-align: left; border-bottom: 1px solid var(--border); }
+.message-assistant tr:last-child td, .markdown-view tr:last-child td { border-bottom: 0; }
+.message-assistant th, .markdown-view th { background: var(--surface-muted); font-weight: 600; }
 
 code { padding: 1px 5px; border-radius: 5px; background: var(--surface-sunken); font-family: var(--mono); font-size: 0.88em; }
 
@@ -1192,3 +1205,22 @@ pre code { padding: 0; background: none; font-size: inherit; }
 .skill-title { display: flex; align-items: center; gap: 8px; }
 .skill-source { font-size: 12px; color: var(--text-muted); border: 1px solid var(--border); border-radius: 999px; padding: 0 6px; }
 .skill-description { margin-top: 2px; color: var(--text-muted); font-size: 13px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.skill-item { border-radius: 8px; }
+.skill-row .ghost-button { flex: none; margin-left: auto; }
+.skill-path { margin-top: 2px; font-family: var(--mono); font-size: 11.5px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.skill-warning { margin-top: 2px; font-size: 12px; color: var(--warning); }
+.skill-body, .memory-body { margin: 0 10px 10px 34px; padding: 10px 14px; max-height: 420px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-muted); font-size: 13px; }
+.memory-body { margin-left: 10px; }
+.skill-problems { padding: 8px 12px; border-radius: 8px; background: var(--warning-soft); color: var(--warning); font-size: 12.5px; }
+.skill-problems-title { font-weight: 600; margin-bottom: 4px; }
+.skill-problem { font-family: var(--mono); font-size: 11.5px; overflow-wrap: anywhere; }
+
+/* 设置 · 记忆 */
+.memory-row { cursor: default; }
+.memory-actions { display: flex; gap: 6px; flex: none; margin-left: auto; }
+.memory-time { font-size: 12px; color: var(--text-muted); }
+.memory-empty { padding: 8px 10px; }
+
+/* 设置 · 模型：不在会话里显示的 */
+.model-item.hidden-model .model-item-name, .model-item.hidden-model .model-item-model { opacity: 0.55; }
+.hidden-badge { margin-left: 6px; padding: 0 6px; border-radius: 999px; font-size: 11px; color: var(--text-muted); border: 1px solid var(--border); }

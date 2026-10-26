@@ -4,7 +4,7 @@ import { requestJson, sendJson } from "./api.js";
 import { button, el, icon, relativeTime, workspaceName } from "./dom.js";
 import { openFilePreview } from "./filepreview.js";
 import { initFolderPicker, openFolderPicker } from "./folderpicker.js";
-import { on, reloadInfo, savePreference, state } from "./state.js";
+import { loadPreference, on, reloadInfo, savePreference, state } from "./state.js";
 
 const RECENT_TASK_LIMIT = 50;
 
@@ -31,6 +31,8 @@ export function initSidebar(handlers) {
   elements.navAutomations = document.getElementById("nav-automations");
   elements.accountName = document.getElementById("account-name");
   elements.avatar = document.getElementById("avatar");
+  elements.recentCount = document.getElementById("recent-count");
+  initCollapsibleSections();
 
   elements.navNewTask.addEventListener("click", () => callbacks.onNewTask(null));
   elements.navAutomations.addEventListener("click", () => callbacks.onAutomations());
@@ -56,6 +58,29 @@ export function initSidebar(handlers) {
       workspaces.forEach(reloadLoadedDirectories);
     }, 800);
   });
+}
+
+function initCollapsibleSections() {
+  // 折叠状态记在浏览器里，下次打开还是那样
+  const collapsed = new Set(loadPreference("collapsedSections", []));
+  for (const section of document.querySelectorAll(".sidebar-section")) {
+    const toggle = section.querySelector(".section-toggle");
+    const apply = () => {
+      const isCollapsed = collapsed.has(section.dataset.section);
+      section.classList.toggle("collapsed", isCollapsed);
+      toggle.setAttribute("aria-expanded", String(!isCollapsed));
+    };
+    toggle.addEventListener("click", () => {
+      if (collapsed.has(section.dataset.section)) {
+        collapsed.delete(section.dataset.section);
+      } else {
+        collapsed.add(section.dataset.section);
+      }
+      savePreference("collapsedSections", [...collapsed]);
+      apply();
+    });
+    apply();
+  }
 }
 
 export function setActiveView(view) {
@@ -286,6 +311,8 @@ async function removeWorkspace(workspace) {
 // ---- 最近任务（全部历史） ----
 
 function taskRow(task) {
+  // 按钮里不能再套按钮，所以外面包一层：整行点开任务，右边悬停出来的 × 删除
+  const item = el("div", "task-item");
   const row = el("button", "task-row");
   row.type = "button";
   row.classList.toggle("active", activeView === "task" && task.id === state.currentTaskId);
@@ -302,11 +329,34 @@ function taskRow(task) {
     row.title = "运行中";
   }
   row.addEventListener("click", () => callbacks.onOpenTask(task.id));
-  return row;
+  item.appendChild(row);
+  if (!task.running) {
+    const remove = button("row-action task-delete", "", "close", "删除这个任务");
+    remove.addEventListener("click", (event) => {
+      event.stopPropagation();
+      deleteTask(task);
+    });
+    item.appendChild(remove);
+  }
+  return item;
+}
+
+async function deleteTask(task) {
+  if (!window.confirm(`删除任务「${task.title}」？\n对话记录、附件和检查点都会删掉，工作区里的文件不动。`)) {
+    return;
+  }
+  try {
+    await sendJson(`api/sessions/${encodeURIComponent(task.id)}`, "DELETE");
+  } catch (error) {
+    window.alert(`删除失败：${error.message}`);
+    return;
+  }
+  callbacks.onTaskDeleted(task.id);
 }
 
 function renderRecentTasks() {
   elements.recentList.replaceChildren();
+  elements.recentCount.textContent = state.tasks.length ? String(state.tasks.length) : "";
   if (state.tasks.length === 0) {
     elements.recentList.appendChild(el("div", "sidebar-empty", "还没有任务"));
     return;

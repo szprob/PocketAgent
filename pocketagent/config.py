@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from pocketagent.memory import project_memory_dir
 from pocketagent.permissions import ApprovalMode
 from pocketagent.sandbox import available_sandbox
 from pocketagent.tools.web import WebSearchSettings
@@ -247,6 +248,8 @@ class ModelProfile:
     reasoning_choices: list[str] | None = None
     # 单次回复最多输出多少 token（max_tokens）；空着用接口默认
     max_output_tokens: int | None = None
+    # 在会话的模型列表里显示；不显示的只在设置里，已经用着它的任务不受影响
+    visible: bool = True
 
     @property
     def provider(self) -> str:
@@ -273,6 +276,7 @@ class ModelProfile:
             supports_images=_boolean(data, "supports_images"),
             reasoning_choices=_text_list(data, "reasoning_choices") or None,
             max_output_tokens=_optional_positive_int(data, "max_output_tokens", "最大输出 token"),
+            visible=_boolean_with_default(data, "visible", True),
         )
         choices = profile.available_reasoning_choices()
         if profile.reasoning_effort and profile.reasoning_effort not in choices:
@@ -323,6 +327,8 @@ class AppConfig:
     skills_enabled: bool = True
     skill_dirs: list[str] = field(default_factory=list)
     disabled_skills: list[str] = field(default_factory=list)
+    # 项目记忆：每个工作区一份跨会话的笔记
+    memory_enabled: bool = True
     workspaces: list[str] = field(default_factory=list)
     user_name: str | None = None
     web_token: str | None = None
@@ -362,6 +368,7 @@ class AppConfig:
             skills_enabled=_boolean_with_default(data, "skills_enabled", True),
             skill_dirs=_workspace_list(data.get("skill_dirs")),
             disabled_skills=_name_list(data.get("disabled_skills")),
+            memory_enabled=_boolean_with_default(data, "memory_enabled", True),
             workspaces=_workspace_list(data.get("workspaces")),
             user_name=_optional_text(data, "user_name"),
             web_token=_optional_text(data, "web_token"),
@@ -388,6 +395,7 @@ class AppConfig:
             "skills_enabled": self.skills_enabled,
             "skill_dirs": self.skill_dirs,
             "disabled_skills": self.disabled_skills,
+            "memory_enabled": self.memory_enabled,
             "workspaces": self.workspaces,
             "user_name": self.user_name,
             "web_token": self.web_token,
@@ -413,6 +421,7 @@ class AppConfig:
             "skills_enabled": self.skills_enabled,
             "skill_dirs": self.skill_dirs,
             "disabled_skills": self.disabled_skills,
+            "memory_enabled": self.memory_enabled,
             "workspaces": self.workspaces,
             "user_name": self.display_user_name(),
             "reasoning_presets": REASONING_CHOICES_BY_PROVIDER,
@@ -513,6 +522,7 @@ class Settings:
     skills_enabled: bool = True
     skill_dirs: list[str] = field(default_factory=list)
     disabled_skills: list[str] = field(default_factory=list)
+    memory_enabled: bool = True
     # 当前用的是配置文件里哪个模型；为空表示来自环境变量
     model_profile_id: str | None = None
     model_profile_name: str = ""
@@ -552,6 +562,11 @@ class Settings:
         return self.home_dir / "shadow"
 
     @property
+    def memory_dir(self) -> Path:
+        """这个工作区的项目记忆目录。"""
+        return project_memory_dir(self.home_dir, self.workspace)
+
+    @property
     def usage_log_path(self) -> Path:
         return self.home_dir / "usage.jsonl"
 
@@ -579,7 +594,7 @@ class Settings:
         self.compact_threshold = app_config.compact_threshold_percent / 100
 
     def apply_app_config(self, app_config: "AppConfig") -> None:
-        """配置文件里和模型无关的那些：步数上限、自动压缩、联网、沙箱、技能。"""
+        """配置文件里和模型无关的那些：步数上限、自动压缩、联网、沙箱、技能、记忆。"""
         self.max_steps = app_config.max_steps
         self.apply_compaction(app_config)
         self.web_search = app_config.web_search_settings()
@@ -589,6 +604,7 @@ class Settings:
         self.skills_enabled = app_config.skills_enabled
         self.skill_dirs = list(app_config.skill_dirs)
         self.disabled_skills = list(app_config.disabled_skills)
+        self.memory_enabled = app_config.memory_enabled
 
     def apply_environment(self) -> None:
         environment = os.environ

@@ -47,7 +47,7 @@ export class ModelPicker {
     this.models = models;
     this.fallbackModel = fallbackModel;
     if (!models.some((model) => model.id === this.selectedId)) {
-      this.selectedId = models[0]?.id || null;
+      this.selectedId = (models.find((model) => model.visible !== false) || models[0])?.id || null;
     }
     this._renderTrigger();
     if (this.isOpen()) {
@@ -112,7 +112,9 @@ export class ModelPicker {
   _modelSection() {
     const section = el("div", "picker-section");
     section.appendChild(el("div", "picker-title", "模型"));
-    for (const model of this.models) {
+    // 设置里勾掉「在会话里显示」的不列；正在用的那个照样列出来
+    const listed = this.models.filter((model) => model.visible !== false || model.id === this.selectedId);
+    for (const model of listed) {
       const item = el("button", "picker-model");
       item.type = "button";
       item.classList.toggle("active", model.id === this.selectedId);

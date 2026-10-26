@@ -32,6 +32,8 @@ HELP_TEXT = """命令：
   /new             开一个新会话
   /compact         手动压缩上下文
   /mode [模式]     查看或切换审批模式：read_only / ask / auto_edit / full_auto
+  /skills          列出可用的技能
+  /技能名 [要求]   启用这个技能并把要求交给 agent
   /exit            退出（也可以按 Ctrl-D）
 运行中按 Ctrl-C 中断当前这一轮，会话保留，可以接着说。"""
 
@@ -268,9 +270,21 @@ class Repl:
             self.loop.run_until_complete(self.agent.compact())
         elif command == "/mode":
             self._switch_mode(argument)
+        elif command == "/skills":
+            self._list_skills()
+        elif any(skill.name == command[1:] for skill in self.agent.skills):
+            # 交给 agent：它会把技能的完整说明接在这句话后面
+            self._run_turn(command_line)
         else:
             print(self.style.yellow(f"不认识的命令 {command}，/help 查看全部命令"))
         return True
+
+    def _list_skills(self) -> None:
+        if not self.agent.skills:
+            print(self.style.dim("没有可用的技能（~/.pocketagent/skills、~/.agents/skills、~/.claude/skills、工作目录下的 .agents/skills 等）"))
+            return
+        for skill in self.agent.skills:
+            print(f"  /{skill.name}  {self.style.dim(skill.description[:80])}")
 
     def _switch_mode(self, mode_name: str) -> None:
         permissions = self.agent.context.permissions

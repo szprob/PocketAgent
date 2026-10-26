@@ -16,6 +16,7 @@ except ImportError:
 from pocketagent.agent import INTERRUPTED_TOOL_RESULT
 from pocketagent.config import AppConfig, Settings
 from pocketagent.llm import LLMResponse, ScriptedProvider, Usage
+from pocketagent.memory import project_memory_dir
 from pocketagent.permissions import ApprovalMode
 from pocketagent.web import server
 from pocketagent.web.server import MANAGER_KEY, create_app
@@ -646,14 +647,73 @@ class WebAccessTest(WebTestBase):
 
         self.assertEqual([(skill["name"], skill["source"], skill["enabled"]) for skill in listed["skills"]], [("deploy", "项目", True)])
         self.assertEqual(without_workspace["skills"], [])
-        self.assertIn("load_skill", tools_before)
+        self.assertIn("activate_skill", tools_before)
         self.assertEqual(after["skills"][0]["enabled"], False)
-        self.assertNotIn("load_skill", web_session.agent.context.tools.names())
+        self.assertNotIn("activate_skill", web_session.agent.context.tools.names())
         self.assertEqual(config["disabled_skills"], ["deploy"])
         self.assertEqual(config["skill_dirs"], [str(Path("~/my-skills").expanduser().resolve())])
         self.assertTrue(config["sandbox_network"])
         if web_session.agent.context.tool_context.sandbox is not None:
             self.assertTrue(web_session.agent.context.tool_context.sandbox.allow_network)
+
+
+class WebSkillsMemoryTest(WebTestBase):
+    """设置里的技能查看、项目记忆、模型可见性。"""
+
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        patcher = mock.patch("pocketagent.skills.USER_SKILL_DIRS", [])
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    async def test_skill_content_only_for_discovered_skills(self) -> None:
+        skill_file = self.directories.home_dir / "skills" / "deploy" / "SKILL.md"
+        skill_file.parent.mkdir(parents=True)
+        skill_file.write_text("---\nname: deploy\ndescription: 部署用\n---\n步骤一", encoding="utf-8")
+        (self.directories.home_dir / "config.json").write_text("{}", encoding="utf-8")
+
+        listed = await self._get_json("/api/skills")
+        content = await (await self.client.get("/api/skills/content", params={**AUTH, "path": str(skill_file)})).json()
+        refused = await self.client.get("/api/skills/content", params={**AUTH, "path": str(self.directories.home_dir / "config.json")})
+
+        self.assertEqual(listed["skills"][0]["warnings"], [])
+        self.assertIn("步骤一", content["content"])
+        self.assertEqual(refused.status, 404)
+
+    async def test_memory_overview_view_and_delete(self) -> None:
+        workspace = str(self.directories.workspace.resolve())
+        await self._send_json("POST", "/api/workspaces", {"path": workspace})
+        memory_dir = project_memory_dir(self.directories.home_dir, self.directories.workspace)
+        memory_dir.mkdir(parents=True)
+        (memory_dir / "a.md").write_text("---\nname: a\ndescription: 第一条\ntype: user\n---\n正文A", encoding="utf-8")
+        (memory_dir / "MEMORY.md").write_text("- [A](a.md) — 第一条\n", encoding="utf-8")
+        query = {**AUTH, "workspace": workspace}
+
+        overview = await (await self.client.get("/api/memory", params=query)).json()
+        content = await (await self.client.get("/api/memory/file", params={**query, "file": "a.md"})).json()
+        escape = await self.client.get("/api/memory/file", params={**query, "file": "../../config.json"})
+        unregistered = await self.client.get("/api/memory", params={**AUTH, "workspace": "/tmp"})
+        after = await (await self.client.delete("/api/memory/file", params={**query, "file": "a.md"})).json()
+
+        self.assertEqual([(m["name"], m["type"]) for m in overview["memories"]], [("a", "user")])
+        self.assertIn("正文A", content["content"])
+        self.assertEqual(escape.status, 400)
+        self.assertEqual(unregistered.status, 400)
+        self.assertEqual(after["memories"], [])
+        self.assertEqual(after["index"], "")
+
+    async def test_model_visibility_round_trip(self) -> None:
+        config = await self._get_json("/api/config")
+        models = config["models"]
+        for model in models:
+            model["visible"] = model["id"] != "qwen"
+        await self._send_json("PUT", "/api/config", {"models": models, "memory_enabled": False})
+
+        info = await self._get_json("/api/info")
+        saved = json.loads((self.directories.home_dir / "config.json").read_text(encoding="utf-8"))
+
+        self.assertEqual({model["id"]: model["visible"] for model in info["models"]}, {"ds": True, "qwen": False})
+        self.assertFalse(saved["memory_enabled"])
 
 
 class StartupTest(unittest.IsolatedAsyncioTestCase):

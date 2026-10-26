@@ -8,7 +8,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from pocketagent.sandbox import SandboxPolicy, default_secret_dirs
 
@@ -38,6 +38,8 @@ class ToolAccess:
     # bash 要求在沙箱外执行
     outside_sandbox: bool = False
     command: str = ""
+    # 改的全是项目记忆目录里的文件：不用确认（只读模式除外）
+    memory_only: bool = False
 
 
 def _is_within(path: Path, root: Path) -> bool:
@@ -54,6 +56,10 @@ class ToolContext:
     secret_dirs: list[Path] = field(default_factory=default_secret_dirs)
     # bash 的沙箱；None 表示不隔离（设置里关掉了）
     sandbox: SandboxPolicy | None = None
+    # 项目记忆目录：读写都不用确认；None 表示记忆关掉了
+    memory_dir: Path | None = None
+    # 取当前对话的消息（activate_skill 用来判断技能是不是已经加载过）
+    history: Callable[[], list[dict[str, Any]]] = field(default=lambda: [])
 
     def resolve_path(self, raw_path: str) -> Path:
         """相对路径按工作目录解析。工作目录外的路径也能用，要不要确认由权限审批决定（见 path_access）。"""
@@ -63,14 +69,18 @@ class ToolContext:
         return path.resolve()
 
     def path_access(self, paths: list[Path], write: bool) -> ToolAccess:
-        """哪些路径在工作目录外、哪些是密钥目录。附件、技能目录只对读放行。"""
+        """哪些路径在工作目录外、哪些是密钥目录。附件、技能目录只对读放行，记忆目录读写都放行。"""
         free_roots = [self.workspace.resolve()]
         if not write:
             free_roots += [directory.resolve() for directory in self.extra_read_dirs]
+        memory_root = self.memory_dir.resolve() if self.memory_dir is not None else None
         secret_roots = [directory.resolve() for directory in self.secret_dirs]
-        access = ToolAccess()
+        access = ToolAccess(memory_only=bool(paths) and memory_root is not None)
         for path in paths:
-            if any(_is_within(path, root) for root in free_roots):
+            in_memory = memory_root is not None and _is_within(path, memory_root)
+            if not in_memory:
+                access.memory_only = False
+            if in_memory or any(_is_within(path, root) for root in free_roots):
                 continue
             access.outside_paths.append(path)
             if any(_is_within(path, root) for root in secret_roots):

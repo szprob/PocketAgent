@@ -179,7 +179,9 @@ function openEditor(automation) {
   const workspaceOptions = state.info.workspaces.map((workspace) => ({ value: workspace.path, label: workspace.name }));
   fillSelect(form.elements.workspace, workspaceOptions, automation?.workspace || state.info.default_workspace);
   const modelOptions = [{ value: "", label: "默认模型" }].concat(
-    state.info.models.map((model) => ({ value: model.id, label: model.name }))
+    state.info.models
+      .filter((model) => model.visible !== false || model.id === automation?.model_id)
+      .map((model) => ({ value: model.id, label: model.name }))
   );
   fillSelect(form.elements.model_id, modelOptions, automation?.model_id || "");
   const modeOptions = ["ai_auto", "full_auto"].map((mode) => ({ value: mode, label: MODE_LABELS[mode] }));

@@ -19,13 +19,19 @@
         <button class="nav-item" id="nav-automations" type="button" data-icon="clock"><span>自动化</span></button>
       </nav>
       <div class="sidebar-scroll">
-        <div class="sidebar-section-header">
-          <span>工作区</span>
-          <button class="icon-button small" id="add-workspace" type="button" data-icon="plus" title="添加工作区" aria-label="添加工作区"></button>
-        </div>
-        <div class="workspace-list" id="workspace-list"></div>
-        <div class="sidebar-section-header"><span>最近任务</span></div>
-        <div class="recent-list" id="recent-list"></div>
+        <section class="sidebar-section" data-section="workspaces">
+          <div class="sidebar-section-header">
+            <button class="section-toggle" type="button" data-icon="chevronDown" aria-expanded="true"><span>工作区</span><span class="section-count"></span></button>
+            <button class="icon-button small" id="add-workspace" type="button" data-icon="plus" title="添加工作区" aria-label="添加工作区"></button>
+          </div>
+          <div class="workspace-list section-body" id="workspace-list"></div>
+        </section>
+        <section class="sidebar-section" data-section="tasks">
+          <div class="sidebar-section-header">
+            <button class="section-toggle" type="button" data-icon="chevronDown" aria-expanded="true"><span>最近任务</span><span class="section-count" id="recent-count"></span></button>
+          </div>
+          <div class="recent-list section-body" id="recent-list"></div>
+        </section>
       </div>
       <div class="account">
         <button class="account-button" id="account-button" type="button" title="账户和用量">
@@ -124,6 +130,7 @@
           <button class="settings-tab active" type="button" data-tab="models">模型</button>
           <button class="settings-tab" type="button" data-tab="general">通用</button>
           <button class="settings-tab" type="button" data-tab="skills">技能</button>
+          <button class="settings-tab" type="button" data-tab="memory">记忆</button>
           <button class="settings-tab" type="button" data-tab="usage">用量</button>
         </nav>
         <div class="settings-content">
@@ -156,6 +163,7 @@
                   <label class="field"><span>额外请求参数（JSON）</span>
                     <textarea name="extra_body" rows="2" placeholder='如 {"chat_template_kwargs": {"enable_thinking": true}}'></textarea></label>
                   <label class="checkbox-field"><input type="checkbox" id="supports-images"><span>能看图（上传的图片直接发给模型；不勾就只告诉它文件路径）</span></label>
+                  <label class="checkbox-field"><input type="checkbox" id="model-visible"><span>在会话的模型列表里显示（不勾就只留在设置里；已经在用它的任务照常用）</span></label>
                   <div class="model-actions">
                     <button id="test-model" class="ghost-button" type="button">测试连接</button>
                     <button id="make-default" class="ghost-button" type="button">设为默认</button>
@@ -227,11 +235,20 @@
           <div class="settings-page hidden" data-page="skills">
             <div class="form-fields">
               <label class="checkbox-field"><input type="checkbox" id="skills-enabled">
-                <span>启用技能：系统提示里列出技能的名字和描述，用得上时模型自己调 load_skill 读完整说明</span></label>
+                <span>启用技能：系统提示里列出技能的名字和描述，用得上时模型自己调 activate_skill 读完整说明；也可以在消息开头写 /技能名 直接启用</span></label>
               <div id="skill-list" class="skill-list"></div>
+              <div id="skill-problems" class="skill-problems hidden"></div>
               <label class="field"><span>额外的技能目录（一行一个；目录下每个子目录放一个 SKILL.md）</span>
                 <textarea id="skill-dirs-input" rows="3" placeholder="/Users/me/my-skills"></textarea></label>
               <div class="field-hint" id="skill-dirs-hint"></div>
+            </div>
+          </div>
+
+          <div class="settings-page hidden" data-page="memory">
+            <div class="form-fields">
+              <label class="checkbox-field"><input type="checkbox" id="memory-enabled">
+                <span>项目记忆：每个工作区一份跨会话的笔记，开任务时放进系统提示；agent 觉得以后用得上、或者你让它记住时自己写</span></label>
+              <div id="memory-content" class="form-fields"></div>
             </div>
           </div>
 

@@ -12,6 +12,7 @@ web 界面只给前三种，后两种命令行 --mode 可用。
 - 碰到工作目录以外的路径：完全访问放行；AI 自动审批下读交给 AI 判断、改要问用户；其余问用户
 - bash 要在沙箱外执行：除了完全访问都问用户（不交给 AI）
 - 碰到密钥、凭据目录：什么模式都问用户，也不给「总是允许」
+改的全是项目记忆目录里的文件时直接放行（只读模式除外）。
 """
 
 from dataclasses import dataclass, field
@@ -144,6 +145,9 @@ class PermissionGate:
         by_mode = decide_by_mode(self.mode, tool.kind)
         if by_mode == Decision.DENY:
             return PermissionCheck(Decision.DENY)
+        if access.memory_only:
+            # 记项目记忆是 agent 自己的笔记，不打扰用户
+            return PermissionCheck(Decision.ALLOW)
         check = PermissionCheck(Decision.ALLOW)
         if by_mode != Decision.ALLOW and tool.name not in self.always_allowed_tools:
             check.decision = by_mode

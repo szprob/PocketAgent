@@ -10,7 +10,7 @@ from pocketagent.tools.base import (
 from pocketagent.tools.files import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
 from pocketagent.tools.search import GlobTool, GrepTool
 from pocketagent.tools.shell import BashTool
-from pocketagent.tools.skill import LoadSkillTool
+from pocketagent.tools.skill import ActivateSkillTool
 from pocketagent.tools.web import WebFetchTool, WebSearchSettings, WebSearchTool
 
 
@@ -20,7 +20,7 @@ def default_tool_registry(
     sandboxed: bool = False,
     skills: list[Skill] | None = None,
 ) -> ToolRegistry:
-    """内置工具。配了联网搜索的密钥才有 web_search；web_fetch 不要密钥，默认带上；有技能才有 load_skill。"""
+    """内置工具。配了联网搜索的密钥才有 web_search；web_fetch 不要密钥，默认带上；有技能才有 activate_skill。"""
     tools: list[Tool] = [
         ReadFileTool(),
         ListDirTool(),
@@ -35,7 +35,7 @@ def default_tool_registry(
     if web_fetch:
         tools.append(WebFetchTool())
     if skills:
-        tools.append(LoadSkillTool(skills))
+        tools.append(ActivateSkillTool(skills))
     return ToolRegistry(tools)
 
 

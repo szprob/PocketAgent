@@ -28,6 +28,8 @@ from pocketagent.config import BUSY_INPUT_INTERJECT, AppConfig, ConfigError, Mod
 from pocketagent.events import Event, EventType, json_default
 from pocketagent.llm.base import LLMProvider, SilentListener
 from pocketagent.permissions import ApprovalAnswer, ApprovalMode, ApprovalRequest
+from pocketagent.memory import delete_memory, list_memories, memory_file_path, project_memory_dir, read_index
+from pocketagent.frontmatter import split_frontmatter
 from pocketagent.skills import discover_skills, skill_directories
 from pocketagent.session import Session, SessionStore
 from pocketagent.usage import UsageLog
@@ -414,7 +416,7 @@ class SessionManager:
         web_session = live or (self.get(session_id) if self.store.exists(session_id) else None)
         if web_session is not None:
             web_session.cancel_background_work()
-            await web_session.checkpoints.repo.forget()
+            await web_session.checkpoints.forget()
         self.sessions.pop(session_id, None)
         self.store.delete(session_id)
         settings = self.base_settings
@@ -494,15 +496,64 @@ class SessionManager:
         config = self.app_config
         root = Path(workspace) if workspace else None
         directories = skill_directories(root, self.base_settings.home_dir, config.skill_dirs)
-        skills = discover_skills(directories)
+        catalog = discover_skills(directories)
         return {
             "enabled": config.skills_enabled,
             "directories": [
                 {"path": str(directory.path), "source": directory.source, "exists": directory.path.is_dir()}
                 for directory in directories
             ],
-            "skills": [skill.public_dict(disabled=skill.name in config.disabled_skills) for skill in skills],
+            "skills": [skill.public_dict(disabled=skill.name in config.disabled_skills) for skill in catalog.skills],
+            "problems": catalog.problems,
         }
+
+    def skill_file_content(self, raw_path: str) -> dict[str, Any]:
+        """设置里点「查看」：只给找技能时真找到了的 SKILL.md，不当通用的读文件接口用。正文和元数据分开给。"""
+        target = Path(raw_path).expanduser().resolve()
+        roots = [Path(workspace) for workspace in self.app_config.workspaces] + [None]
+        for root in roots:
+            directories = skill_directories(root, self.base_settings.home_dir, self.app_config.skill_dirs)
+            for skill in discover_skills(directories).skills:
+                if skill.path.resolve() == target:
+                    metadata, body = split_frontmatter(target.read_text(encoding="utf-8", errors="replace"))
+                    return {"content": body.strip(), "metadata": metadata}
+        raise KeyError(raw_path)
+
+    # ---- 项目记忆 ----
+
+    def _memory_dir(self, workspace: str) -> Path:
+        root = Path(workspace).expanduser().resolve()
+        if str(root) not in self.app_config.workspaces:
+            raise ConfigError(f"不是已添加的工作区：{workspace}")
+        return project_memory_dir(self.base_settings.home_dir, root)
+
+    def memory_overview(self, workspace: str) -> dict[str, Any]:
+        """设置里「记忆」页：这个工作区的记忆目录、索引、每条记忆。"""
+        memory_dir = self._memory_dir(workspace)
+        return {
+            "enabled": self.app_config.memory_enabled,
+            "directory": str(memory_dir),
+            "index": read_index(memory_dir),
+            "memories": [memory.to_dict() for memory in list_memories(memory_dir)],
+        }
+
+    def read_memory(self, workspace: str, file_name: str) -> dict[str, Any]:
+        """一条记忆的正文（开头的元数据单独给）。"""
+        try:
+            path = memory_file_path(self._memory_dir(workspace), file_name)
+        except ValueError as error:
+            raise ConfigError(str(error))
+        if not path.is_file():
+            raise KeyError(file_name)
+        metadata, body = split_frontmatter(path.read_text(encoding="utf-8", errors="replace"))
+        return {"content": body.strip(), "metadata": metadata}
+
+    def delete_memory(self, workspace: str, file_name: str) -> dict[str, Any]:
+        try:
+            delete_memory(self._memory_dir(workspace), file_name)
+        except ValueError as error:
+            raise ConfigError(str(error))
+        return self.memory_overview(workspace)
 
     def task_overview(self, session_id: str) -> dict[str, Any]:
         """右侧栏要的：本任务用量（含缓存命中）、最新一条回复。比整份快照轻得多。"""

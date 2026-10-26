@@ -4,7 +4,7 @@
 在本地仓库里读代码、改文件、跑命令，用户在旁边审批。
 
 已经能用的：主循环、内置工具（文件、搜索、bash、联网搜索、读网页、技能）、三档权限（含 AI 自动审批）、
-bash 沙箱、工作目录外的访问审批、影子 git 检查点（看变更、撤销、整体恢复）、技能（SKILL.md）、
+bash 沙箱、工作目录外的访问审批、影子 git 检查点（看变更、撤销、整体恢复）、技能（Agent Skills 标准）、项目记忆、
 流式事件、trace、会话续跑、后台自动压缩上下文、多模型配置（思考档位 / 上下文长度随模型走）、
 附件（图片 / 文件）、插话和排队、token 用量和缓存命中统计、定时自动化，以及命令行和 web 两套界面。
 
@@ -39,9 +39,11 @@ pocketagent --web --host 0.0.0.0        # 让别的机器访问（比如开发�
 布局参考 Qoder，三栏：
 
 - **左侧栏**：新任务、自动化；工作区（点开是这个工作区的文件树，点文件预览，预览里可以「@ 引用」到输入框；
-  任务改了文件会自动刷新）；最近任务（全部历史，运行中的有蓝点）；最下面是账户名和 ⚙ 设置。
+  任务改了文件会自动刷新）；最近任务（全部历史，运行中的有蓝点，悬停出现 × 可以删除）；两段都能点标题折叠；
+  最下面是账户名和 ⚙ 设置。
 - **中间**：新任务页选工作区、模型、权限后直接说话；任务页是对话。输入框底下一排：📎 附件（也可以粘贴截图、拖文件进来）、
-  权限、模型（选模型的面板里直接改思考档位和上下文长度，存进配置）、发送 / 停止；再下面是上下文占用和压缩阈值。
+  权限、模型（选模型的面板里直接改思考档位和上下文长度，存进配置；设置里可以让某个模型不出现在这里）、发送 / 停止；
+  再下面是上下文占用和压缩阈值。
 - **右侧栏**（右上角按钮开关）：任务概要（最新进展、token 用量、缓存命中、费用、上下文）、变更（从任务开始到现在
   工作区里所有变了的文件，不管是 edit_file 还是 bash 改的；点开看 diff，可以撤销单个文件）、产出（新建的文件）、
   检查点（每一轮开始前拍一张，可以把整个工作区恢复到那时）。
@@ -84,16 +86,39 @@ bash 默认关在沙箱里（macOS 用系统自带的 `sandbox-exec`，Linux 用
 任务开始时和每一轮开始前给整个工作区拍一张，所以 bash 改的、新建的、删的都看得到；
 撤销和恢复之前都会先再拍一张，撤销本身也能撤销。工作区大到拍一张超过 30 秒，这个任务的检查点就关掉，不卡对话。
 
+- 工作区是「一个目录下放好几个仓库」时，git 只会把嵌套的仓库记成一个指针、看不到里面的改动，
+  所以每个嵌套仓库单独一个影子仓库，各自的 `.gitignore` 照常生效；变更列表里的路径还是相对工作区的
+- 每一轮的快照和第一次调用模型同时进行，工具动工作区之前一定拍完；新任务的 index 从同一工作区上一个任务复制，
+  只重新读改过的文件
+
 ### 技能
 
-格式和 Claude Code 一样：一个目录一个技能，目录里的 `SKILL.md` 开头写 `name` 和 `description`，正文写怎么做，
-旁边可以放脚本和参考资料。系统提示里只列名字和描述，模型用得上时调 `load_skill` 读正文。找技能的地方（同名的前面优先）：
+按 [Agent Skills](https://agentskills.io) 开放标准，和 Claude Code、Codex 等用的是同一种格式：一个目录一个技能，
+目录里的 `SKILL.md` 开头写 `name` 和 `description`，正文写怎么做，旁边可以放 `scripts/`、`references/`、`assets/`。
 
-- 工作目录下的 `.pocketagent/skills/`、`.claude/skills/`
-- `~/.pocketagent/skills/`、`~/.claude/skills/`
+- 系统提示里放 `<available_skills>` 清单（名字、描述、SKILL.md 的位置），模型用得上时调 `activate_skill`
+  拿到正文（`<skill_content>` 包着，附带技能目录和文件清单），也可以直接 read_file；同一个技能不重复加载
+- 消息开头写 `/技能名` 直接启用（命令行里 `/skills` 列出全部）
+- 压缩上下文时，加载过的技能正文原样保留，不进摘要
+- 不合规范（名字不是小写短横线、和目录名不一致、描述超过 1024 字）只提示、照样加载；没有描述的跳过
+
+找技能的地方，项目级优先于用户级；指向同一个真实目录的（软链）只算一次：
+
+- 工作目录下的 `.pocketagent/skills/`、`.agents/skills/`、`.claude/skills/`
+- `~/.pocketagent/skills/`、`~/.agents/skills/`、`~/.claude/skills/`
 - ⚙ 设置 → 技能里额外加的目录
 
-技能页能看到找到了哪些技能，可以单个关掉。
+已经在别的 agent 里攒了一套技能的话，把 `~/.pocketagent/skills` 软链过去就行。
+⚙ 设置 → 技能能看到找到了哪些、点开看正文、不合规范的提示，可以单个关掉。
+
+### 项目记忆
+
+每个工作区一份跨会话的笔记，放在 `~/.pocketagent/projects/<工作区路径>/memory/`，不进仓库。格式和 Claude Code 的 auto memory 一样：
+`MEMORY.md` 是索引（一行一条），每条记忆一个文件，开头写 `name` / `description` / `type`（user / feedback / project / reference）。
+
+- 开任务时把 `MEMORY.md` 放进系统提示，某条用到时 agent 再去读
+- 你说「记住……」它就记；它觉得以后用得上也会自己记，记了会说一声。读写记忆目录不用确认（只读模式除外）
+- ⚙ 设置 → 记忆：按工作区看每条记忆、点开看内容、删除（索引里那行一起去掉），也可以整个关掉
 
 ### 联网
 
@@ -155,7 +180,7 @@ token 第一次启动时生成并存进配置文件，重启服务后浏览器�
     {"id": "a1b2c3d4", "name": "DS 4.1 Flash", "model": "deepseek-v4.1-flash",
      "base_url": "https://your-gateway.example.com/v1", "api_key": "sk-...",
      "reasoning_effort": "low", "context_window_tokens": 128000, "temperature": null,
-     "extra_body": {}, "supports_images": true}
+     "extra_body": {}, "supports_images": true, "visible": true}
   ],
   "default_model": "a1b2c3d4",
   "approval_mode": "ask",
@@ -171,6 +196,7 @@ token 第一次启动时生成并存进配置文件，重启服务后浏览器�
   "skills_enabled": true,
   "skill_dirs": [],
   "disabled_skills": [],
+  "memory_enabled": true,
   "workspaces": ["/Users/me/projects/foo"],
   "user_name": "me",
   "web_token": "..."
@@ -180,6 +206,7 @@ token 第一次启动时生成并存进配置文件，重启服务后浏览器�
 - 思考档位、上下文长度、温度、额外参数、能不能看图都跟着模型走，换模型就一起换。思考档位按接口实测过能用的值来选
   （DeepSeek：关 / 低 / 高 / 最高；智谱：低 / 高 / 最高；OpenRouter：关 / 低 / 中 / 高），OpenRouter 用它自己的
   `reasoning.effort` 写法，其他用顶层 `reasoning_effort`
+- `visible: false` 的模型不出现在会话的模型列表里（已经在用它的任务不受影响）
 - 每个任务记住自己用的模型和权限，续跑时接着用
 - 优先级：命令行参数 > 配置文件 > 环境变量 > 默认值。环境变量（`POCKETAGENT_MODEL` / `POCKETAGENT_BASE_URL` /
   `POCKETAGENT_API_KEY` 等，完整列表见 `pocketagent/config.py`）只在一个模型都没配时才用
@@ -224,8 +251,10 @@ pocketagent/
   tools/               工具基类 + 注册表；files / search / shell / web / skill
   permissions.py       权限模式、审批接口；按工具类别和这次调用碰到的地方（工作目录外、沙箱外、密钥）决定
   sandbox.py           bash 沙箱：macOS Seatbelt 规则、Linux bubblewrap 参数
-  checkpoints.py       影子 git 检查点：拍快照、列变更、diff、撤销、整体恢复
-  skills.py            找技能、解析 SKILL.md 开头的元数据、系统提示里的技能清单
+  checkpoints.py       影子 git 检查点：拍快照、列变更、diff、撤销、整体恢复；嵌套仓库各一个影子仓库
+  skills.py            技能：找技能、校验、<available_skills> 清单、<skill_content> 正文、/技能名、压缩时保留
+  memory.py            项目记忆：目录位置、系统提示里的说明和索引、列出 / 删除
+  frontmatter.py       解析 Markdown 开头 --- 包着的元数据（技能、记忆共用）
   reviewer.py          AI 自动审批：让模型判断一次工具调用能不能放行
   attachments.py       附件存储；消息里只放引用，发给模型前展开（图片缩小 + 编码缓存）
   tokens.py            上下文 token 估算
@@ -235,11 +264,11 @@ pocketagent/
   events.py, trace.py  事件总线；trace 是写 JSONL 的订阅者
   session.py           任务（会话）持久化
   compaction.py        压缩：摘要请求、用摘要重建历史
-  prompts.py           系统提示词，会拼进 ~/.pocketagent/ 和工作目录下的 AGENTS.md / CLAUDE.md、沙箱说明、技能清单
+  prompts.py           系统提示词，会拼进 ~/.pocketagent/ 和工作目录下的 AGENTS.md / CLAUDE.md、沙箱说明、技能清单、项目记忆
   cli.py               命令行界面：渲染事件 + 终端审批 + REPL
   web/
     server.py          aiohttp 服务：页面 + REST + 每个任务一条 WebSocket（协议写在文件开头）
-    runtime.py         每个任务一个 Agent，插话 / 排队、审批广播；任务、工作区、配置、技能、自动化调度
+    runtime.py         每个任务一个 Agent，插话 / 排队、审批广播；任务、工作区、配置、技能、记忆、自动化调度
     files.py           文件树、文件预览、选目录（只能看登记过的工作区）
     history.py         把存下来的消息转成前端渲染用的条目
     static/            前端：index.html / style.css / js/（ES 模块，不用构建、不依赖 CDN）

@@ -53,6 +53,7 @@ PORT_SEARCH_LIMIT = 20
 MANAGER_KEY = web.AppKey("manager", SessionManager)
 TOKEN_KEY = web.AppKey("token", str)
 SCHEDULER_KEY = web.AppKey("scheduler", asyncio.Task)
+WARM_UP_KEY = web.AppKey("warm_up", asyncio.Future)
 
 Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
 
@@ -123,6 +124,7 @@ async def get_info(request: web.Request) -> web.Response:
             "reasoning_effort": profile.reasoning_effort,
             "reasoning_choices": profile.available_reasoning_choices(),
             "context_window_tokens": profile.context_window_tokens,
+            "visible": profile.visible,
         }
         for profile in app_config.models
     ]
@@ -333,6 +335,24 @@ async def list_skills(request: web.Request) -> web.Response:
     return _json_response(_manager(request).skills_overview(request.query.get("workspace") or None))
 
 
+async def get_skill_content(request: web.Request) -> web.Response:
+    return _json_response(_manager(request).skill_file_content(request.query.get("path", "")))
+
+
+async def get_memory(request: web.Request) -> web.Response:
+    return _json_response(_manager(request).memory_overview(request.query.get("workspace", "")))
+
+
+async def get_memory_file(request: web.Request) -> web.Response:
+    manager = _manager(request)
+    return _json_response(manager.read_memory(request.query.get("workspace", ""), request.query.get("file", "")))
+
+
+async def delete_memory_file(request: web.Request) -> web.Response:
+    manager = _manager(request)
+    return _json_response(manager.delete_memory(request.query.get("workspace", ""), request.query.get("file", "")))
+
+
 async def get_config(request: web.Request) -> web.Response:
     return _json_response(_config_payload(_manager(request)))
 
@@ -454,6 +474,7 @@ def create_app(
     _add_routes(app.router)
     if run_scheduler:
         app.on_startup.append(_start_scheduler)
+        app.on_startup.append(_warm_up)
         app.on_cleanup.append(_stop_scheduler)
     app.on_shutdown.append(_shutdown_sessions)
     return app
@@ -484,6 +505,10 @@ def _add_routes(router: web.UrlDispatcher) -> None:
     router.add_get("/api/usage", get_usage)
     router.add_get("/api/usage/balance", get_balances)
     router.add_get("/api/skills", list_skills)
+    router.add_get("/api/skills/content", get_skill_content)
+    router.add_get("/api/memory", get_memory)
+    router.add_get("/api/memory/file", get_memory_file)
+    router.add_delete("/api/memory/file", delete_memory_file)
     router.add_get("/api/config", get_config)
     router.add_put("/api/config", put_config)
     router.add_post("/api/config/test", test_config)
@@ -494,6 +519,16 @@ def _add_routes(router: web.UrlDispatcher) -> None:
     router.add_post("/api/automations/{automation_id}/run", run_automation_now)
     router.add_get("/ws/{session_id}", session_socket)
     router.add_static("/static/", STATIC_DIR)
+
+
+def _import_model_sdk() -> None:
+    import openai  # noqa: F401  （只为提前加载）
+
+
+async def _warm_up(app: web.Application) -> None:
+    """openai SDK 第一次 import 要 0.5 秒以上；放在第一个任务里做，用户敲第一个回车就会卡一下。
+    服务一起来就在线程里先 import 好，不挡启动。"""
+    app[WARM_UP_KEY] = asyncio.get_running_loop().run_in_executor(None, _import_model_sdk)
 
 
 async def _start_scheduler(app: web.Application) -> None:

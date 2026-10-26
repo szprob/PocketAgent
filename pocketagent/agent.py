@@ -15,7 +15,7 @@ from typing import Any
 
 from pocketflow import AsyncFlow
 
-from pocketagent.attachments import message_display
+from pocketagent.attachments import DISPLAY_KEY, message_display
 from pocketagent.checkpoints import TaskCheckpoints
 from pocketagent.config import Settings
 from pocketagent.context import AgentContext, TurnState
@@ -35,7 +35,7 @@ from pocketagent.permissions import Approver, PermissionGate
 from pocketagent.prompts import build_system_prompt
 from pocketagent.sandbox import SandboxPolicy, available_sandbox, default_secret_dirs
 from pocketagent.session import Session, SessionStore
-from pocketagent.skills import Skill, discover_skills, skill_directories
+from pocketagent.skills import Skill, discover_skills, find_skill_command, skill_content, skill_directories
 from pocketagent.tools import default_tool_registry
 from pocketagent.tools.base import ToolContext, ToolRegistry
 from pocketagent.trace import JsonlTracer
@@ -87,7 +87,7 @@ def enabled_skills(settings: Settings) -> list[Skill]:
     if not settings.skills_enabled:
         return []
     directories = skill_directories(settings.workspace, settings.home_dir, settings.skill_dirs)
-    return [skill for skill in discover_skills(directories) if skill.name not in settings.disabled_skills]
+    return [skill for skill in discover_skills(directories).skills if skill.name not in settings.disabled_skills]
 
 
 def sandbox_active(settings: Settings) -> bool:
@@ -95,9 +95,14 @@ def sandbox_active(settings: Settings) -> bool:
 
 
 def build_tool_context(settings: Settings, session: Session, skills: list[Skill]) -> ToolContext:
-    """附件目录、技能目录不用确认就能读；PocketAgent 自己的目录（有密钥）和 ~/.ssh 这类算密钥目录。"""
+    """附件目录、技能目录不用确认就能读，项目记忆目录读写都不用确认；
+    PocketAgent 自己的目录（有密钥）和 ~/.ssh 这类算密钥目录。"""
     extra_read_dirs = [settings.attachments_dir / session.id] + [skill.directory for skill in skills]
     secret_dirs = default_secret_dirs() + [settings.home_dir]
+    memory_dir = None
+    if settings.memory_enabled:
+        memory_dir = settings.memory_dir
+        memory_dir.mkdir(parents=True, exist_ok=True)
     sandbox = None
     if sandbox_active(settings):
         sandbox = SandboxPolicy(
@@ -112,6 +117,9 @@ def build_tool_context(settings: Settings, session: Session, skills: list[Skill]
         extra_read_dirs=extra_read_dirs,
         secret_dirs=secret_dirs,
         sandbox=sandbox,
+        memory_dir=memory_dir,
+        # 会话的消息列表压缩时会整个换掉，所以每次现取
+        history=lambda: session.messages,
     )
 
 
@@ -158,6 +166,7 @@ class Agent:
                 self.context.tools,
                 skills=self.skills,
                 sandbox=self.context.tool_context.sandbox,
+                memory_dir=self.context.tool_context.memory_dir,
             ),
         }
         messages = self.context.messages
@@ -170,7 +179,7 @@ class Agent:
         """user_input 是一句话，或者 attachments.build_user_message 拼好的带附件的 user 消息。"""
         context = self.context
         context.turn = TurnState()
-        message = _as_user_message(user_input)
+        message = self._expand_skill_command(_as_user_message(user_input))
         context.messages.append(message)
         display = message_display(message)
         await context.events.emit(
@@ -179,10 +188,12 @@ class Agent:
             user_text=display["text"],
             attachments=display["attachments"],
         )
-        await self._checkpoint_turn_start(display["text"])
+        # 拍检查点要读一遍工作区（大工作区要几百毫秒），和第一次调用模型同时做，不让用户干等
+        context.pending_checkpoint = asyncio.create_task(self._checkpoint_turn_start(display["text"]))
         self.turn_running = True
         try:
             await self.flow.run_async(context)
+            await context.wait_for_turn_checkpoint()
             await apply_finished_compaction(context)
         except (asyncio.CancelledError, KeyboardInterrupt):
             context.turn.stop_reason = "interrupted"
@@ -206,7 +217,13 @@ class Agent:
         was_enabled = self.checkpoints.enabled
         is_first = self.checkpoints.baseline() is None
         label = "任务开始时" if is_first else f"这一轮之前：{user_text.strip()[:30]}"
-        checkpoint = await self.checkpoints.create(label, kind="baseline" if is_first else "turn")
+        try:
+            checkpoint = await self.checkpoints.create(label, kind="baseline" if is_first else "turn")
+        except Exception as error:
+            # 检查点只是辅助，出什么错都不能挡住这一轮
+            self.checkpoints.enabled = False
+            self.checkpoints.disabled_reason = f"检查点关掉了：{type(error).__name__}: {error}"
+            checkpoint = None
         if checkpoint is not None:
             await self.context.events.emit(EventType.CHECKPOINT, commit=checkpoint.commit, label=checkpoint.label)
         elif was_enabled:
@@ -214,7 +231,7 @@ class Agent:
 
     async def interject(self, user_input: str | dict[str, Any]) -> None:
         """agent 干活时用户插话：下一次调用模型前放进对话，模型就能看到。"""
-        message = _as_user_message(user_input)
+        message = self._expand_skill_command(_as_user_message(user_input))
         self.context.pending_interjections.append(message)
         display = message_display(message)
         await self.context.events.emit(
@@ -254,6 +271,20 @@ class Agent:
     def replace_provider(self, provider: LLMProvider) -> None:
         """换模型时用：新的 provider 同样包上用量记录。"""
         self.context.provider = _with_usage_recording(provider, self.usage_log, self.context.settings, self.session)
+
+    def _expand_skill_command(self, message: dict[str, Any]) -> dict[str, Any]:
+        """消息以 /技能名 开头：把技能的完整说明接在用户的话后面，界面上还是只显示原话。"""
+        display = message_display(message)
+        command = find_skill_command(display["text"], self.skills)
+        if command is None:
+            return message
+        skill, _ = command
+        try:
+            content = skill_content(skill)
+        except OSError:
+            return message
+        parts = message["content"] if isinstance(message["content"], list) else [{"type": "text", "text": message["content"]}]
+        return {**message, "content": [*parts, {"type": "text", "text": content}], DISPLAY_KEY: display}
 
     def reload_tools(self) -> None:
         """设置变了（联网、沙箱、技能）：工具、工具环境、系统提示都重新装一遍，下一次调用模型时生效。"""

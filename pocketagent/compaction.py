@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from pocketagent.llm.base import LLMProvider, LLMResponse, SilentListener
+from pocketagent.skills import loaded_skill_blocks
 from pocketagent.tokens import estimate_tokens
 
 SUMMARY_INSTRUCTION = """请把上面的对话压缩成一份交接摘要，让接手的人不看原始记录也能继续工作。必须包含：
@@ -24,6 +25,8 @@ SUMMARY_INSTRUCTION = """请把上面的对话压缩成一份交接摘要，让�
 
 SUMMARY_PREFIX = "（之前的对话已压缩，以下是摘要）\n\n"
 RESUME_HINT = "\n\n请根据摘要继续完成任务。"
+# 加载过的技能正文不进摘要，原样接在摘要后面（Agent Skills 规范建议压缩时保留）
+PRESERVED_SKILLS_HEADER = "\n\n（压缩前加载过的技能，完整说明原样保留如下）\n\n"
 # 给模型做摘要时，单条消息最多保留这么多字（长的工具输出头尾各留一半）
 SUMMARY_MESSAGE_LIMIT_CHARS = 4000
 
@@ -91,9 +94,11 @@ def rebuild_with_summary_and_tail(
 
 
 def rebuild_messages_with_summary(messages: list[dict[str, Any]], summary: str) -> list[dict[str, Any]]:
-    """保留开头的系统提示，其余换成一条 user 摘要消息。"""
+    """保留开头的系统提示，其余换成一条 user 摘要消息；加载过的技能正文接在摘要后面。"""
     rebuilt = []
     if messages and messages[0].get("role") == "system":
         rebuilt.append(messages[0])
-    rebuilt.append({"role": "user", "content": SUMMARY_PREFIX + summary + RESUME_HINT})
+    skill_blocks = loaded_skill_blocks(messages[1:] if rebuilt else messages)
+    preserved = PRESERVED_SKILLS_HEADER + "\n\n".join(skill_blocks) if skill_blocks else ""
+    rebuilt.append({"role": "user", "content": SUMMARY_PREFIX + summary + preserved + RESUME_HINT})
     return rebuilt

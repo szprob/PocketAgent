@@ -238,6 +238,14 @@ async function init() {
     onOpenTask: (taskId) => navigate(`#/task/${encodeURIComponent(taskId)}`),
     onAutomations: () => navigate("#/automations"),
     onSettings: (tab) => openSettings(tab),
+    onTaskDeleted: async (taskId) => {
+      // 删的是正开着的任务：先断开它，回到新任务页
+      if (taskId === state.currentTaskId) {
+        leaveTask();
+        navigate("#/new");
+      }
+      await reloadTasks();
+    },
   });
   initChat({ onDeleted: () => navigate("#/new") });
   initRightPanel();

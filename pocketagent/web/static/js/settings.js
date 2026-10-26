@@ -1,7 +1,9 @@
-// 设置弹窗：模型 / 通用 / 技能 / 用量 四页。模型和通用改完点保存，写进 ~/.pocketagent/config.json。
+// 设置弹窗：模型 / 通用 / 技能 / 记忆 / 用量 五页。模型和通用改完点保存，写进 ~/.pocketagent/config.json。
 
 import { requestJson, sendJson } from "./api.js";
 import { button, el, show } from "./dom.js";
+import { renderMarkdown } from "./markdown.js";
+import { renderMemoryPage } from "./memory.js";
 import { reasoningLabel } from "./modelpicker.js";
 import { MODE_LABELS, reloadInfo, state } from "./state.js";
 import { renderUsage } from "./usage.js";
@@ -45,6 +47,7 @@ export function initSettings() {
     modelFormFields: byId("model-form-fields"),
     apiKeyHint: byId("api-key-hint"),
     supportsImages: byId("supports-images"),
+    modelVisible: byId("model-visible"),
     testResult: byId("test-result"),
     testButton: byId("test-model"),
     makeDefaultButton: byId("make-default"),
@@ -64,6 +67,9 @@ export function initSettings() {
     sandboxHint: byId("sandbox-hint"),
     skillsEnabled: byId("skills-enabled"),
     skillList: byId("skill-list"),
+    skillProblems: byId("skill-problems"),
+    memoryEnabled: byId("memory-enabled"),
+    memoryContent: byId("memory-content"),
     skillDirs: byId("skill-dirs-input"),
     skillDirsHint: byId("skill-dirs-hint"),
     configPath: byId("config-path"),
@@ -109,6 +115,9 @@ function selectTab(tabName) {
   if (tabName === "usage") {
     renderUsage(elements.usageContent);
   }
+  if (tabName === "memory") {
+    renderMemoryPage(elements.memoryContent);
+  }
 }
 
 // ---- 打开 ----
@@ -135,6 +144,7 @@ function toDraftModel(model) {
     temperature: textOrEmpty(model.temperature),
     extra_body: formatJsonObject(model.extra_body),
     supports_images: Boolean(model.supports_images),
+    visible: model.visible !== false,
     // 单独配过的思考档位（比如 Grok 不能关），保存时原样带回去
     custom_reasoning_choices: model.custom_reasoning_choices || null,
   };
@@ -185,6 +195,7 @@ function toPayloadModel(model) {
     id: model.id,
     clear_api_key: model.clear_api_key,
     supports_images: model.supports_images,
+    visible: model.visible,
     reasoning_choices: model.custom_reasoning_choices,
   };
   for (const field of MODEL_FORM_FIELDS) {
@@ -225,6 +236,7 @@ export async function openSettings(tabName) {
   elements.sandboxNetwork.checked = config.sandbox_network;
   elements.sandboxHint.textContent = sandboxHint(config.sandbox_available);
   elements.skillsEnabled.checked = config.skills_enabled;
+  elements.memoryEnabled.checked = config.memory_enabled;
   elements.skillDirs.value = (config.skill_dirs || []).join("\n");
   draft.disabledSkills = new Set(config.disabled_skills || []);
   loadSkills();
@@ -249,8 +261,9 @@ function sandboxHint(kind) {
 // ---- 技能 ----
 
 function currentWorkspace() {
+  // 打开着某个任务就看那个任务的工作区，否则看默认工作区（项目级技能跟着工作区走）
   const task = state.tasks.find((each) => each.id === state.currentTaskId);
-  return task?.workspace || "";
+  return task?.workspace || state.info?.default_workspace || "";
 }
 
 async function loadSkills() {
@@ -265,22 +278,29 @@ async function loadSkills() {
     return;
   }
   renderSkills(overview.skills);
+  renderSkillProblems(overview.problems || []);
   const found = overview.directories.filter((directory) => directory.exists).map((directory) => directory.path);
   const missing = overview.directories.filter((directory) => !directory.exists).map((directory) => directory.path);
   elements.skillDirsHint.textContent =
     `在这些目录里找到了技能：${found.join("、") || "（没有）"}。` +
     (missing.length ? `还会看（目前不存在）：${missing.join("、")}。` : "") +
-    (workspace ? "" : "打开一个任务再来，能看到那个工作区自己的技能。");
+    (workspace ? `项目级技能看的是工作区 ${workspace}。` : "");
 }
 
 function renderSkills(skills) {
   if (skills.length === 0) {
-    elements.skillList.replaceChildren(el("div", "muted", "还没有技能。把带 SKILL.md 的目录放进 ~/.claude/skills 或 ~/.pocketagent/skills 就行。"));
+    elements.skillList.replaceChildren(
+      el("div", "muted", "还没有技能。把带 SKILL.md 的目录放进 ~/.pocketagent/skills、~/.agents/skills 或 ~/.claude/skills 就行。")
+    );
     return;
   }
-  const rows = skills.map((skill) => {
-    const row = el("label", "skill-row");
-    const toggle = document.createElement("input");
+  elements.skillList.replaceChildren(...skills.map(renderSkillItem));
+}
+
+function renderSkillItem(skill) {
+  const wrapper = el("div", "skill-item");
+  const row = el("div", "skill-row");
+  const toggle = document.createElement("input");
     toggle.type = "checkbox";
     toggle.checked = !draft.disabledSkills.has(skill.name);
     toggle.addEventListener("change", () => {
@@ -290,15 +310,42 @@ function renderSkills(skills) {
         draft.disabledSkills.add(skill.name);
       }
     });
-    const text = el("div", "skill-text");
-    const title = el("div", "skill-title");
-    title.append(el("strong", "", skill.name), el("span", "skill-source", skill.source));
-    text.append(title, el("div", "skill-description", skill.description || "（没写描述）"));
-    text.title = skill.path;
-    row.append(toggle, text);
-    return row;
+  toggle.title = "启用 / 停用这个技能";
+  const text = el("div", "skill-text");
+  const title = el("div", "skill-title");
+  title.append(el("strong", "", skill.name), el("span", "skill-source", skill.source));
+  text.append(title, el("div", "skill-description", skill.description || "（没写描述）"), el("div", "skill-path", skill.path));
+  for (const warning of skill.warnings || []) {
+    text.appendChild(el("div", "skill-warning", `不合规范：${warning}`));
+  }
+  const view = button("ghost-button small", "查看");
+  const body = el("div", "skill-body markdown-view hidden");
+  view.addEventListener("click", async () => {
+    const opening = body.classList.contains("hidden");
+    show(body, opening);
+    view.textContent = opening ? "收起" : "查看";
+    if (opening && !body.dataset.loaded) {
+      body.textContent = "加载中…";
+      try {
+        const { content } = await requestJson(`api/skills/content?path=${encodeURIComponent(skill.path)}`);
+        body.innerHTML = renderMarkdown(content);
+        body.dataset.loaded = "1";
+      } catch (error) {
+        body.textContent = `读不了：${error.message}`;
+      }
+    }
   });
-  elements.skillList.replaceChildren(...rows);
+  row.append(toggle, text, view);
+  wrapper.append(row, body);
+  return wrapper;
+}
+
+function renderSkillProblems(problems) {
+  show(elements.skillProblems, problems.length > 0);
+  elements.skillProblems.replaceChildren(
+    el("div", "skill-problems-title", `有 ${problems.length} 个技能没加载上或被同名的覆盖了：`),
+    ...problems.map((problem) => el("div", "skill-problem", problem))
+  );
 }
 
 function skillDirsFromInput() {
@@ -337,6 +384,10 @@ function renderModelList() {
     if (model.supports_images) {
       nameLine.appendChild(el("span", "vision-badge", "图"));
     }
+    if (!model.visible) {
+      nameLine.appendChild(el("span", "hidden-badge", "不在会话里显示"));
+    }
+    item.classList.toggle("hidden-model", !model.visible);
     item.append(nameLine, el("span", "model-item-model", model.model || "未填模型名"));
     item.addEventListener("click", () => {
       draft.selectedId = model.id;
@@ -387,6 +438,7 @@ function renderModelForm() {
   }
   renderReasoningOptions(model);
   elements.supportsImages.checked = model.supports_images;
+  elements.modelVisible.checked = model.visible;
   renderApiKeyHint(model);
   elements.makeDefaultButton.disabled = model.id === draft.defaultModel;
 }
@@ -394,6 +446,11 @@ function renderModelForm() {
 function onModelFieldInput(event) {
   const model = selectedModel();
   if (!model) {
+    return;
+  }
+  if (event.target === elements.modelVisible) {
+    model.visible = elements.modelVisible.checked;
+    renderModelList();
     return;
   }
   if (event.target === elements.supportsImages) {
@@ -499,6 +556,7 @@ async function saveSettings() {
     skills_enabled: elements.skillsEnabled.checked,
     skill_dirs: skillDirsFromInput(),
     disabled_skills: [...draft.disabledSkills],
+    memory_enabled: elements.memoryEnabled.checked,
   };
   elements.save.disabled = true;
   setMessage("保存中…", true);

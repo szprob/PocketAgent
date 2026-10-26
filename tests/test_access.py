@@ -1,11 +1,10 @@
-"""沙箱、工作目录外的访问、技能。"""
+"""沙箱、工作目录外的访问。技能和记忆在 test_skills_memory.py。"""
 
 import shutil
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-from unittest import mock
 
 from pocketagent.llm import LLMResponse
 from pocketagent.permissions import (
@@ -17,12 +16,10 @@ from pocketagent.permissions import (
     PermissionGate,
 )
 from pocketagent.sandbox import SandboxPolicy, available_sandbox, denial_hint, seatbelt_profile, wrap_command
-from pocketagent.skills import SkillDirectory, discover_skills, skills_prompt_section, split_frontmatter
 from pocketagent.tools import ToolAccess, ToolContext
 from pocketagent.tools.files import EditFileTool, ReadFileTool
 from pocketagent.tools.search import GlobTool, GrepTool
 from pocketagent.tools.shell import BashTool
-from pocketagent.tools.skill import LoadSkillTool
 from tests.helpers import TemporaryDirectories, build_harness, tool_call
 
 
@@ -297,120 +294,6 @@ class OutsideAccessFlowTest(unittest.IsolatedAsyncioTestCase):
         await harness.agent.run_turn("看看那个文件")
 
         self.assertEqual(approver.requests, [])
-
-
-SKILL_TEXT = """---
-name: "deploy-thing"
-description: >
-  部署服务用。当用户说
-  '上线'、"发布" 时触发。
-argument-hint: <service>
----
-
-# 部署
-
-1. 跑 scripts/deploy.sh
-"""
-
-
-class SkillsTest(unittest.IsolatedAsyncioTestCase):
-    def setUp(self) -> None:
-        self.directories = TemporaryDirectories()
-        self.workspace = self.directories.workspace
-        self.user_dir = self.directories.home_dir / "skills"
-        # 不读本机的 ~/.claude/skills
-        patcher = mock.patch("pocketagent.skills.USER_SKILL_DIRS", [])
-        patcher.start()
-        self.addCleanup(patcher.stop)
-
-    def tearDown(self) -> None:
-        self.directories.cleanup()
-
-    def write_skill(self, root: Path, folder: str, text: str) -> Path:
-        skill_file = root / folder / "SKILL.md"
-        skill_file.parent.mkdir(parents=True, exist_ok=True)
-        skill_file.write_text(text, encoding="utf-8")
-        return skill_file
-
-    def test_frontmatter_variants(self) -> None:
-        metadata, body = split_frontmatter(SKILL_TEXT)
-        single, _ = split_frontmatter("---\nname: 'it''s'\ndescription: \"say \\\"hi\\\"\"\n---\nbody")
-
-        self.assertEqual(metadata["name"], "deploy-thing")
-        self.assertEqual(metadata["description"], "部署服务用。当用户说 '上线'、\"发布\" 时触发。")
-        self.assertTrue(body.lstrip().startswith("# 部署"))
-        self.assertEqual(single, {"name": "it's", "description": 'say "hi"'})
-        self.assertEqual(split_frontmatter("no frontmatter")[0], {})
-
-    def test_project_skills_win_over_user_skills_and_nested_ones_are_ignored(self) -> None:
-        project_dir = self.workspace / ".claude" / "skills"
-        self.write_skill(project_dir, "deploy", SKILL_TEXT.replace("部署服务用", "项目版"))
-        self.write_skill(self.user_dir, "deploy", SKILL_TEXT)
-        self.write_skill(self.user_dir, "group/inner", "---\nname: inner\n---\n")
-        self.write_skill(self.user_dir, "plain", "没有元数据，名字用目录名")
-
-        skills = discover_skills([SkillDirectory(project_dir, "项目"), SkillDirectory(self.user_dir, "用户")])
-
-        self.assertEqual([skill.name for skill in skills], ["deploy-thing", "plain"])
-        self.assertTrue(skills[0].description.startswith("项目版"))
-        self.assertEqual(skills[0].source, "项目")
-
-    def test_prompt_section_truncates_long_descriptions(self) -> None:
-        self.write_skill(self.user_dir, "long", "---\nname: long\ndescription: " + "长" * 1000 + "\n---\n")
-        skills = discover_skills([SkillDirectory(self.user_dir, "用户")])
-
-        section = skills_prompt_section(skills)
-
-        self.assertIn("- long：", section)
-        self.assertLess(len(section), 500)
-
-    async def test_load_skill_returns_body_and_files(self) -> None:
-        skill_file = self.write_skill(self.user_dir, "deploy", SKILL_TEXT)
-        (skill_file.parent / "scripts").mkdir()
-        (skill_file.parent / "scripts" / "deploy.sh").write_text("echo deploy", encoding="utf-8")
-        tool = LoadSkillTool(discover_skills([SkillDirectory(self.user_dir, "用户")]))
-        context = ToolContext(workspace=self.workspace)
-
-        loaded = await tool.run({"name": "deploy-thing"}, context)
-        missing = await tool.run({"name": "nope"}, context)
-
-        self.assertIn("# 部署", loaded.content)
-        self.assertIn("scripts/deploy.sh", loaded.content)
-        self.assertNotIn("argument-hint", loaded.content)
-        self.assertTrue(missing.is_error)
-        self.assertIn("deploy-thing", missing.content)
-
-    async def test_agent_lists_skills_and_can_read_their_files_without_asking(self) -> None:
-        skill_file = self.write_skill(self.user_dir, "deploy", SKILL_TEXT)
-        approver = RecordingApprover()
-        responses = [
-            LLMResponse(
-                tool_calls=[
-                    tool_call("c1", "load_skill", '{"name": "deploy-thing"}'),
-                    tool_call("c2", "read_file", f'{{"path": "{skill_file}"}}'),
-                ]
-            ),
-            LLMResponse(text="好了"),
-        ]
-        harness = build_harness(
-            self.directories, responses, mode=ApprovalMode.ASK, approver=approver, skills_enabled=True
-        )
-
-        await harness.agent.run_turn("上线")
-
-        system_prompt = harness.agent.context.messages[0]["content"]
-        self.assertIn("deploy-thing：部署服务用", system_prompt)
-        self.assertIn("load_skill", harness.agent.context.tools.names())
-        self.assertEqual(approver.requests, [])
-
-    async def test_disabled_skills_are_hidden(self) -> None:
-        self.write_skill(self.user_dir, "deploy", SKILL_TEXT)
-        harness = build_harness(
-            self.directories, [], skills_enabled=True, disabled_skills=["deploy-thing"]
-        )
-
-        self.assertNotIn("deploy-thing", harness.agent.context.messages[0]["content"])
-        self.assertNotIn("load_skill", harness.agent.context.tools.names())
 
 
 if __name__ == "__main__":

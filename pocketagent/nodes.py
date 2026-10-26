@@ -321,6 +321,8 @@ class RunToolsNode(AgentNode):
     """
 
     async def prep_async(self, context: AgentContext) -> ToolBatch:
+        # 这一轮的检查点和第一次调用模型同时在拍，动工作区之前必须拍完
+        await context.wait_for_turn_checkpoint()
         return ToolBatch(calls=list(context.turn.pending_tool_calls), context=context)
 
     async def exec_async(self, batch: ToolBatch) -> list[ToolCallOutcome]:
