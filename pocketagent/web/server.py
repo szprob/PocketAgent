@@ -18,7 +18,7 @@ REST（都在 /api 下）：
   workspaces/default  POST               把某个工作区设成新任务的默认
   files / file / file/raw                工作区文件树 / 文件预览 / 原始文件（图片预览）
   browse                                 选工作区时浏览本机目录（只列目录）
-  sessions            GET / POST         任务列表 / 新建任务（指定工作区、模型、审批模式）
+  sessions            GET / POST         任务列表 / 新建任务（工作区、模型、审批模式；ephemeral=true 用临时目录）
   sessions/{id}       GET / PATCH / DELETE   快照 / 改标题 / 删除
   sessions/{id}/overview                 右侧栏概要（用量、缓存命中、最新回复），比快照轻
   sessions/{id}/attachments              POST 上传（multipart），GET .../{附件 id} 取文件
@@ -223,8 +223,14 @@ async def list_sessions(request: web.Request) -> web.Response:
 async def create_session(request: web.Request) -> web.Response:
     payload = await request.json() if request.can_read_body else {}
     manager = _manager(request)
-    workspace = Path(payload.get("workspace") or manager.default_workspace()).expanduser()
-    web_session = manager.create(workspace, model_id=payload.get("model_id"), mode_name=payload.get("mode"))
+    # ephemeral：不指定工作区，服务端在 ~/.pocketagent/scratch 下建一个临时目录
+    ephemeral = bool(payload.get("ephemeral"))
+    workspace = None
+    if not ephemeral:
+        workspace = Path(payload.get("workspace") or manager.default_workspace()).expanduser()
+    web_session = manager.create(
+        workspace, model_id=payload.get("model_id"), mode_name=payload.get("mode"), ephemeral=ephemeral
+    )
     return _json_response({"id": web_session.id})
 
 

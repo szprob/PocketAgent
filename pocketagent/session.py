@@ -19,6 +19,8 @@ def _now_text() -> str:
 class Session:
     id: str
     workspace: str
+    # 临时任务：workspace 是自动建的临时目录（~/.pocketagent/scratch 下），不是用户的某个项目
+    ephemeral: bool = False
     created_at: str = field(default_factory=_now_text)
     updated_at: str = field(default_factory=_now_text)
     # 用的是配置文件里哪个模型（id），续跑时接着用它
@@ -59,6 +61,7 @@ class SessionSummary:
     title: str
     updated_at: str
     source: str | None
+    ephemeral: bool = False
 
 
 class SessionStore:
@@ -67,9 +70,9 @@ class SessionStore:
         # 会话 id → (文件修改时间, 摘要)。任务列表每隔几秒刷新一次，只重读改过的文件
         self._summary_cache: dict[str, tuple[float, SessionSummary]] = {}
 
-    def new_session(self, workspace: Path) -> Session:
+    def new_session(self, workspace: Path, ephemeral: bool = False) -> Session:
         session_id = datetime.now().strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
-        return Session(id=session_id, workspace=str(workspace.resolve()))
+        return Session(id=session_id, workspace=str(workspace.resolve()), ephemeral=ephemeral)
 
     def path_for(self, session_id: str) -> Path:
         return self.directory / f"{session_id}.json"
@@ -109,6 +112,7 @@ class SessionStore:
                     title=session.display_title(),
                     updated_at=session.updated_at,
                     source=session.source,
+                    ephemeral=session.ephemeral,
                 )
                 cached = (modified_at, summary)
             current[path.stem] = cached

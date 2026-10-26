@@ -101,7 +101,8 @@ def build_tool_context(settings: Settings, session: Session, skills: list[Skill]
     extra_read_dirs = [settings.attachments_dir / session.id] + [skill.directory for skill in skills]
     secret_dirs = default_secret_dirs() + [settings.home_dir]
     memory_dir = None
-    if settings.memory_enabled:
+    # 临时任务没有项目，记项目记忆没意义（目录会跟着临时工作区一起被清掉）
+    if settings.memory_enabled and not settings.ephemeral:
         memory_dir = settings.memory_dir
         memory_dir.mkdir(parents=True, exist_ok=True)
     sandbox = None
@@ -169,6 +170,7 @@ class Agent:
                 skills=self.skills,
                 sandbox=self.context.tool_context.sandbox,
                 memory_dir=self.context.tool_context.memory_dir,
+                ephemeral=settings.ephemeral,
             ),
         }
         messages = self.context.messages
@@ -337,7 +339,7 @@ def create_agent(
     """
     session_store = SessionStore(settings.sessions_dir)
     if session is None:
-        session = session_store.new_session(settings.workspace)
+        session = session_store.new_session(settings.workspace, ephemeral=settings.ephemeral)
     session.model_profile = settings.model_profile_id
     session.approval_mode = settings.approval_mode.value
     if provider is None:

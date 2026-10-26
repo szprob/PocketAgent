@@ -146,6 +146,31 @@ function renderWorkspaces() {
   }
 }
 
+// 侧栏上的状态标记：在等用户（回答问题 / 确认操作）用静态的琥珀色角标，
+// 只有真的在跑才用蓝色呼吸灯——呼吸灯一直闪，会让人以为它还在干活。
+const WAITING_MARKS = {
+  question: { mark: "?", label: "等你回答问题" },
+  approval: { mark: "!", label: "等你确认操作" },
+};
+
+function statusMark(task) {
+  const waiting = WAITING_MARKS[task?.waiting];
+  if (waiting) {
+    const badge = el("span", "waiting-badge", waiting.mark);
+    badge.title = waiting.label;
+    return badge;
+  }
+  if (task?.running) {
+    return el("span", "running-dot");
+  }
+  return null;
+}
+
+// 一个工作区里可能有好几个任务：等用户的优先，其次才是在跑的
+function workspaceStatusMark(tasks) {
+  return statusMark(tasks.find((task) => task.waiting)) || statusMark(tasks.find((task) => task.running));
+}
+
 function renderWorkspace(workspace) {
   const group = el("div", "workspace-group");
   const expanded = state.expandedWorkspaces.has(workspace.path);
@@ -161,8 +186,9 @@ function renderWorkspace(workspace) {
     title.appendChild(el("span", "workspace-badge", "默认"));
   }
   toggle.append(icon(expanded ? "chevronDown" : "chevronRight", "tree-chevron"), icon("folder"), title);
-  if (state.tasks.some((task) => task.workspace === workspace.path && task.running)) {
-    toggle.appendChild(el("span", "running-dot"));
+  const mark = workspaceStatusMark(state.tasks.filter((task) => task.workspace === workspace.path));
+  if (mark) {
+    toggle.appendChild(mark);
   }
   toggle.addEventListener("click", () => toggleWorkspace(workspace));
   const makeDefault = button("row-action", "", "star", isDefault ? "新任务默认就在这个工作区" : "设为新任务的默认工作区");
@@ -332,16 +358,19 @@ function taskRow(task) {
   row.type = "button";
   row.classList.toggle("active", activeView === "task" && task.id === state.currentTaskId);
   const title = el("span", "task-title", task.title);
-  const meta = el("span", "task-meta", `${workspaceName(task.workspace)} · ${relativeTime(task.updated_at)}`);
+  // 临时任务没有工作区，写「临时」比显示 scratch 下的目录名清楚
+  const place = task.ephemeral ? "临时" : workspaceName(task.workspace);
+  const meta = el("span", "task-meta", `${place} · ${relativeTime(task.updated_at)}`);
   const text = el("span", "task-text");
   text.append(title, meta);
   if (task.source && task.source.startsWith("automation:")) {
     row.appendChild(icon("clock", "task-kind"));
   }
   row.appendChild(text);
-  if (task.running) {
-    row.appendChild(el("span", "running-dot"));
-    row.title = "运行中";
+  const mark = statusMark(task);
+  if (mark) {
+    row.appendChild(mark);
+    row.title = mark.title || "运行中";
   }
   row.addEventListener("click", () => callbacks.onOpenTask(task.id));
   item.appendChild(row);

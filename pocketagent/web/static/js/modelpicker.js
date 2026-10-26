@@ -3,7 +3,7 @@
 
 import { sendJson } from "./api.js";
 import { button, el, formatTokens, icon } from "./dom.js";
-import { reloadInfo, state } from "./state.js";
+import { state } from "./state.js";
 
 export const REASONING_LABELS = {
   none: "关",
@@ -27,6 +27,8 @@ export class ModelPicker {
     this.models = [];
     this.fallbackModel = "";
     this.selectedId = null;
+    // 用户自己在面板里点过模型没有：点过就别让配置刷新把他选的模型弹回默认
+    this.picked = false;
     this.root = el("div", "model-picker");
     this.trigger = button("pill model-trigger", "", "model", "模型、思考档位、上下文长度");
     this.triggerLabel = el("span", "pill-label");
@@ -52,7 +54,9 @@ export class ModelPicker {
     this.models = models;
     this.fallbackModel = fallbackModel;
     if (!models.some((model) => model.id === this.selectedId)) {
+      // 原来选的那个没了（删掉或改成不显示）：退回默认，之后继续跟着默认走
       this.selectedId = (models.find((model) => model.visible !== false) || models[0])?.id || null;
+      this.picked = false;
     }
     this._renderTrigger();
     if (this.isOpen()) {
@@ -66,6 +70,14 @@ export class ModelPicker {
       this.selectedId = modelId;
       this._renderTrigger();
     }
+  }
+
+  // 新任务页用：跟着配置里的默认模型走，但用户自己挑过就不再动他挑的
+  setDefaultModel(modelId) {
+    if (this.picked) {
+      return;
+    }
+    this.setModel(modelId);
   }
 
   getModel() {
@@ -153,6 +165,7 @@ export class ModelPicker {
       }
       item.addEventListener("click", () => {
         this.selectedId = model.id;
+        this.picked = true;
         this._renderTrigger();
         this._renderPopover();
         this.onSelectModel?.(model.id);
@@ -209,13 +222,23 @@ export class ModelPicker {
   }
 
   async _save(model, options) {
+    let updated;
     try {
-      await sendJson(`api/models/${encodeURIComponent(model.id)}`, "PATCH", options);
+      updated = await sendJson(`api/models/${encodeURIComponent(model.id)}`, "PATCH", options);
     } catch (error) {
       window.alert(`保存失败：${error.message}`);
       return;
     }
-    // 重新拉模型信息，所有输入框的选择器一起更新
-    await reloadInfo();
+    // 只换掉这一个模型的数据（this.models 就是 state.info.models，改一处两处都新）。
+    // 别去重新拉整个 /api/info：那样会把面板重刷一遍，用户刚点的模型和档位都可能被弹回默认。
+    const index = this.models.findIndex((each) => each.id === model.id);
+    if (index >= 0 && updated?.id) {
+      this.models[index] = updated;
+    }
+    this._renderTrigger();
+    if (this.isOpen()) {
+      this._renderPopover();
+      this._place();
+    }
   }
 }

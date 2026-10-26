@@ -15,7 +15,14 @@ from pocketagent.permissions import (
     DenyAllApprover,
     PermissionGate,
 )
-from pocketagent.sandbox import SandboxPolicy, available_sandbox, denial_hint, seatbelt_profile, wrap_command
+from pocketagent.sandbox import (
+    SandboxPolicy,
+    available_sandbox,
+    bubblewrap_arguments,
+    denial_hint,
+    seatbelt_profile,
+    wrap_command,
+)
 from pocketagent.tools import ToolAccess, ToolContext
 from pocketagent.tools.files import EditFileTool, ReadFileTool
 from pocketagent.tools.search import GlobTool, GrepTool
@@ -106,6 +113,45 @@ class SeatbeltSandboxTest(unittest.TestCase):
             "python3 -c \"import socket; socket.create_connection(('1.1.1.1', 53), timeout=3)\"", self.policy
         )
         self.assertNotEqual(result.returncode, 0)
+
+
+class ScratchWorkspaceSandboxTest(unittest.TestCase):
+    """临时任务的工作区在 ~/.pocketagent 下，而那是密钥目录：沙箱要单独把它放开。"""
+
+    def setUp(self) -> None:
+        self.directories = TemporaryDirectories()
+        self.secret = self.directories.home_dir
+        self.scratch = self.secret / "scratch" / "20261026-120000-abcdef"
+        self.scratch.mkdir(parents=True)
+        (self.secret / "config.json").write_text('{"api_key": "sk-secret"}', encoding="utf-8")
+
+    def tearDown(self) -> None:
+        self.directories.cleanup()
+
+    def test_only_a_workspace_inside_the_secret_directory_is_an_exception(self) -> None:
+        inside = SandboxPolicy(workspace=self.scratch, secret_dirs=[self.secret])
+        outside = SandboxPolicy(workspace=self.directories.workspace, secret_dirs=[self.secret])
+
+        self.assertEqual(inside.writable_inside_secret(), [self.scratch.resolve()])
+        self.assertEqual(outside.writable_inside_secret(), [])
+
+    def test_seatbelt_reads_the_workspace_but_still_not_the_config(self) -> None:
+        profile = seatbelt_profile(SandboxPolicy(workspace=self.scratch, secret_dirs=[self.secret]))
+        read_exceptions = [line for line in profile.splitlines() if line.startswith("(allow file-read* (subpath")]
+
+        self.assertEqual(len(read_exceptions), 1)
+        self.assertIn(str(self.scratch.resolve()), read_exceptions[0])
+        self.assertIn(f'(deny file-read* (subpath "{self.secret.resolve()}")', profile)
+        self.assertNotIn("config.json", profile)
+
+    def test_bubblewrap_mounts_the_workspace_back_after_hiding_the_secret_directory(self) -> None:
+        arguments = bubblewrap_arguments(SandboxPolicy(workspace=self.scratch, secret_dirs=[self.secret]))
+        hidden_at = arguments.index(str(self.secret.resolve()))
+        workspace_binds = [index for index, item in enumerate(arguments) if item == str(self.scratch.resolve())]
+
+        self.assertTrue(workspace_binds)
+        # tmpfs 盖住密钥目录之后还要能写，所以必须有一次更靠后的 --bind
+        self.assertGreater(max(workspace_binds), hidden_at)
 
 
 class BashSandboxIntegrationTest(unittest.IsolatedAsyncioTestCase):

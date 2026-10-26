@@ -31,6 +31,7 @@ from pocketagent.permissions import ApprovalAnswer, ApprovalMode, ApprovalReques
 from pocketagent.questions import Question, QuestionAnswer
 from pocketagent.memory import delete_memory, list_memories, memory_file_path, project_memory_dir, read_index
 from pocketagent.frontmatter import split_frontmatter
+from pocketagent.scratch import create_scratch_workspace, ensure_scratch_workspace
 from pocketagent.skills import discover_skills, skill_directories
 from pocketagent.session import Session, SessionStore
 from pocketagent.usage import UsageLog
@@ -128,6 +129,18 @@ class WebSession:
         return self.background_task is not None and not self.background_task.done()
 
     @property
+    def waiting_for(self) -> str | None:
+        """在等用户什么：question（问了还没答）/ approval（要审批），都不是就是 None。
+
+        这种时候后台任务其实没在干活，只是卡着等人，界面上不该显示成「运行中」。
+        """
+        if self.pending_questions:
+            return "question"
+        if self.pending_approvals:
+            return "approval"
+        return None
+
+    @property
     def mode(self) -> ApprovalMode:
         return self.agent.context.permissions.mode
 
@@ -158,11 +171,14 @@ class WebSession:
         context = self.agent.context
         return {
             "running": self.running,
+            "waiting": self.waiting_for,
             "mode": self.mode.value,
             "model_id": self.settings.model_profile_id,
             "model": self.settings.display_model(),
             "title": self.session.display_title(),
             "workspace": self.session.workspace,
+            # 临时任务：工作区是 ~/.pocketagent/scratch 下自动建的目录，界面上显示成「临时任务」
+            "ephemeral": self.session.ephemeral,
             "context_tokens": context.estimated_context_tokens(),
             "context_window": self.settings.context_window_tokens,
             "compact_threshold": self.settings.compact_threshold if self.settings.auto_compact else None,
@@ -361,10 +377,13 @@ class SessionManager:
             return self.provider_factory(settings)
         return create_provider(settings)
 
-    def _settings_for(self, workspace: Path, model_key: str | None, mode_name: str | None) -> Settings:
+    def _settings_for(
+        self, workspace: Path, model_key: str | None, mode_name: str | None, ephemeral: bool = False
+    ) -> Settings:
         """以启动时的设置为底，换上这个任务的工作区、模型（找不到就用默认模型）和审批模式。"""
         settings = copy.deepcopy(self.base_settings)
         settings.workspace = workspace
+        settings.ephemeral = ephemeral
         settings.apply_app_config(self.app_config)
         settings.approval_mode = ApprovalMode(mode_name) if mode_name else self.app_config.approval_mode
         profile = self.app_config.find_model(model_key) or self.app_config.default_profile()
@@ -413,15 +432,22 @@ class SessionManager:
 
     def create(
         self,
-        workspace: Path,
+        workspace: Path | None = None,
         model_id: str | None = None,
         mode_name: str | None = None,
         title: str | None = None,
         source: str | None = None,
+        ephemeral: bool = False,
     ) -> WebSession:
+        """ephemeral=True 表示不指定工作区：在 ~/.pocketagent/scratch 下建一个临时目录给它。"""
+        if ephemeral:
+            workspace = create_scratch_workspace(self.base_settings.home_dir)
+        if workspace is None:
+            raise ConfigError("没有指定工作区")
         if not workspace.is_dir():
             raise ConfigError(f"工作区不存在：{workspace}")
-        web_session = self._register(self._settings_for(workspace.resolve(), model_id, mode_name), session=None)
+        settings = self._settings_for(workspace.resolve(), model_id, mode_name, ephemeral=ephemeral)
+        web_session = self._register(settings, session=None)
         web_session.session.title = title
         web_session.session.source = source
         return web_session
@@ -433,7 +459,11 @@ class SessionManager:
         if not self.store.exists(session_id):
             raise KeyError(session_id)
         session = self.store.load(session_id)
-        settings = self._settings_for(Path(session.workspace), session.model_profile, session.approval_mode)
+        workspace = Path(session.workspace)
+        if session.ephemeral:
+            # 用户可能已经把 scratch 清掉了，重建一个空的，别让工具全报「目录不存在」
+            workspace = ensure_scratch_workspace(workspace)
+        settings = self._settings_for(workspace, session.model_profile, session.approval_mode, session.ephemeral)
         return self._register(settings, session=session)
 
     def list_tasks(self) -> list[dict[str, Any]]:
@@ -443,7 +473,12 @@ class SessionManager:
         for summary in self.store.summaries():
             seen_ids.add(summary.id)
             live = self.sessions.get(summary.id)
-            task = {**asdict(summary), "running": bool(live and live.running)}
+            task = {
+                **asdict(summary),
+                "running": bool(live and live.running),
+                # 侧栏靠这个把「在跑」和「卡在你这儿」画成两种标记
+                "waiting": live.waiting_for if live is not None else None,
+            }
             if live is not None:
                 # 内存里的标题可能刚改过还没存盘
                 task["title"] = live.session.display_title()
@@ -457,9 +492,11 @@ class SessionManager:
                         "id": session.id,
                         "title": session.display_title(),
                         "workspace": session.workspace,
+                        "ephemeral": session.ephemeral,
                         "updated_at": session.updated_at,
                         "source": session.source,
                         "running": True,
+                        "waiting": live.waiting_for,
                     },
                 )
         return tasks

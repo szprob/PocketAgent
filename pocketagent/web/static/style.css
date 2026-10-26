@@ -346,6 +346,25 @@ button:disabled { cursor: default; opacity: 0.5; }
   animation: pulse 1.2s ease-in-out infinite;
 }
 
+/* 在等用户：回答问题用「?」，等审批用「!」。静态的琥珀色角标，和「在跑」的蓝点分开，
+   不然一直闪的呼吸灯会让人以为它还在干活。 */
+.waiting-badge {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: var(--warning);
+  /* 字取 surface 的反色：浅色主题白字，深色主题深字 */
+  color: var(--surface);
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 1;
+  box-shadow: 0 0 0 2px var(--warning-soft);
+}
+
 @keyframes pulse { 50% { opacity: 0.35; } }
 
 .account {

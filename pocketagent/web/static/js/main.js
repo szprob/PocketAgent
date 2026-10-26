@@ -3,7 +3,7 @@
 import { sendJson } from "./api.js";
 import { closeEditor, initAutomations, isAutomationEditorOpen, showAutomations } from "./automations.js";
 import { chatComposer, initChat, interrupt, isChatRunning, leaveTask, openTask, updateChatOptions } from "./chat.js";
-import { Composer } from "./composer.js";
+import { Composer, SCRATCH_WORKSPACE } from "./composer.js";
 import { el, icon, show } from "./dom.js";
 import { citationText, closeFilePreview, initFilePreview, isFilePreviewOpen } from "./filepreview.js";
 import { closeFolderPicker, isFolderPickerOpen } from "./folderpicker.js";
@@ -97,7 +97,7 @@ function prepareNewTask(workspacePath) {
   newTaskComposer.setModes(info.modes);
   newTaskComposer.setMode(info.default_mode);
   newTaskComposer.setModels(info.models, info.fallback_model);
-  newTaskComposer.setModel(info.default_model);
+  newTaskComposer.setDefaultModel(info.default_model);
   newTaskComposer.setWorkspaces(info.workspaces, workspacePath || info.default_workspace);
   const hint = document.getElementById("new-task-hint");
   hint.replaceChildren();
@@ -111,10 +111,12 @@ function prepareNewTask(workspacePath) {
 }
 
 async function startNewTask({ text, files }) {
+  const choice = newTaskComposer.getWorkspaceChoice();
   let created;
   try {
     created = await sendJson("api/sessions", "POST", {
-      workspace: newTaskComposer.getWorkspace(),
+      workspace: choice.workspace,
+      ephemeral: choice.ephemeral,
       model_id: newTaskComposer.getModel(),
       mode: newTaskComposer.getMode(),
     });
@@ -204,9 +206,15 @@ function fillStaticIcons() {
 function onInfoChanged(info) {
   updateChatOptions(info);
   if (parseRoute().view === "new") {
-    const current = newTaskComposer.getWorkspace();
-    // 默认工作区刚改过、输入框里还是旧默认（用户没自己挑过），就跟着换成新的
-    prepareNewTask(current && current !== lastDefaultWorkspace ? current : info.default_workspace);
+    const choice = newTaskComposer.getWorkspaceChoice();
+    // 用户自己挑过（包括「临时任务」）就别动；还是旧默认就跟着新的默认走
+    let keep = null;
+    if (choice.ephemeral) {
+      keep = SCRATCH_WORKSPACE;
+    } else if (choice.workspace && choice.workspace !== lastDefaultWorkspace) {
+      keep = choice.workspace;
+    }
+    prepareNewTask(keep || info.default_workspace);
   }
   lastDefaultWorkspace = info.default_workspace;
 }

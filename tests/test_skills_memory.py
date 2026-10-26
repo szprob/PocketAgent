@@ -358,6 +358,17 @@ class ProjectMemoryTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("项目记忆", harness.agent.context.messages[0]["content"])
         self.assertIsNone(harness.agent.context.tool_context.memory_dir)
 
+    async def test_ephemeral_tasks_get_no_project_memory(self) -> None:
+        self.write_memory()
+        harness = build_harness(self.directories, [], ephemeral=True)
+        system_prompt = harness.agent.context.messages[0]["content"]
+
+        # 临时任务没有项目：不读也不写项目记忆，提示里要说明工作目录是临时目录
+        self.assertNotIn("项目记忆", system_prompt)
+        self.assertIn("这是临时任务", system_prompt)
+        self.assertIsNone(harness.agent.context.tool_context.memory_dir)
+        self.assertTrue(harness.agent.session.ephemeral)
+
 
 if __name__ == "__main__":
     unittest.main()

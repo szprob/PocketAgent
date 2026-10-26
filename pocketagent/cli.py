@@ -24,6 +24,7 @@ from pocketagent.permissions import (
     DenyAllApprover,
 )
 from pocketagent.questions import Question, QuestionAnswer
+from pocketagent.scratch import create_scratch_workspace
 from pocketagent.session import Session, SessionStore
 
 TOOL_RESULT_PREVIEW_LINES = 4
@@ -257,7 +258,8 @@ class Repl:
         settings = self.settings
         print(self.style.bold("PocketAgent"))
         mode = self.agent.context.permissions.mode.value
-        print(self.style.dim(f"模型 {settings.display_model()} · 目录 {settings.workspace} · 审批 {mode}"))
+        directory = f"临时目录 {settings.workspace}" if settings.ephemeral else f"目录 {settings.workspace}"
+        print(self.style.dim(f"模型 {settings.display_model()} · {directory} · 审批 {mode}"))
         print(self.style.dim(f"会话 {self.agent.session.id} · /help 查看命令 · Ctrl-C 中断 · Ctrl-D 退出"))
 
     def _read_input(self) -> str | None:
@@ -301,6 +303,9 @@ class Repl:
         if command == "/help":
             print(HELP_TEXT)
         elif command == "/new":
+            if self.settings.ephemeral:
+                # 临时任务里 /new 就是一个新任务：也给它一个干净的新目录
+                self.settings.workspace = create_scratch_workspace(self.settings.home_dir)
             self.agent = self._create_agent(session=None)
             print(self.style.dim(f"已开新会话 {self.agent.session.id}"))
         elif command == "/compact":
@@ -352,6 +357,7 @@ def _parse_arguments(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("prompt", nargs="*", help="第一句话；配合 -p 时执行完就退出")
     parser.add_argument("-p", "--print", dest="print_mode", action="store_true", help="非交互：执行 prompt 后退出")
     parser.add_argument("-C", "--workspace", help="工作目录，默认当前目录")
+    parser.add_argument("--scratch", action="store_true", help="不指定工作区：在 ~/.pocketagent/scratch 下建一个临时目录")
     parser.add_argument("-m", "--model", help="配置里的模型名称 / id，或者直接写模型名；默认用配置里的默认模型")
     parser.add_argument("--mode", choices=[mode.value for mode in ApprovalMode], help="审批模式，默认 ask")
     parser.add_argument("-c", "--continue", dest="continue_latest", action="store_true", help="继续这个目录最近的会话")
@@ -369,12 +375,17 @@ def _parse_arguments(argv: list[str] | None) -> argparse.Namespace:
 
 
 def _settings_from_arguments(arguments: argparse.Namespace) -> Settings:
+    if arguments.scratch and arguments.workspace:
+        sys.exit("--scratch 和 -C 只能给一个：临时任务不指定工作区")
     workspace = Path(arguments.workspace).expanduser().resolve() if arguments.workspace else Path.cwd()
     approval_mode = ApprovalMode(arguments.mode) if arguments.mode else None
     try:
-        return Settings.load(model=arguments.model, workspace=workspace, approval_mode=approval_mode)
+        settings = Settings.load(
+            model=arguments.model, workspace=workspace, approval_mode=approval_mode, ephemeral=arguments.scratch
+        )
     except ConfigError as error:
         sys.exit(f"配置有误：{error}")
+    return settings
 
 
 def _pick_session(arguments: argparse.Namespace, settings: Settings) -> Session | None:
@@ -427,6 +438,9 @@ def main(argv: list[str] | None = None) -> None:
     if arguments.web:
         _run_web(arguments, settings)
         return
+    if settings.ephemeral:
+        # 真正要开跑了才建目录：--web / --sessions 用不上临时工作区，别在磁盘上留空目录
+        settings.workspace = create_scratch_workspace(settings.home_dir)
     session = _pick_session(arguments, settings)
     prompt = " ".join(arguments.prompt).strip()
     if arguments.print_mode:

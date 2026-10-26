@@ -169,7 +169,12 @@ function renderOverview() {
   }
   const rows = el("div", "overview-rows");
   rows.append(
-    overviewRow("工作区", workspaceName(status.workspace), status.workspace),
+    // 临时任务的工作区是 ~/.pocketagent/scratch 下的目录，直接显示目录名看不出是什么
+    overviewRow(
+      "工作区",
+      status.ephemeral ? "临时任务" : workspaceName(status.workspace),
+      status.ephemeral ? `临时目录 ${status.workspace}` : status.workspace
+    ),
     overviewRow("模型", status.model)
   );
   if (panel.usage) {

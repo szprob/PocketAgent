@@ -46,6 +46,10 @@ def default_secret_dirs() -> list[Path]:
     return [Path(os.path.expanduser(item)) for item in SECRET_PATHS]
 
 
+def _is_within(path: Path, root: Path) -> bool:
+    return path == root or root in path.parents
+
+
 @dataclass
 class SandboxPolicy:
     workspace: Path
@@ -60,6 +64,14 @@ class SandboxPolicy:
         roots = [self.workspace] + [Path(os.path.expanduser(item)) for item in EXTRA_WRITABLE] + self.writable_roots
         roots.append(Path(tempfile.gettempdir()))
         return _unique_real_paths(roots)
+
+    def writable_inside_secret(self) -> list[Path]:
+        """能写、但落在密钥目录里的那些（临时任务的工作区在 ~/.pocketagent/scratch 下）。
+
+        密钥目录默认连读都不让读，这些得单独放开，否则临时任务里连 ls 都跑不动。
+        """
+        secrets = _unique_real_paths(self.secret_dirs)
+        return [root for root in self.all_writable() if any(_is_within(root, secret) for secret in secrets)]
 
     def protected_paths(self) -> list[Path]:
         return [self.workspace.resolve() / relative for relative in PROTECTED_IN_WORKSPACE]
@@ -96,7 +108,9 @@ def seatbelt_profile(policy: SandboxPolicy) -> str:
     """macOS Seatbelt 规则。后写的规则优先，所以先放开、再收紧。"""
     writable = _subpaths(policy.all_writable())
     secrets = _subpaths(_unique_real_paths(policy.secret_dirs))
-    exceptions = _subpaths(_unique_real_paths(policy.readable_exceptions))
+    # 工作区可能就在密钥目录里（临时任务），也要算进读例外
+    readable = [*policy.readable_exceptions, *policy.writable_inside_secret()]
+    exceptions = _subpaths(_unique_real_paths(readable))
     protected = _subpaths(policy.protected_paths())
     lines = [
         "(version 1)",
@@ -131,7 +145,8 @@ def seatbelt_profile(policy: SandboxPolicy) -> str:
 def bubblewrap_arguments(policy: SandboxPolicy) -> list[str]:
     """Linux bubblewrap：整个根目录只读挂进去，再把能写的目录可写挂上，密钥目录用空目录盖住。"""
     arguments = ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--die-with-parent"]
-    for root in policy.all_writable():
+    writable = policy.all_writable()
+    for root in writable:
         if root.exists():
             arguments += ["--bind", str(root), str(root)]
     for protected in policy.protected_paths():
@@ -143,9 +158,17 @@ def bubblewrap_arguments(policy: SandboxPolicy) -> list[str]:
         elif secret.exists():
             arguments += ["--ro-bind", "/dev/null", str(secret)]
     # 密钥目录盖住之后，再把例外的子目录挂回来（只读）
+    writable_inside_secret = policy.writable_inside_secret()
     for exception in policy.readable_exceptions:
+        if any(_is_within(exception, root) for root in writable_inside_secret):
+            # 这个是临时任务的工作区，下面要按可写挂回来，别先挂成只读
+            continue
         if exception.exists():
             arguments += ["--ro-bind", str(exception), str(exception)]
+    # 工作区在密钥目录里（临时任务）：盖住之后重新挂回去，而且得能写
+    for root in writable_inside_secret:
+        if root.exists():
+            arguments += ["--bind", str(root), str(root)]
     if not policy.allow_network:
         arguments.append("--unshare-net")
     return arguments

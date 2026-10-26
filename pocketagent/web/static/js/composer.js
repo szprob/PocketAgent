@@ -7,6 +7,11 @@ import { MODE_ICONS, MODE_LABELS } from "./state.js";
 
 const MAX_TEXTAREA_HEIGHT = 240;
 
+// 工作区下拉里「不指定工作区」那一项的值。真实工作区都是绝对路径，不会撞上。
+export const SCRATCH_WORKSPACE = "__scratch__";
+const SCRATCH_LABEL = "临时任务（不指定工作区）";
+const SCRATCH_TITLE = "在 ~/.pocketagent/scratch 下新建一个临时目录，不碰任何项目";
+
 export class Composer {
   /**
    * kind: "new"（新任务页，底下能选工作区）或 "chat"（任务页，底下显示任务所在的工作区）
@@ -271,6 +276,11 @@ export class Composer {
     this.modelPicker.setModel(modelId);
   }
 
+  // 新任务页：跟着配置里的默认模型走；用户自己挑过模型就不动
+  setDefaultModel(modelId) {
+    this.modelPicker.setDefaultModel(modelId);
+  }
+
   getModel() {
     return this.modelPicker.getModel();
   }
@@ -288,18 +298,28 @@ export class Composer {
       option.disabled = !workspace.exists;
       this.workspaceSelect.appendChild(option);
     }
-    if (selectedPath) {
-      this.workspaceSelect.value = selectedPath;
+    const scratch = el("option", "", SCRATCH_LABEL);
+    scratch.value = SCRATCH_WORKSPACE;
+    scratch.title = SCRATCH_TITLE;
+    this.workspaceSelect.appendChild(scratch);
+    // 没指定就保持原来选的（比如用户刚选了「临时任务」，配置刷新不该把它弹回去）
+    const wanted = selectedPath || this.workspaceSelect.value;
+    const available = [...this.workspaceSelect.options].filter((option) => !option.disabled).map((option) => option.value);
+    this.workspaceSelect.value = available.includes(wanted) ? wanted : available[0];
+  }
+
+  // 新任务页要的：选了哪个工作区，还是「临时任务」
+  getWorkspaceChoice() {
+    const value = this.workspaceSelect?.value || "";
+    if (value === SCRATCH_WORKSPACE) {
+      return { workspace: null, ephemeral: true };
     }
+    return { workspace: value || null, ephemeral: false };
   }
 
-  getWorkspace() {
-    return this.workspaceSelect?.value || null;
-  }
-
-  setWorkspaceLabel(path) {
-    this.workspaceLabel.textContent = workspaceName(path);
-    this.workspaceLabel.title = path;
+  setWorkspaceLabel(path, ephemeral) {
+    this.workspaceLabel.textContent = ephemeral ? "临时任务" : workspaceName(path);
+    this.workspaceLabel.title = ephemeral ? `临时目录 ${path}` : path;
   }
 
   setRunning(running, busyInputMode) {

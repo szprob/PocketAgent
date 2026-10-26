@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import json
+import shutil
 import socket
 import unittest
 from pathlib import Path
@@ -171,7 +172,10 @@ class WebServerTest(WebTestBase):
             self.assertEqual(snapshot["items"], [])
             await socket_client.send_json({"type": "user_message", "text": "写个文件"})
             approval = await self._receive_until(socket_client, is_type("approval_request"))
+            waiting = await self._get_json("/api/sessions")
             self.assertIn("新建 a.txt", approval["preview"])
+            # 卡在审批上时，任务列表要说「在等你确认」，不是「在跑」
+            self.assertEqual(waiting["sessions"][0]["waiting"], "approval")
             await socket_client.send_json({"type": "approval", "request_id": approval["request_id"], "answer": "allow_once"})
             turn_end = await self._receive_until(socket_client, is_event("turn_end"))
             await self._receive_until(socket_client, is_idle_state)
@@ -542,6 +546,53 @@ class WebServerTest(WebTestBase):
         self.assertEqual(snapshot["items"][-1]["text"], "日报写好了")
 
 
+class WebScratchTaskTest(WebTestBase):
+    """不指定工作区的任务：服务端在 ~/.pocketagent/scratch 下建一个临时目录，工具照常能用。"""
+
+    async def test_new_task_without_a_workspace_runs_in_a_scratch_directory(self) -> None:
+        self.responses.extend(
+            [
+                LLMResponse(tool_calls=[tool_call("call_1", "write_file", '{"path": "note.txt", "content": "hi"}')]),
+                LLMResponse(text="写好了"),
+            ]
+        )
+        session_id = await self._create_session(ephemeral=True, mode="full_auto")
+        snapshot = await self._get_json(f"/api/sessions/{session_id}")
+        workspace = Path(snapshot["workspace"])
+
+        async with self._connect(session_id) as socket_client:
+            await socket_client.receive_json()
+            await socket_client.send_json({"type": "user_message", "text": "写个文件"})
+            await self._receive_until(socket_client, is_event("turn_end"))
+            await self._receive_until(socket_client, is_idle_state)
+
+        self.assertTrue(snapshot["ephemeral"])
+        self.assertEqual(workspace.parent, self.directories.home_dir / "scratch")
+        self.assertTrue(workspace.is_dir())
+        self.assertEqual((workspace / "note.txt").read_text(encoding="utf-8"), "hi")
+        tasks = await self._get_json("/api/sessions")
+        self.assertTrue(tasks["sessions"][0]["ephemeral"])
+
+    async def test_reopening_a_task_whose_scratch_directory_was_cleaned(self) -> None:
+        self.responses.append(LLMResponse(text="收到"))
+        session_id = await self._create_session(ephemeral=True, mode="full_auto")
+        async with self._connect(session_id) as socket_client:
+            await socket_client.receive_json()
+            await socket_client.send_json({"type": "user_message", "text": "你好"})
+            await self._receive_until(socket_client, is_event("turn_end"))
+            await self._receive_until(socket_client, is_idle_state)
+        workspace = Path((await self._get_json(f"/api/sessions/{session_id}"))["workspace"])
+
+        # 用户把 scratch 清了、服务也重启过：重开任务时要把目录重新建出来，不能满屏「目录不存在」
+        shutil.rmtree(workspace)
+        self.app[MANAGER_KEY].sessions.clear()
+        reopened = await self._get_json(f"/api/sessions/{session_id}")
+
+        self.assertTrue(workspace.is_dir())
+        self.assertTrue(reopened["ephemeral"])
+        self.assertEqual(reopened["workspace"], str(workspace))
+
+
 class WebRound3Test(WebTestBase):
     """模型选项、右侧栏概要、文件浏览、联网设置。"""
 
@@ -785,6 +836,27 @@ class WebQuestionsTest(WebTestBase):
         self.assertEqual(snapshot["pending_questions"][0]["request_id"], question["request_id"])
         self.assertIn("→ SQLite", tool_message["content"])
         self.assertIn("单元、集成；用户自己写的：还要压测", tool_message["content"])
+
+    async def test_session_list_says_it_is_waiting_for_the_answer(self) -> None:
+        self.responses.extend(
+            [
+                LLMResponse(tool_calls=[tool_call("c1", "ask_user", json.dumps(self.QUESTIONS, ensure_ascii=False))]),
+                LLMResponse(text="收到"),
+            ]
+        )
+        session_id = await self._create_session(mode="ask")
+        async with self._connect(session_id) as socket_client:
+            question = await self._run_until_question(socket_client, session_id)
+            waiting = await self._get_json("/api/sessions")
+            await socket_client.send_json(
+                {"type": "question_answer", "request_id": question["request_id"], "answers": None}
+            )
+            await self._receive_until(socket_client, is_type("question_resolved"))
+            answered = await self._get_json("/api/sessions")
+
+        # 问了还没答：侧栏要显示「等你回答」的角标，而不是运行中的呼吸灯
+        self.assertEqual(waiting["sessions"][0]["waiting"], "question")
+        self.assertIsNone(answered["sessions"][0]["waiting"])
 
     async def test_skipping_tells_the_model_to_decide(self) -> None:
         self.responses.extend(

@@ -194,15 +194,19 @@ function handleServerMessage(message) {
       break;
     case "approval_request":
       showApproval(message);
+      refreshTaskList();
       break;
     case "approval_resolved":
       resolveApproval(message.request_id);
+      refreshTaskList();
       break;
     case "question_request":
       showQuestions(message);
+      refreshTaskList();
       break;
     case "question_resolved":
       resolveQuestions(message.request_id);
+      refreshTaskList();
       break;
     case "returned_inputs":
       chat.composer.restoreTexts(message.inputs.map((input) => input.text));
@@ -213,6 +217,11 @@ function handleServerMessage(message) {
     default:
       break;
   }
+}
+
+// 侧栏的「等你回答 / 等你确认」角标要马上变，不用等 5 秒一次的轮询
+function refreshTaskList() {
+  reloadTasks().catch(() => {});
 }
 
 async function sendPendingFirstMessage() {
@@ -237,7 +246,7 @@ function applyStatus(status) {
   chat.composer.setRunning(status.running, state.info?.busy_input_mode);
   chat.composer.setContext(status.context_tokens, status.context_window, status.compact_threshold);
   chat.composer.setCompacting(status.compacting);
-  chat.composer.setWorkspaceLabel(status.workspace);
+  chat.composer.setWorkspaceLabel(status.workspace, status.ephemeral);
   renderPendingInputs(status);
   emit("task-status", status);
 }

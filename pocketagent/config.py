@@ -579,6 +579,8 @@ class Settings:
     model_profile_name: str = ""
 
     workspace: Path = field(default_factory=Path.cwd)
+    # 临时任务：workspace 是 ~/.pocketagent/scratch 下自动建的目录，不是用户的某个项目
+    ephemeral: bool = False
     approval_mode: ApprovalMode = ApprovalMode.ASK
     home_dir: Path = field(default_factory=default_home_dir)
 
@@ -674,11 +676,13 @@ class Settings:
         model: str | None = None,
         workspace: Path | None = None,
         approval_mode: ApprovalMode | None = None,
+        ephemeral: bool = False,
     ) -> "Settings":
-        """按优先级合成设置。model 可以是配置里的模型 id / 名称 / 模型名，都不匹配就当成模型名直接用。"""
+        """按优先级合成设置。model 可以是配置里的模型 id / 名称 / 模型名，都不匹配就当成模型名直接用。
+        ephemeral 表示这是临时任务：真正的 workspace 由调用方拿到 home_dir 之后建好再设进来。"""
         home_dir = default_home_dir()
         app_config = AppConfig.load(config_path(home_dir))
-        settings = cls(home_dir=home_dir, approval_mode=app_config.approval_mode)
+        settings = cls(home_dir=home_dir, approval_mode=app_config.approval_mode, ephemeral=ephemeral)
         settings.apply_app_config(app_config)
         settings.apply_environment()
         profile = app_config.find_model(model) or app_config.default_profile()
