@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pocketagent"
+version = "0.1.0"
+description = "基于 PocketFlow 的编程 agent（类 Codex / Claude Code）"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["openai>=1.40"]
+
+[project.optional-dependencies]
+web = ["aiohttp>=3.9"]
+
+[project.scripts]
+pocketagent = "pocketagent.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["pocketagent*", "pocketflow*"]
+
+[tool.setuptools.package-data]
+"pocketagent.web" = ["static/*"]
+
+[tool.ruff]
+line-length = 120

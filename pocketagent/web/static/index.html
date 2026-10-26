@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PocketAgent</title>
+  <link rel="stylesheet" href="static/style.css">
+</head>
+<body>
+  <div class="app" id="app">
+    <aside class="sidebar">
+      <div class="brand">PocketAgent</div>
+      <button id="new-session" class="primary-button" type="button">＋ 新会话</button>
+      <div class="sidebar-label">这个目录的会话</div>
+      <nav id="session-list" class="session-list"></nav>
+    </aside>
+    <div class="sidebar-backdrop" id="sidebar-backdrop"></div>
+
+    <main class="main">
+      <header class="topbar">
+        <button id="toggle-sidebar" class="icon-button" type="button" title="会话列表" aria-label="会话列表">☰</button>
+        <div class="topbar-info">
+          <div id="workspace" class="workspace"></div>
+        </div>
+        <label class="picker" title="当前会话用的模型">
+          <span>模型</span>
+          <select id="model-select"></select>
+        </label>
+        <label class="picker" title="审批模式">
+          <span>审批</span>
+          <select id="mode-select"></select>
+        </label>
+        <button id="compact-button" class="ghost-button" type="button" title="把历史压缩成摘要，腾出上下文">压缩</button>
+        <button id="settings-button" class="icon-button" type="button" title="设置：模型、密钥、默认审批模式" aria-label="设置">⚙</button>
+      </header>
+
+      <section id="transcript" class="transcript" aria-live="polite">
+        <div class="transcript-inner" id="transcript-inner">
+          <div id="empty-hint" class="empty-hint"></div>
+        </div>
+      </section>
+
+      <footer class="composer">
+        <div id="connection-banner" class="connection-banner hidden">连接已断开，正在重连…</div>
+        <div class="composer-box">
+          <textarea id="input" rows="1" placeholder="让 agent 做点什么…  Enter 发送，Shift+Enter 换行"></textarea>
+          <button id="send-button" class="send-button" type="button">发送</button>
+        </div>
+        <div class="composer-status" id="status-text">空闲</div>
+      </footer>
+    </main>
+  </div>
+
+  <div class="modal hidden" id="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+    <div class="modal-panel">
+      <header class="modal-header">
+        <h2 id="settings-title">设置</h2>
+        <button id="settings-close" class="icon-button" type="button" aria-label="关闭">✕</button>
+      </header>
+      <div class="modal-body">
+        <section>
+          <div class="settings-section-title">模型</div>
+          <div class="model-layout">
+            <div class="model-sidebar">
+              <div id="model-list" class="model-list"></div>
+              <button id="add-model" class="ghost-button full-width" type="button">＋ 添加模型</button>
+            </div>
+            <form id="model-form" class="model-form" autocomplete="off">
+              <div id="model-form-empty" class="model-form-empty">还没有模型，点「添加模型」</div>
+              <div id="model-form-fields">
+                <label class="field">
+                  <span>名称</span>
+                  <input name="name" type="text" placeholder="界面上显示的名字，如 DS 4.1 Flash">
+                </label>
+                <label class="field">
+                  <span>模型名 *</span>
+                  <input name="model" type="text" placeholder="发给接口的 model 参数，如 deepseek-v4.1-flash">
+                </label>
+                <label class="field">
+                  <span>接口地址</span>
+                  <input name="base_url" type="text" placeholder="OpenAI 兼容接口，如 https://your-gateway.example.com/v1">
+                </label>
+                <label class="field">
+                  <span>API Key</span>
+                  <input name="api_key" type="password" placeholder="sk-...">
+                  <span class="field-hint" id="api-key-hint"></span>
+                </label>
+                <div class="field-row">
+                  <label class="field">
+                    <span>思考档位</span>
+                    <input name="reasoning_effort" type="text" list="reasoning-options" placeholder="不填就不传">
+                  </label>
+                  <label class="field">
+                    <span>上下文长度（token）</span>
+                    <input name="context_window_tokens" type="number" min="1000" step="1000">
+                  </label>
+                  <label class="field">
+                    <span>温度</span>
+                    <input name="temperature" type="number" min="0" max="2" step="0.1" placeholder="不填用接口默认">
+                  </label>
+                </div>
+                <label class="field">
+                  <span>额外请求参数（JSON）</span>
+                  <textarea name="extra_body" rows="3" placeholder='如 {"chat_template_kwargs": {"enable_thinking": true}}'></textarea>
+                </label>
+                <div class="model-actions">
+                  <button id="test-model" class="ghost-button" type="button">测试连接</button>
+                  <button id="make-default" class="ghost-button" type="button">设为默认</button>
+                  <button id="delete-model" class="ghost-button danger-text" type="button">删除</button>
+                  <span id="test-result" class="test-result"></span>
+                </div>
+              </div>
+            </form>
+          </div>
+          <datalist id="reasoning-options">
+            <option value="none"></option>
+            <option value="low"></option>
+            <option value="medium"></option>
+            <option value="high"></option>
+            <option value="max"></option>
+          </datalist>
+        </section>
+        <section>
+          <div class="settings-section-title">通用</div>
+          <div class="field-row">
+            <label class="field">
+              <span>新会话的默认审批模式</span>
+              <select id="default-mode-select"></select>
+            </label>
+            <label class="field">
+              <span>单轮最多调用模型次数</span>
+              <input id="max-steps-input" type="number" min="1" step="1">
+            </label>
+          </div>
+          <div class="field-hint" id="config-path"></div>
+        </section>
+      </div>
+      <footer class="modal-footer">
+        <span id="settings-message" class="settings-message"></span>
+        <button id="settings-cancel" class="ghost-button" type="button">取消</button>
+        <button id="settings-save" class="primary-button" type="button">保存</button>
+      </footer>
+    </div>
+  </div>
+
+  <script src="static/app.js"></script>
+</body>
+</html>
