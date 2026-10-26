@@ -26,8 +26,30 @@ pocketagent -m "DS 4.1 Flash" -p "跑一下测试，把失败的修好" --mode f
 
 不安装也能用：在仓库根目录 `python -m pocketagent ...`。
 
-命令行交互里的命令：`/help`、`/new`、`/compact`、`/mode [ask|ai_auto|full_auto|read_only|auto_edit]`、`/exit`。
-Ctrl-C 只中断当前这一轮，会话保留，可以接着说。
+## 斜杠命令
+
+输入以 / 开头的行按命令处理（web 和命令行共用同一套，见 `pocketagent/commands.py`）；命中 `/技能名` 的照常交给 agent，
+普通文字和 `/usr/bin` 这种路径不会被误认成命令。
+
+| 命令 | 说明 |
+|---|---|
+| `/help [命令]` | 命令列表；带命令名只讲这一条 |
+| `/new` | 开新会话（别名 `/clear`；web 上是同工作区开个新任务） |
+| `/compact` | 手动压缩上下文 |
+| `/mode [模式]` | 查看 / 切换审批模式：`read_only` / `ask` / `auto_edit` / `ai_auto` / `full_auto` |
+| `/model [模型]` | 查看 / 切换模型（按 id、名称或模型名） |
+| `/skills [技能名]` | 列出技能；带名字看它的说明和位置 |
+| `/status` | 模型、工作区、会话、上下文占用 |
+| `/usage` | 这个会话的 token 用量和今天的用量 |
+| `/sessions` | 这个工作区的会话列表 |
+| `/resume <id>` | 续跑某个会话 |
+| `/memory [文件]` | 项目记忆索引；带文件名看正文 |
+| `/undo [路径\|all]` | 列出任务里的文件改动；带路径撤销一个，`all` 全撤 |
+| `/exit` | 退出命令行（别名 `/quit`；web 上关掉标签页就行） |
+| `/技能名 [要求]` | 启用这个技能并把要求交给 agent |
+
+web 的输入框里打 / 会浮出命令补全（内置命令 + 当前工作区的技能），命令行里 `/help` 查看全部。
+命令行 REPL 里 Ctrl-C 只中断当前这一轮，会话保留，可以接着说。
 
 ## web 界面
 

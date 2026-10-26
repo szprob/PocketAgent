@@ -1,6 +1,7 @@
 // 任务页：中间的对话。一个任务一条 WebSocket，协议见 pocketagent/web/server.py 开头。
 
 import { attachmentUrl, requestJson, sendJson, socketUrl, uploadFiles } from "./api.js";
+import { looksLikeCommand, loadSkillNames, runCommand } from "./commands.js";
 import { Composer } from "./composer.js";
 import { button, el, icon, renderDiff, show } from "./dom.js";
 import { renderMarkdown } from "./markdown.js";
@@ -77,6 +78,7 @@ export function initChat({ onDeleted }) {
 export function updateChatOptions(info) {
   chat.composer.setModes(info.modes);
   chat.composer.setModels(info.models, info.fallback_model);
+  chat.composer.setCommands(info.commands || []);
   if (chat.status) {
     applyStatus(chat.status);
   }
@@ -157,6 +159,18 @@ async function sendUserMessage({ text, files }) {
     addNotice("还没连上服务，稍等再试", "warning");
     return false;
   }
+  // 斜杠命令本地消化，不进对话（/技能名 除外，它要交给 agent）
+  if (text && files.length === 0 && looksLikeCommand(text)) {
+    const outcome = await runCommand(text, { sessionId: state.currentTaskId }).catch((error) => ({
+      handled: true,
+      text: `命令执行失败：${error.message}`,
+      kind: "error",
+    }));
+    if (outcome.handled) {
+      showCommandOutput(outcome);
+      return true;
+    }
+  }
   let attachments = [];
   try {
     attachments = await uploadFiles(state.currentTaskId, files);
@@ -165,6 +179,31 @@ async function sendUserMessage({ text, files }) {
     return false;
   }
   return sendToServer({ type: "user_message", text, attachment_ids: attachments.map((item) => item.id) });
+}
+
+// 命令的输出画在对话里；有跳转 / 开新会话动作的接着做
+function showCommandOutput(outcome) {
+  if (outcome.text) {
+    appendToTranscript(el("div", `notice command-output ${outcome.kind || ""}`, outcome.text));
+  }
+  if (outcome.action === "new_session") {
+    // 和命令行 /new 一样：同工作区开个新任务
+    const status = chat.status || {};
+    sendJson("api/sessions", "POST", {
+      workspace: status.ephemeral ? null : status.workspace,
+      ephemeral: Boolean(status.ephemeral),
+      model_id: status.model_id || null,
+      mode: status.mode || null,
+    })
+      .then((created) => {
+        window.location.hash = `#/task/${encodeURIComponent(created.id)}`;
+      })
+      .catch((error) => addNotice(`开新会话失败：${error.message}`, "error"));
+    return;
+  }
+  if (outcome.action === "open_session" && outcome.argument) {
+    window.location.hash = `#/task/${encodeURIComponent(outcome.argument)}`;
+  }
 }
 
 export function interrupt() {
@@ -247,6 +286,7 @@ function applyStatus(status) {
   chat.composer.setContext(status.context_tokens, status.context_window, status.compact_threshold);
   chat.composer.setCompacting(status.compacting);
   chat.composer.setWorkspaceLabel(status.workspace, status.ephemeral);
+  loadSkillNames(status.workspace).then((names) => chat.composer.setSkillNames(names));
   renderPendingInputs(status);
   emit("task-status", status);
 }

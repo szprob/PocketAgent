@@ -12,8 +12,9 @@ import sys
 from contextlib import suppress
 from pathlib import Path
 
-from pocketagent.agent import Agent, create_agent
-from pocketagent.config import ConfigError, Settings
+from pocketagent.agent import Agent, create_agent, create_provider
+from pocketagent.commands import CommandContext, CommandResult, handle_command_line
+from pocketagent.config import AppConfig, ConfigError, Settings
 from pocketagent.events import Event, EventType
 from pocketagent.permissions import (
     AllowAllApprover,
@@ -28,16 +29,6 @@ from pocketagent.scratch import create_scratch_workspace
 from pocketagent.session import Session, SessionStore
 
 TOOL_RESULT_PREVIEW_LINES = 4
-
-HELP_TEXT = """命令：
-  /help            显示这段帮助
-  /new             开一个新会话
-  /compact         手动压缩上下文
-  /mode [模式]     查看或切换审批模式：read_only / ask / auto_edit / full_auto
-  /skills          列出可用的技能
-  /技能名 [要求]   启用这个技能并把要求交给 agent
-  /exit            退出（也可以按 Ctrl-D）
-运行中按 Ctrl-C 中断当前这一轮，会话保留，可以接着说。"""
 
 
 class Style:
@@ -295,52 +286,75 @@ class Repl:
         return True
 
     def _handle_command(self, command_line: str) -> bool:
-        """返回 False 表示退出。"""
-        command, _, argument = command_line.partition(" ")
-        argument = argument.strip()
-        if command in ("/exit", "/quit"):
-            return False
-        if command == "/help":
-            print(HELP_TEXT)
-        elif command == "/new":
-            if self.settings.ephemeral:
-                # 临时任务里 /new 就是一个新任务：也给它一个干净的新目录
-                self.settings.workspace = create_scratch_workspace(self.settings.home_dir)
-            self.agent = self._create_agent(session=None)
-            print(self.style.dim(f"已开新会话 {self.agent.session.id}"))
-        elif command == "/compact":
-            self.loop.run_until_complete(self.agent.compact())
-        elif command == "/mode":
-            self._switch_mode(argument)
-        elif command == "/skills":
-            self._list_skills()
-        elif any(skill.name == command[1:] for skill in self.agent.skills):
-            # 交给 agent：它会把技能的完整说明接在这句话后面
+        """返回 False 表示退出。命令本身交给 commands.py，换模型 / 开新会话这类动作在这里落地。"""
+        result = self.loop.run_until_complete(self._run_command(command_line))
+        if result is None:
+            # 不是命令（技能命令或普通消息），交给 agent
             self._run_turn(command_line)
-        else:
-            print(self.style.yellow(f"不认识的命令 {command}，/help 查看全部命令"))
+            return True
+        self._print_command_result(result)
+        return self._apply_command_action(result)
+
+    async def _run_command(self, command_line: str) -> CommandResult | None:
+        context = CommandContext(
+            settings=self.settings, agent=self.agent, models=self._configured_models(), surface="cli"
+        )
+        return await handle_command_line(command_line, context)
+
+    def _configured_models(self):
+        """配置文件里可切换的模型；配置文件坏了就当没配，不挡住命令行。"""
+        try:
+            return AppConfig.load(self.settings.config_path).models
+        except ConfigError:
+            return []
+
+    def _print_command_result(self, result: CommandResult) -> None:
+        if not result.text:
+            return
+        colorize = {"error": self.style.red, "warning": self.style.yellow}.get(result.kind)
+        for line in result.text.splitlines():
+            print(colorize(line) if colorize else line)
+
+    def _apply_command_action(self, result: CommandResult) -> bool:
+        if result.action == "exit":
+            return False
+        if result.action == "new_session":
+            self._start_new_session()
+        elif result.action == "compact":
+            self.loop.run_until_complete(self.agent.compact())
+        elif result.action == "switch_mode":
+            self._switch_mode(result.argument)
+        elif result.action == "switch_model":
+            self._switch_model(result.argument)
+        elif result.action == "open_session":
+            self._open_session(result.argument)
         return True
 
-    def _list_skills(self) -> None:
-        if not self.agent.skills:
-            print(self.style.dim("没有可用的技能（~/.pocketagent/skills、~/.agents/skills、~/.claude/skills、工作目录下的 .agents/skills 等）"))
-            return
-        for skill in self.agent.skills:
-            print(f"  /{skill.name}  {self.style.dim(skill.description[:80])}")
+    def _start_new_session(self) -> None:
+        if self.settings.ephemeral:
+            # 临时任务里 /new 就是一个新任务：也给它一个干净的新目录
+            self.settings.workspace = create_scratch_workspace(self.settings.home_dir)
+        self.agent = self._create_agent(session=None)
+        print(self.style.dim(f"已开新会话 {self.agent.session.id}"))
 
     def _switch_mode(self, mode_name: str) -> None:
-        permissions = self.agent.context.permissions
-        if not mode_name:
-            print(f"当前审批模式：{permissions.mode.value}")
+        mode = ApprovalMode(mode_name)
+        self.agent.context.permissions.mode = mode
+        self.settings.approval_mode = mode
+
+    def _switch_model(self, profile_id: str) -> None:
+        profile = next((each for each in self._configured_models() if each.id == profile_id), None)
+        if profile is None:
             return
-        try:
-            permissions.mode = ApprovalMode(mode_name)
-        except ValueError:
-            choices = " / ".join(mode.value for mode in ApprovalMode)
-            print(self.style.yellow(f"没有这个模式，可选：{choices}"))
-            return
-        self.settings.approval_mode = permissions.mode
-        print(f"审批模式已切换为 {permissions.mode.value}")
+        self.settings.use_profile(profile)
+        self.agent.replace_provider(create_provider(self.settings))
+
+    def _open_session(self, session_id: str) -> None:
+        session = SessionStore(self.settings.sessions_dir).load(session_id)
+        self.settings.workspace = Path(session.workspace)
+        self.settings.ephemeral = session.ephemeral
+        self.agent = self._create_agent(session=session)
+        print(self.style.dim(f"已续跑会话 {session.id}：{session.display_title().splitlines()[0][:60]}"))
 
 
 def run_once(settings: Settings, session: Session | None, prompt: str, show_reasoning: bool) -> int:
@@ -348,6 +362,22 @@ def run_once(settings: Settings, session: Session | None, prompt: str, show_reas
     approver: Approver = AllowAllApprover() if settings.approval_mode == ApprovalMode.FULL_AUTO else DenyAllApprover()
     agent = create_agent(settings, approver=approver, session=session)
     agent.context.events.subscribe(ConsoleRenderer(Style(enabled=sys.stdout.isatty()), show_reasoning=show_reasoning))
+    command_context = CommandContext(settings=settings, agent=agent, surface="cli")
+    outcome = asyncio.run(handle_command_line(prompt, command_context))
+    if outcome is not None:
+        # 命令（/help、/status 这些）：只打印结果，不进对话；换模式、换模型顺手落一下
+        if outcome.text:
+            print(outcome.text)
+        if outcome.action == "switch_mode":
+            mode = ApprovalMode(outcome.argument)
+            agent.context.permissions.mode = mode
+            settings.approval_mode = mode
+        elif outcome.action == "switch_model":
+            profile = AppConfig.load(settings.config_path).find_model(outcome.argument)
+            if profile is not None:
+                settings.use_profile(profile)
+                agent.replace_provider(create_provider(settings))
+        return 0
     asyncio.run(agent.run_turn(prompt))
     return 1 if agent.context.turn.stop_reason == "error" else 0
 

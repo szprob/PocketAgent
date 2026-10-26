@@ -3,10 +3,12 @@
 import { sendJson } from "./api.js";
 import { closeEditor, initAutomations, isAutomationEditorOpen, showAutomations } from "./automations.js";
 import { chatComposer, initChat, interrupt, isChatRunning, leaveTask, openTask, updateChatOptions } from "./chat.js";
+import { looksLikeCommand, loadSkillNames, runCommand } from "./commands.js";
 import { Composer, SCRATCH_WORKSPACE } from "./composer.js";
 import { el, icon, show } from "./dom.js";
 import { citationText, closeFilePreview, initFilePreview, isFilePreviewOpen } from "./filepreview.js";
 import { closeFolderPicker, isFolderPickerOpen } from "./folderpicker.js";
+import { initResizers } from "./resizers.js";
 import { initRightPanel, setRightPanelVisible, showTaskInPanel } from "./rightpanel.js";
 import { closeSettings, initSettings, isSettingsOpen, openSettings } from "./settings.js";
 import { initSidebar, setActiveView } from "./sidebar.js";
@@ -86,8 +88,9 @@ const pendingFirstMessages = new Map();
 function initNewTask() {
   newTaskComposer = new Composer(document.getElementById("new-task-composer"), {
     kind: "new",
-    placeholder: "描述你要做的事，比如「看看这个仓库是做什么的」…  Enter 发送",
+    placeholder: "描述你要做的事，比如「看看这个仓库是做什么的」…  Enter 发送；/ 开头是命令",
     onSubmit: startNewTask,
+    onWorkspaceChange: refreshNewTaskSkills,
   });
 }
 
@@ -99,18 +102,40 @@ function prepareNewTask(workspacePath) {
   newTaskComposer.setModels(info.models, info.fallback_model);
   newTaskComposer.setDefaultModel(info.default_model);
   newTaskComposer.setWorkspaces(info.workspaces, workspacePath || info.default_workspace);
+  newTaskComposer.setCommands(info.commands || []);
   const hint = document.getElementById("new-task-hint");
   hint.replaceChildren();
+  hint.classList.remove("error");
   if (info.models.length === 0) {
     const settingsLink = el("button", "link-button", "去设置里添加");
     settingsLink.type = "button";
     settingsLink.addEventListener("click", () => openSettings("models"));
     hint.append("还没配置模型，", settingsLink);
   }
+  refreshNewTaskSkills();
   newTaskComposer.focus();
 }
 
+// 新任务页的命令补全要列当前选中工作区里的技能
+function refreshNewTaskSkills() {
+  const choice = newTaskComposer.getWorkspaceChoice();
+  loadSkillNames(choice.workspace).then((names) => newTaskComposer.setSkillNames(names));
+}
+
 async function startNewTask({ text, files }) {
+  // 斜杠命令（比如 /help、/skills）在新任务页也能用：不用先建任务
+  if (text && files.length === 0 && looksLikeCommand(text)) {
+    const choice = newTaskComposer.getWorkspaceChoice();
+    const outcome = await runCommand(text, { workspace: choice.workspace }).catch((error) => ({
+      handled: true,
+      text: `命令执行失败：${error.message}`,
+      kind: "error",
+    }));
+    if (outcome.handled) {
+      showNewTaskCommandOutput(outcome);
+      return true;
+    }
+  }
   const choice = newTaskComposer.getWorkspaceChoice();
   let created;
   try {
@@ -127,6 +152,24 @@ async function startNewTask({ text, files }) {
   pendingFirstMessages.set(created.id, { text, files });
   navigate(`#/task/${encodeURIComponent(created.id)}`);
   return true;
+}
+
+// 新任务页的命令输出：没有对话区，放在输入框下面的提示行里
+function showNewTaskCommandOutput(outcome) {
+  const hint = document.getElementById("new-task-hint");
+  hint.textContent = outcome.text || "";
+  hint.classList.toggle("error", outcome.kind === "error");
+  if (outcome.action === "open_session" && outcome.argument) {
+    navigate(`#/task/${encodeURIComponent(outcome.argument)}`);
+    return;
+  }
+  // /model、/mode 在新任务页改的是输入框上的选择器
+  if (outcome.action === "switch_model" && outcome.argument) {
+    newTaskComposer.setModel(outcome.argument);
+  }
+  if (outcome.action === "switch_mode" && outcome.argument) {
+    newTaskComposer.setMode(outcome.argument);
+  }
 }
 
 // ===================== 侧栏 / 右侧栏开关 =====================
@@ -267,6 +310,7 @@ async function init() {
   initNewTask();
   initFilePreview();
   bindLayoutControls();
+  initResizers();
 
   await reloadInfo();
   lastDefaultWorkspace = state.info.default_workspace;

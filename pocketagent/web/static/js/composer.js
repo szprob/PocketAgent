@@ -1,5 +1,6 @@
 // 输入框：「新任务」页和任务页各用一个。
 // 文本框 + 附件（回形针、粘贴图片、拖进来）+ 权限 + 模型 + 发送 / 停止，底下一行是工作区和上下文占用。
+// 以 / 开头输入时浮出命令补全（命令表来自 /api/info）。
 
 import { button, el, formatBytes, icon, show, workspaceName } from "./dom.js";
 import { ModelPicker } from "./modelpicker.js";
@@ -17,14 +18,18 @@ export class Composer {
    * kind: "new"（新任务页，底下能选工作区）或 "chat"（任务页，底下显示任务所在的工作区）
    * onSubmit({text, files}) 返回 true 表示已经发出去了，输入框可以清空
    */
-  constructor(container, { kind, placeholder, onSubmit, onStop, onModeChange, onModelChange }) {
+  constructor(container, { kind, placeholder, onSubmit, onStop, onModeChange, onModelChange, onWorkspaceChange }) {
     this.kind = kind;
     this.onSubmit = onSubmit;
     this.onStop = onStop;
     this.onModeChange = onModeChange;
     this.onModelChange = onModelChange;
+    this.onWorkspaceChange = onWorkspaceChange;
     this.pendingFiles = [];
     this.running = false;
+    // /api/info 里的命令表 + 技能名，输入 / 时用来补全
+    this.commands = [];
+    this.skillNames = [];
     this.root = this._build(placeholder);
     container.replaceChildren(this.root);
   }
@@ -38,7 +43,9 @@ export class Composer {
     this.textarea = el("textarea", "composer-input");
     this.textarea.rows = 1;
     this.textarea.placeholder = placeholder;
-    this.card.append(this.chips, this.textarea, this._buildToolbar());
+    // 命令补全菜单：输入 / 时浮出来，点一条或按 Tab 补全
+    this.commandMenu = el("div", "command-menu hidden");
+    this.card.append(this.commandMenu, this.chips, this.textarea, this._buildToolbar());
     root.append(this.card, this._buildFooter());
     this._bindInput();
     return root;
@@ -93,6 +100,7 @@ export class Composer {
     if (this.kind === "new") {
       this.workspaceSelect = el("select", "workspace-select");
       this.workspaceSelect.title = "在哪个工作区里做";
+      this.workspaceSelect.addEventListener("change", () => this.onWorkspaceChange?.());
       workspace.appendChild(this.workspaceSelect);
     } else {
       this.workspaceLabel = el("span", "workspace-label");
@@ -113,13 +121,48 @@ export class Composer {
   }
 
   _bindInput() {
-    this.textarea.addEventListener("input", () => this._resize());
+    this.textarea.addEventListener("input", () => {
+      this._resize();
+      this._updateCommandMenu();
+    });
     this.textarea.addEventListener("keydown", (event) => {
+      // 命令菜单开着时：上下键选、Tab 补全、Esc 关掉；Enter 在还没打完命令名时补全，打完了就发送
+      if (this._commandMenuOpen()) {
+        if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+          event.preventDefault();
+          this._moveCommandSelection(event.key === "ArrowDown" ? 1 : -1);
+          return;
+        }
+        if (event.key === "Tab") {
+          event.preventDefault();
+          this._acceptCommandSuggestion();
+          return;
+        }
+        if (event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
+          const selected = this.commandMenu.querySelectorAll(".command-item")[this.commandSelection];
+          const name = selected?.querySelector(".command-name")?.textContent || "";
+          if (this.textarea.value.trim() !== name) {
+            event.preventDefault();
+            this._fillCommand(name);
+            return;
+          }
+          // 打的就是完整命令名：落下继续走发送
+        }
+        if (event.key === "Escape") {
+          event.preventDefault();
+          this._hideCommandMenu();
+          return;
+        }
+      }
       // 中文输入法选词时按的 Enter 不算发送
       if (event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
         event.preventDefault();
         this.submit();
       }
+    });
+    this.textarea.addEventListener("blur", () => {
+      // 点菜单里的条目时 blur 会先到，留一拍让 click 生效
+      setTimeout(() => this._hideCommandMenu(), 150);
     });
     this.textarea.addEventListener("paste", (event) => {
       const files = event.clipboardData?.files;
@@ -143,6 +186,91 @@ export class Composer {
   _resize() {
     this.textarea.style.height = "auto";
     this.textarea.style.height = `${Math.min(this.textarea.scrollHeight, MAX_TEXTAREA_HEIGHT)}px`;
+  }
+
+  // ---- 命令补全 ----
+
+  // 整行以 / 开头、后面还没打空格时，才弹命令菜单（打完参数就不挡视线了）
+  _commandToken() {
+    const value = this.textarea.value;
+    if (!value.startsWith("/") || /\s/.test(value)) {
+      return null;
+    }
+    return value.trim().toLowerCase();
+  }
+
+  _commandMenuOpen() {
+    return !this.commandMenu.classList.contains("hidden");
+  }
+
+  _updateCommandMenu() {
+    const token = this._commandToken();
+    if (token === null) {
+      this._hideCommandMenu();
+      return;
+    }
+    const matches = [...this.commands, ...this.skillNames.map((name) => ({ name, summary: "技能" }))].filter(
+      (item) => `/${item.name}`.startsWith(token)
+    );
+    if (matches.length === 0) {
+      this._hideCommandMenu();
+      return;
+    }
+    this.commandMenu.replaceChildren();
+    matches.slice(0, 8).forEach((item, index) => {
+      const row = el("button", "command-item" + (index === 0 ? " selected" : ""));
+      row.type = "button";
+      const name = el("span", "command-name", `/${item.name}`);
+      const summary = el("span", "command-summary", item.summary || "");
+      row.append(name, summary);
+      row.addEventListener("mousedown", (event) => {
+        // mousedown 抢在 textarea blur 之前，点了就补全
+        event.preventDefault();
+        this._fillCommand(`/${item.name}`);
+      });
+      this.commandMenu.appendChild(row);
+    });
+    this.commandSelection = 0;
+    show(this.commandMenu, true);
+  }
+
+  _hideCommandMenu() {
+    show(this.commandMenu, false);
+    this.commandSelection = 0;
+  }
+
+  _moveCommandSelection(delta) {
+    const items = [...this.commandMenu.querySelectorAll(".command-item")];
+    if (items.length === 0) {
+      return;
+    }
+    this.commandSelection = (this.commandSelection + delta + items.length) % items.length;
+    items.forEach((item, index) => item.classList.toggle("selected", index === this.commandSelection));
+  }
+
+  _acceptCommandSuggestion() {
+    const items = [...this.commandMenu.querySelectorAll(".command-item")];
+    const selected = items[this.commandSelection];
+    if (selected) {
+      this._fillCommand(selected.querySelector(".command-name").textContent);
+    }
+  }
+
+  _fillCommand(text) {
+    this.textarea.value = `${text} `;
+    this._hideCommandMenu();
+    this._resize();
+    this.focus();
+  }
+
+  setCommands(commands) {
+    this.commands = commands || [];
+    this._updateCommandMenu();
+  }
+
+  setSkillNames(names) {
+    this.skillNames = names || [];
+    this._updateCommandMenu();
   }
 
   // ---- 附件 ----

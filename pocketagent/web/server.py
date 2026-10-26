@@ -12,7 +12,8 @@
   returned_inputs（中断时退回的输入）、error
 
 REST（都在 /api 下）：
-  info                                   工作区、模型（含可选思考档位、上下文长度）、审批模式、用户名
+  info                                   工作区、模型（含可选思考档位、上下文长度）、审批模式、用户名、斜杠命令表
+  command            POST                斜杠命令（web 和命令行共用一套，见 commands.py）
   models/{id}         PATCH              选模型面板里改思考档位、上下文长度（存进配置，马上生效）
   workspaces          POST / DELETE      加 / 移除工作区
   workspaces/default  POST               把某个工作区设成新任务的默认
@@ -32,6 +33,7 @@ REST（都在 /api 下）：
 """
 
 import asyncio
+import copy
 import json
 import secrets
 import webbrowser
@@ -43,6 +45,7 @@ from aiohttp import WSMsgType, web
 from pocketagent.automations import Automation
 from pocketagent.billing import query_all_balances
 from pocketagent.checkpoints import CheckpointError
+from pocketagent.commands import CommandContext, CommandResult, command_specs_for, handle_command_line
 from pocketagent.config import AppConfig, ConfigError, Settings
 from pocketagent.permissions import WEB_APPROVAL_MODES
 from pocketagent.web import files
@@ -146,8 +149,71 @@ async def get_info(request: web.Request) -> web.Response:
             "auto_compact": app_config.auto_compact,
             "compact_threshold_percent": app_config.compact_threshold_percent,
             "web_search_enabled": app_config.web_search_settings() is not None,
+            "commands": [
+                {"name": spec.name, "summary": spec.summary, "usage": spec.usage, "aliases": list(spec.aliases)}
+                for spec in command_specs_for("web")
+            ],
         }
     )
+
+
+async def run_command(request: web.Request) -> web.Response:
+    """斜杠命令。带 session_id 就在那个任务里执行（能用 /compact、/undo 这些）；不带就在新任务页执行。
+
+    换模式 / 换模型 / 压缩这些动作在这里落地到任务上；没有任务时把动作原样回给前端
+    （新任务页改的是输入框上那两个选择器）。
+    """
+    payload = await request.json() if request.can_read_body else {}
+    text = str(payload.get("text", ""))
+    manager = _manager(request)
+    session_id = str(payload.get("session_id") or "")
+    web_session = manager.get(session_id) if session_id else None
+    settings = manager.base_settings
+    if web_session is not None:
+        settings = web_session.settings
+    elif payload.get("workspace"):
+        # 新任务页：按用户选的工作区找技能、看记忆
+        settings = copy.deepcopy(manager.base_settings)
+        settings.workspace = Path(str(payload["workspace"])).expanduser()
+        settings.apply_app_config(manager.app_config)
+    context = CommandContext(
+        settings=settings,
+        agent=web_session.agent if web_session is not None else None,
+        models=manager.app_config.models,
+        surface="web",
+    )
+    result = await handle_command_line(text, context)
+    if result is None:
+        # 技能命令（/技能名）或普通消息：不是这里的事
+        return _json_response({"handled": False})
+    await _apply_command_action(manager, web_session, result)
+    return _json_response(
+        {
+            "handled": True,
+            "text": result.text,
+            "kind": result.kind,
+            "action": result.action,
+            "argument": result.argument,
+        }
+    )
+
+
+async def _apply_command_action(
+    manager: SessionManager, web_session: WebSession | None, result: CommandResult
+) -> None:
+    """把命令里的界面动作落到这个任务上；没有任务时（新任务页）动作留给前端自己做。"""
+    if web_session is None:
+        return
+    if result.action == "switch_mode":
+        await web_session.set_mode(result.argument)
+    elif result.action == "switch_model":
+        await manager.switch_model(web_session, result.argument)
+    elif result.action == "compact":
+        try:
+            await web_session.start_compaction()
+        except SessionBusyError as error:
+            result.text = str(error)
+            result.kind = "warning"
 
 
 async def update_model(request: web.Request) -> web.Response:
@@ -506,6 +572,7 @@ def create_app(
 def _add_routes(router: web.UrlDispatcher) -> None:
     router.add_get("/", index)
     router.add_get("/api/info", get_info)
+    router.add_post("/api/command", run_command)
     router.add_patch("/api/models/{model_id}", update_model)
     router.add_get("/api/files", list_files)
     router.add_get("/api/file", read_file)

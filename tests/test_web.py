@@ -876,6 +876,57 @@ class WebQuestionsTest(WebTestBase):
         self.assertIn("跳过", tool_message["content"])
 
 
+class WebCommandTest(WebTestBase):
+    """/api/command：web 的斜杠命令入口，和命令行共用一套。"""
+
+    async def _run_command(self, text: str, **payload) -> dict[str, Any]:
+        response = await self._send_json("POST", "/api/command", {"text": text, **payload})
+        return await response.json()
+
+    async def test_help_status_and_unknown_command(self) -> None:
+        session_id = await self._create_session()
+        help_result = await self._run_command("/help", session_id=session_id)
+        status = await self._run_command("/status", session_id=session_id)
+        unknown = await self._run_command("/没有这条", session_id=session_id)
+        exit_result = await self._run_command("/exit", session_id=session_id)
+
+        self.assertTrue(help_result["handled"])
+        self.assertIn("/compact", help_result["text"])
+        self.assertIn("模型", status["text"])
+        self.assertEqual(unknown["kind"], "error")
+        # web 上没有退出命令
+        self.assertEqual(exit_result["kind"], "warning")
+
+    async def test_switch_mode_and_model_apply_to_the_task(self) -> None:
+        session_id = await self._create_session()
+        mode_result = await self._run_command("/mode full_auto", session_id=session_id)
+        model_result = await self._run_command("/model qwen", session_id=session_id)
+        snapshot = await self._get_json(f"/api/sessions/{session_id}")
+
+        self.assertEqual(mode_result["action"], "switch_mode")
+        self.assertEqual(snapshot["mode"], "full_auto")
+        self.assertEqual(model_result["action"], "switch_model")
+        self.assertEqual(snapshot["model_id"], "qwen")
+
+    async def test_skill_commands_and_plain_messages_are_not_handled(self) -> None:
+        session_id = await self._create_session()
+        plain = await self._run_command("写个文件", session_id=session_id)
+        slash_path = await self._run_command("/usr/bin/python 是什么", session_id=session_id)
+
+        self.assertFalse(plain["handled"])
+        self.assertFalse(slash_path["handled"])
+
+    async def test_new_task_page_commands_without_a_session(self) -> None:
+        help_result = await self._run_command("/help")
+        compact = await self._run_command("/compact")
+        sessions = await self._run_command("/sessions", workspace=str(self.directories.workspace))
+
+        self.assertTrue(help_result["handled"])
+        self.assertEqual(compact["kind"], "warning")
+        self.assertIn("先开个任务", compact["text"])
+        self.assertIn("还没有会话", sessions["text"])
+
+
 class StartupTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.directories = TemporaryDirectories()
