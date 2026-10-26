@@ -39,6 +39,11 @@ export class ModelPicker {
     });
     this.popover.addEventListener("click", (event) => event.stopPropagation());
     document.addEventListener("click", () => this.close());
+    window.addEventListener("resize", () => {
+      if (this.isOpen()) {
+        this._place();
+      }
+    });
   }
 
   // ---- 对外 ----
@@ -52,6 +57,7 @@ export class ModelPicker {
     this._renderTrigger();
     if (this.isOpen()) {
       this._renderPopover();
+      this._place();
     }
   }
 
@@ -81,6 +87,25 @@ export class ModelPicker {
     }
     this._renderPopover();
     this.popover.classList.remove("hidden");
+    this._place();
+  }
+
+  // 往上还是往下弹、最多多高：看触发按钮上下哪边空间大，整个面板都留在窗口里
+  _place() {
+    if (window.matchMedia("(max-width: 860px)").matches) {
+      // 窄屏是固定在底部的样式，由 CSS 管
+      this.popover.style.maxHeight = "";
+      return;
+    }
+    const margin = 12;
+    const gap = 10;
+    const rect = this.trigger.getBoundingClientRect();
+    const spaceAbove = rect.top - gap - margin;
+    const spaceBelow = window.innerHeight - rect.bottom - gap - margin;
+    const natural = Math.min(560, this.popover.scrollHeight);
+    const opensDown = spaceAbove < natural && spaceBelow > spaceAbove;
+    this.popover.classList.toggle("opens-down", opensDown);
+    this.popover.style.maxHeight = `${Math.max(160, Math.min(560, opensDown ? spaceBelow : spaceAbove))}px`;
   }
 
   // ---- 渲染 ----
@@ -110,7 +135,7 @@ export class ModelPicker {
   }
 
   _modelSection() {
-    const section = el("div", "picker-section");
+    const section = el("div", "picker-section picker-models");
     section.appendChild(el("div", "picker-title", "模型"));
     // 设置里勾掉「在会话里显示」的不列；正在用的那个照样列出来
     const listed = this.models.filter((model) => model.visible !== false || model.id === this.selectedId);

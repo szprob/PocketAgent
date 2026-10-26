@@ -281,6 +281,16 @@ button:disabled { cursor: default; opacity: 0.5; }
 .workspace-chevron { color: var(--text-muted); }
 .workspace-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
 .workspace-count { font-size: 12px; color: var(--text-muted); }
+/* 默认工作区的小标签：新任务默认落在这里 */
+.workspace-badge {
+  flex: none;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 10px;
+  line-height: 1;
+}
 
 .row-action {
   display: none;
@@ -296,6 +306,8 @@ button:disabled { cursor: default; opacity: 0.5; }
 }
 
 .workspace-row:hover .row-action { display: inline-flex; }
+/* 默认工作区的星星一直亮着，不用悬停也能看出是哪个 */
+.row-action.active { display: inline-flex; color: var(--accent); }
 .row-action:hover { background: var(--surface); color: var(--text); }
 
 .workspace-tasks { padding-left: 18px; }
@@ -1053,8 +1065,12 @@ pre code { padding: 0; background: none; font-size: inherit; }
   bottom: calc(100% + 10px);
   left: 0;
   z-index: 25;
+  display: flex;
+  flex-direction: column;
   width: 360px;
+  /* 实际的最大高度由 modelpicker.js 按触发按钮上下还剩多少空间算 */
   max-height: min(560px, 70vh);
+  /* 空间够时只有模型列表滚；窗口矮到连档位、上下文都放不下时，整个面板滚 */
   overflow-y: auto;
   padding: 8px;
   border: 1px solid var(--border);
@@ -1063,7 +1079,10 @@ pre code { padding: 0; background: none; font-size: inherit; }
   box-shadow: var(--shadow-strong);
 }
 
-.picker-section { padding: 6px 4px 10px; }
+.picker-section { flex: none; padding: 6px 4px 10px; }
+/* 模型列表不被挤扁：最多显示五六个，再多在列表里滚；窗口太矮放不下时整个面板滚 */
+.picker-section.picker-models { flex: none; max-height: 290px; overflow-y: auto; }
+.picker-popover.opens-down { top: calc(100% + 10px); bottom: auto; }
 .picker-section + .picker-section { border-top: 1px solid var(--border); padding-top: 10px; }
 .picker-title { margin: 0 4px 6px; color: var(--text-muted); font-size: 12px; }
 .picker-note { margin: 6px 4px 0; color: var(--text-muted); font-size: 11.5px; }
@@ -1191,7 +1210,7 @@ pre code { padding: 0; background: none; font-size: inherit; }
 .file-modal-body > .muted { padding: 16px 18px; }
 
 @media (max-width: 860px) {
-  .picker-popover { position: fixed; left: 8px; right: 8px; bottom: 120px; width: auto; }
+  .picker-popover { position: fixed; left: 8px; right: 8px; bottom: 120px; width: auto; max-height: calc(100vh - 140px); }
   .model-trigger { max-width: 150px; }
   .compacting-hint { display: none; }
 }
