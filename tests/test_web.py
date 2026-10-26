@@ -14,7 +14,7 @@ except ImportError:
     raise unittest.SkipTest("没装 aiohttp，跳过 web 测试")
 
 from pocketagent.agent import INTERRUPTED_TOOL_RESULT
-from pocketagent.config import AppConfig, Settings
+from pocketagent.config import AppConfig, Settings, config_path
 from pocketagent.llm import LLMResponse, ScriptedProvider, Usage
 from pocketagent.memory import project_memory_dir
 from pocketagent.permissions import ApprovalMode
@@ -391,6 +391,30 @@ class WebServerTest(WebTestBase):
         self.assertEqual(deleted.status, 200)
         self.assertEqual(after_delete.status, 404)
 
+    async def test_default_workspace_can_be_configured(self) -> None:
+        other_workspace = self.directories.home_dir / "other"
+        other_workspace.mkdir(parents=True)
+        await self._send_json("POST", "/api/workspaces", {"path": str(self.directories.workspace)})
+        await self._send_json("POST", "/api/workspaces", {"path": str(other_workspace)})
+
+        not_listed = await self._send_json("POST", "/api/workspaces/default", {"path": "/no/such/dir"})
+        saved = await self._send_json("POST", "/api/workspaces/default", {"path": str(other_workspace)})
+        info = await self._get_json("/api/info")
+        stored = AppConfig.load(config_path(self.directories.home_dir))
+        # 不带工作区建任务，落在配置的默认工作区里
+        session_id = await self._create_session()
+        snapshot = await self._get_json(f"/api/sessions/{session_id}")
+        await self._send_json("DELETE", "/api/workspaces", {"path": str(other_workspace)})
+        after_remove = await self._get_json("/api/info")
+
+        self.assertEqual(not_listed.status, 400)
+        self.assertEqual(saved.status, 200)
+        self.assertEqual(info["default_workspace"], str(other_workspace.resolve()))
+        self.assertEqual(stored.default_workspace, str(other_workspace.resolve()))
+        self.assertEqual(snapshot["workspace"], str(other_workspace.resolve()))
+        # 默认的那个被移出列表后，回落到剩下的第一个
+        self.assertEqual(after_remove["default_workspace"], str(self.directories.workspace.resolve()))
+
     async def test_usage_summary(self) -> None:
         self.responses.append(LLMResponse(text="好", usage=Usage(prompt_tokens=40, completion_tokens=2)))
         session_id = await self._create_session()
@@ -586,6 +610,14 @@ class WebRound3Test(WebTestBase):
         self.assertEqual(saved["web_search_engine"], "search_pro")
         self.assertNotIn("search-secret-key-1", json.dumps(config))
         self.assertEqual(config["web_search_key_hint"], "search…ey-1")
+
+    async def test_web_search_defaults_to_bing_without_a_key(self) -> None:
+        config = await self._get_json("/api/config")
+        info = await self._get_json("/api/info")
+
+        self.assertEqual(config["web_search_provider"], "bing")
+        # 必应不要密钥：一个智谱模型都没配，搜索也是能用的
+        self.assertTrue(info["web_search_enabled"])
 
 
 class WebAccessTest(WebTestBase):

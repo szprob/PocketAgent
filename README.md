@@ -100,7 +100,7 @@ bash 默认关在沙箱里（macOS 用系统自带的 `sandbox-exec`，Linux 用
   拿到正文（`<skill_content>` 包着，附带技能目录和文件清单），也可以直接 read_file；同一个技能不重复加载
 - 消息开头写 `/技能名` 直接启用（命令行里 `/skills` 列出全部）
 - 压缩上下文时，加载过的技能正文原样保留，不进摘要
-- 不合规范（名字不是小写短横线、和目录名不一致、描述超过 1024 字）只提示、照样加载；没有描述的跳过
+- 不合规范（名字不是小写短横线、和目录名不一致、描述超过 2048 字）只提示、照样加载；没有描述的跳过
 
 找技能的地方，项目级优先于用户级；指向同一个真实目录的（软链）只算一次：
 
@@ -122,7 +122,8 @@ bash 默认关在沙箱里（macOS 用系统自带的 `sandbox-exec`，Linux 用
 
 ### 联网
 
-- `web_search`：智谱 Web Search API（国内直连），密钥不单独配就用配置里智谱模型的密钥
+- `web_search`：默认抓必应的结果页，免费、不用密钥；设置里可以换成 DeepSeek 搜索（0.005 元/次）
+  或智谱 Web Search（0.01 元/次起），密钥不单独配就用对应厂商模型的密钥
 - `web_fetch`：打开网页转成正文，只认 http / https
 
 ### 上下文
@@ -206,6 +207,7 @@ token 第一次启动时生成并存进配置文件，重启服务后浏览器�
   "auto_compact": true,
   "compact_threshold_percent": 80,
   "web_search_enabled": true,
+  "web_search_provider": "bing",
   "web_search_engine": "search_std",
   "web_fetch_enabled": true,
   "sandbox_enabled": true,

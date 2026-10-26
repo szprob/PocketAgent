@@ -21,6 +21,8 @@ const views = {
 };
 const app = document.getElementById("app");
 let newTaskComposer = null;
+// 上次看到的默认工作区，用来判断用户是不是自己挑过输入框里的工作区
+let lastDefaultWorkspace = null;
 
 // ===================== 路由 =====================
 
@@ -202,8 +204,11 @@ function fillStaticIcons() {
 function onInfoChanged(info) {
   updateChatOptions(info);
   if (parseRoute().view === "new") {
-    prepareNewTask(newTaskComposer.getWorkspace());
+    const current = newTaskComposer.getWorkspace();
+    // 默认工作区刚改过、输入框里还是旧默认（用户没自己挑过），就跟着换成新的
+    prepareNewTask(current && current !== lastDefaultWorkspace ? current : info.default_workspace);
   }
+  lastDefaultWorkspace = info.default_workspace;
 }
 
 // 文件预览里点「在对话中引用」：任务页就放进任务的输入框；否则去新任务页，并切到这个文件所在的工作区
@@ -256,8 +261,9 @@ async function init() {
   bindLayoutControls();
 
   await reloadInfo();
+  lastDefaultWorkspace = state.info.default_workspace;
   if (state.expandedWorkspaces.size === 0 && state.info.workspaces.length > 0) {
-    state.expandedWorkspaces.add(state.info.workspaces[0].path);
+    state.expandedWorkspaces.add(state.info.default_workspace || state.info.workspaces[0].path);
   }
   await reloadTasks();
   on("info-changed", onInfoChanged);

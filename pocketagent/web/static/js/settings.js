@@ -18,7 +18,7 @@ const MODEL_FORM_FIELDS = [
   "temperature",
   "extra_body",
 ];
-const DEFAULT_CONTEXT_WINDOW = 128000;
+const DEFAULT_CONTEXT_WINDOW = 256000;
 
 const elements = {};
 // 设置面板里正在编辑、还没保存的配置
@@ -52,14 +52,20 @@ export function initSettings() {
     testButton: byId("test-model"),
     makeDefaultButton: byId("make-default"),
     userName: byId("user-name-input"),
+    defaultWorkspace: byId("default-workspace-select"),
+    defaultWorkspaceHint: byId("default-workspace-hint"),
     defaultMode: byId("default-mode-select"),
     maxSteps: byId("max-steps-input"),
     busyModeInputs: [...document.querySelectorAll('input[name="busy-input-mode"]')],
     autoCompact: byId("auto-compact-input"),
     compactThreshold: byId("compact-threshold-select"),
     webSearchEnabled: byId("web-search-enabled"),
+    webSearchProvider: byId("web-search-provider"),
     webSearchEngine: byId("web-search-engine"),
+    webSearchEngineField: byId("web-search-engine-field"),
     webSearchKey: byId("web-search-key"),
+    webSearchKeyField: byId("web-search-key-field"),
+    webSearchKeyLabel: byId("web-search-key-label"),
     webSearchKeyHint: byId("web-search-key-hint"),
     webFetchEnabled: byId("web-fetch-enabled"),
     sandboxEnabled: byId("sandbox-enabled"),
@@ -93,6 +99,18 @@ export function initSettings() {
   byId("delete-model").addEventListener("click", deleteSelectedModel);
   elements.makeDefaultButton.addEventListener("click", makeSelectedDefault);
   elements.testButton.addEventListener("click", testSelectedModel);
+  elements.webSearchProvider.addEventListener("change", () => updateWebSearchFields());
+}
+
+// 智谱的档位只在选智谱时才有意义；必应不用密钥，DeepSeek / 智谱要
+function updateWebSearchFields() {
+  const provider = elements.webSearchProvider.value;
+  const usesZhipu = provider === "zhipu";
+  const usesKey = provider !== "bing";
+  show(elements.webSearchEngineField, usesZhipu);
+  show(elements.webSearchKeyField, usesKey);
+  elements.webSearchKeyLabel.textContent = usesZhipu ? "智谱搜索 API Key" : "DeepSeek 搜索 API Key";
+  elements.webSearchKey.placeholder = usesZhipu ? "留空就用智谱模型的密钥" : "留空就用 DeepSeek 模型的密钥";
 }
 
 export function isSettingsOpen() {
@@ -204,6 +222,23 @@ function toPayloadModel(model) {
   return payload;
 }
 
+// 默认工作区只能从已经加进来的工作区里挑；想加新的去左侧栏点 +
+function renderDefaultWorkspaceOptions(config) {
+  const select = elements.defaultWorkspace;
+  select.replaceChildren();
+  for (const workspace of state.info.workspaces) {
+    const option = el("option", "", workspace.name);
+    option.value = workspace.path;
+    option.title = workspace.path;
+    select.appendChild(option);
+  }
+  select.value = config.default_workspace || "";
+  select.disabled = state.info.workspaces.length === 0;
+  elements.defaultWorkspaceHint.textContent = state.info.workspaces.length
+    ? "左侧栏工作区那一行的星标也能改"
+    : "还没有工作区，先在左侧栏点 + 加一个目录";
+}
+
 export async function openSettings(tabName) {
   const config = await requestJson("api/config");
   draft.models = config.models.map(toDraftModel);
@@ -218,6 +253,7 @@ export async function openSettings(tabName) {
     elements.defaultMode.appendChild(option);
   }
   elements.defaultMode.value = config.approval_mode;
+  renderDefaultWorkspaceOptions(config);
   elements.maxSteps.value = config.max_steps;
   elements.userName.value = config.user_name;
   for (const input of elements.busyModeInputs) {
@@ -226,11 +262,13 @@ export async function openSettings(tabName) {
   elements.autoCompact.checked = config.auto_compact;
   elements.compactThreshold.value = String(config.compact_threshold_percent);
   elements.webSearchEnabled.checked = config.web_search_enabled;
+  elements.webSearchProvider.value = config.web_search_provider || "bing";
   elements.webSearchEngine.value = config.web_search_engine;
   elements.webSearchKey.value = "";
   elements.webSearchKeyHint.textContent = config.web_search_key_hint
     ? `已单独配置 ${config.web_search_key_hint}，留空表示不改`
     : config.web_search_key_source || "没有可用的密钥：填一个，或者在模型里加一个智谱模型";
+  updateWebSearchFields();
   elements.webFetchEnabled.checked = config.web_fetch_enabled;
   elements.sandboxEnabled.checked = config.sandbox_enabled;
   elements.sandboxNetwork.checked = config.sandbox_network;
@@ -542,12 +580,14 @@ async function saveSettings() {
     models: draft.models.map(toPayloadModel),
     default_model: draft.defaultModel,
     approval_mode: elements.defaultMode.value,
+    default_workspace: elements.defaultWorkspace.value || null,
     busy_input_mode: busyInput ? busyInput.value : "interject",
     max_steps: elements.maxSteps.value,
     user_name: elements.userName.value,
     auto_compact: elements.autoCompact.checked,
     compact_threshold_percent: elements.compactThreshold.value,
     web_search_enabled: elements.webSearchEnabled.checked,
+    web_search_provider: elements.webSearchProvider.value,
     web_search_engine: elements.webSearchEngine.value,
     web_search_api_key: elements.webSearchKey.value,
     web_fetch_enabled: elements.webFetchEnabled.checked,

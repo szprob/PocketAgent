@@ -82,6 +82,71 @@ class AppConfigTest(unittest.TestCase):
 
         self.assertEqual(config.default_model, "ds")
 
+    def test_default_workspace_is_kept_and_falls_back_to_first(self) -> None:
+        first = str(self.directories.workspace)
+        other = str(self.directories.home_dir / "other")
+        configured = AppConfig.from_dict({"workspaces": [first, other], "default_workspace": other})
+        unset = AppConfig.from_dict({"workspaces": [first, other]})
+        stale = AppConfig.from_dict({"workspaces": [first], "default_workspace": other})
+
+        self.assertEqual(configured.default_workspace, other)
+        self.assertEqual(configured.resolved_default_workspace(), other)
+        self.assertIsNone(unset.default_workspace)
+        self.assertEqual(unset.resolved_default_workspace(), first)
+        # 配的那个目录已经不在列表里：当作没配，回落到第一个
+        self.assertIsNone(stale.default_workspace)
+        self.assertEqual(stale.resolved_default_workspace(), first)
+        self.assertIsNone(AppConfig.from_dict({}).resolved_default_workspace())
+
+    def test_set_default_workspace_requires_a_listed_directory(self) -> None:
+        first = str(self.directories.workspace)
+        config = AppConfig.from_dict({"workspaces": [first]})
+
+        config.set_default_workspace(first)
+        self.assertEqual(config.resolved_default_workspace(), first)
+        with self.assertRaises(ConfigError):
+            config.set_default_workspace(self.directories.home_dir / "elsewhere")
+        with self.assertRaises(ConfigError):
+            config.set_default_workspace("")
+
+    def test_web_search_defaults_to_free_bing(self) -> None:
+        config = AppConfig.from_dict({})
+        settings = config.web_search_settings()
+
+        self.assertEqual(config.web_search_provider, "bing")
+        self.assertEqual(settings.provider, "bing")
+        # 必应不要密钥
+        self.assertIsNone(settings.api_key)
+        self.assertEqual(AppConfig.from_dict(config.to_dict()).web_search_provider, "bing")
+
+    def test_zhipu_search_needs_a_key(self) -> None:
+        without_key = AppConfig.from_dict({"web_search_provider": "zhipu"})
+        with_key = AppConfig.from_dict({"web_search_provider": "zhipu", "web_search_api_key": "search-key"})
+        switched_off = AppConfig.from_dict({"web_search_provider": "zhipu", "web_search_enabled": False})
+
+        self.assertIsNone(without_key.web_search_settings())
+        self.assertEqual(with_key.web_search_settings().provider, "zhipu")
+        self.assertEqual(with_key.web_search_settings().api_key, "search-key")
+        self.assertIsNone(switched_off.web_search_settings())
+        with self.assertRaises(ConfigError):
+            AppConfig.from_dict({"web_search_provider": "google"})
+
+    def test_deepseek_search_uses_the_deepseek_model_key(self) -> None:
+        config = AppConfig.from_dict(
+            {
+                "web_search_provider": "deepseek",
+                "models": [
+                    {"id": "ds", "name": "DS 官方", "model": "deepseek-flash", "base_url": "https://api.deepseek.com", "api_key": "sk-ds"},
+                    {"id": "glm", "name": "GLM", "model": "glm-5.3-flash", "base_url": "https://open.bigmodel.cn/api/paas/v4", "api_key": "glm-key"},
+                ],
+            }
+        )
+        settings = config.web_search_settings()
+
+        self.assertEqual(settings.provider, "deepseek")
+        self.assertEqual(settings.api_key, "sk-ds")
+        self.assertEqual(config.web_search_key_source(), "用模型「DS 官方」的密钥")
+
 
 class SettingsLoadTest(unittest.TestCase):
     def setUp(self) -> None:

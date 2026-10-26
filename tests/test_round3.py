@@ -67,6 +67,7 @@ class ReasoningChoicesTest(unittest.TestCase):
                 "models": [{"model": "glm-5.3-flash", "base_url": "https://open.bigmodel.cn/api/paas/v4", "api_key": "glm-key"}],
                 "auto_compact": False,
                 "compact_threshold_percent": 60,
+                "web_search_provider": "zhipu",
                 "web_search_engine": "search_pro",
             }
         )

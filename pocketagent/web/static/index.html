@@ -179,6 +179,9 @@
             <div class="form-fields">
               <label class="field"><span>账户名称（左下角显示）</span>
                 <input id="user-name-input" type="text"></label>
+              <label class="field"><span>新任务的默认工作区</span>
+                <select id="default-workspace-select"></select>
+                <span class="field-hint" id="default-workspace-hint"></span></label>
               <div class="field-row">
                 <label class="field"><span>新任务的默认权限</span>
                   <select id="default-mode-select"></select></label>
@@ -199,17 +202,24 @@
               <fieldset class="radio-group">
                 <legend>联网</legend>
                 <label class="checkbox-field"><input type="checkbox" id="web-search-enabled">
-                  <span>联网搜索（web_search，用智谱 Web Search API，国内直连）</span></label>
+                  <span>联网搜索（web_search，查最新信息、文档、报错原因）</span></label>
                 <div class="field-row">
-                  <label class="field"><span>搜索档位</span>
-                    <select id="web-search-engine">
-                      <option value="search_std">基础版 search_std</option>
-                      <option value="search_pro">高阶版 search_pro</option>
+                  <label class="field"><span>搜索服务</span>
+                    <select id="web-search-provider">
+                      <option value="bing">必应（免费）</option>
+                      <option value="deepseek">DeepSeek 搜索（0.005 元/次）</option>
+                      <option value="zhipu">智谱 Web Search（0.01 元/次起）</option>
                     </select></label>
-                  <label class="field"><span>搜索 API Key</span>
-                    <input id="web-search-key" type="password" placeholder="留空就用智谱模型的密钥">
-                    <span class="field-hint" id="web-search-key-hint"></span></label>
+                  <label class="field" id="web-search-engine-field"><span>智谱搜索档位</span>
+                    <select id="web-search-engine">
+                      <option value="search_std">基础版 search_std（0.01 元/次）</option>
+                      <option value="search_pro">高阶版 search_pro（0.03 元/次）</option>
+                    </select></label>
                 </div>
+                <label class="field" id="web-search-key-field"><span id="web-search-key-label">搜索 API Key</span>
+                  <input id="web-search-key" type="password" placeholder="留空就用对应厂商模型的密钥">
+                  <span class="field-hint" id="web-search-key-hint"></span></label>
+                <div class="field-hint">必应直接抓搜索结果页，免费、不用密钥；DeepSeek / 智谱走官方接口，按成功调用次数计费。</div>
                 <label class="checkbox-field"><input type="checkbox" id="web-fetch-enabled">
                   <span>读网页（web_fetch：打开搜索结果里的链接、读文档）</span></label>
               </fieldset>

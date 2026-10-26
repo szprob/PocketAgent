@@ -1,3 +1,4 @@
+import datetime
 import time
 import unittest
 from pathlib import Path
@@ -7,6 +8,7 @@ from pocketagent.tools.base import truncate_middle
 from pocketagent.tools.files import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
 from pocketagent.tools.search import GlobTool, GrepTool
 from pocketagent.tools.shell import BashTool
+from pocketagent.tools.web import bing_recency_filter, deepseek_query_with_recency, parse_bing_results
 from tests.helpers import TemporaryDirectories
 
 
@@ -120,6 +122,63 @@ class ToolsTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(truncated.startswith("HEAD"))
         self.assertTrue(truncated.endswith("TAIL"))
         self.assertIn("中间省略", truncated)
+
+
+class BingSearchParsingTest(unittest.TestCase):
+    """必应结果页的解析：标题取 h2 里的链接（不是前面那个站点图标链接），站内链接不影响结果条数。"""
+
+    HTML = """
+    <ol id="b_results">
+      <li class="b_algo">
+        <div class="b_tpcn"><a class="tilk" href="https://python.org/">python.org</a></div>
+        <h2><a href="https://www.bing.com/ck/a?!&&p=abc&u=a1aHR0cHM6Ly9kb2NzLnB5dGhvbi5vcmcvMy9saWJyYXJ5L2h0dHB4Lmh0bWw&ntb=1">httpx 文档</a></h2>
+        <div class="b_caption"><p class="b_lineclamp2">httpx 是 Python 的 HTTP 客户端。</p>
+          <ul><li>站内链接一</li><li>站内链接二</li></ul>
+        </div>
+      </li>
+      <li class="b_algo">
+        <h2><a href="https://example.com/a?x=1">第二条 &amp; 结果</a></h2>
+        <div class="b_caption"><p>摘要二</p></div>
+      </li>
+    </ol>
+    """
+
+    def test_results_are_extracted_in_order(self) -> None:
+        results = parse_bing_results(self.HTML)
+
+        self.assertEqual([item["title"] for item in results], ["httpx 文档", "第二条 & 结果"])
+        self.assertEqual(results[0]["content"], "httpx 是 Python 的 HTTP 客户端。")
+        self.assertEqual(results[1]["content"], "摘要二")
+
+    def test_wrapped_bing_link_is_unwrapped(self) -> None:
+        results = parse_bing_results(self.HTML)
+
+        self.assertEqual(results[0]["link"], "https://docs.python.org/3/library/httpx.html")
+        self.assertEqual(results[1]["link"], "https://example.com/a?x=1")
+
+    def test_empty_page_gives_no_results(self) -> None:
+        self.assertEqual(parse_bing_results("<html><body>没有结果</body></html>"), [])
+
+    def test_recency_filter_uses_bing_codes(self) -> None:
+        self.assertEqual(bing_recency_filter("oneDay"), 'ex1:"ez1"')
+        self.assertEqual(bing_recency_filter("oneWeek"), 'ex1:"ez2"')
+        self.assertEqual(bing_recency_filter("oneMonth"), 'ex1:"ez3"')
+        self.assertIsNone(bing_recency_filter("noLimit"))
+        # 一年没有现成的档位，用自定义区间
+        self.assertTrue(bing_recency_filter("oneYear").startswith('ex1:"ez5_'))
+
+
+class DeepSeekSearchTest(unittest.TestCase):
+    """DeepSeek 搜索没有单独的时间参数，时间范围要拼进 query 的 after: 语法里。"""
+
+    def test_recency_becomes_an_after_operator(self) -> None:
+        today = datetime.date.today()
+        week_ago = (today - datetime.timedelta(days=7)).isoformat()
+        year_ago = (today - datetime.timedelta(days=365)).isoformat()
+
+        self.assertEqual(deepseek_query_with_recency("deepseek 发布", "oneWeek"), f"deepseek 发布 after:{week_ago}")
+        self.assertEqual(deepseek_query_with_recency("deepseek 发布", "oneYear"), f"deepseek 发布 after:{year_ago}")
+        self.assertEqual(deepseek_query_with_recency("deepseek 发布", "noLimit"), "deepseek 发布")
 
 
 if __name__ == "__main__":

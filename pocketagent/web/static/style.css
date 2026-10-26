@@ -279,7 +279,9 @@ button:disabled { cursor: default; opacity: 0.5; }
 }
 
 .workspace-chevron { color: var(--text-muted); }
-.workspace-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+/* 名字和「默认」标签放一起，标签紧跟在名字后面，不会被挤到行尾 */
+.workspace-title { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; }
+.workspace-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
 .workspace-count { font-size: 12px; color: var(--text-muted); }
 /* 默认工作区的小标签：新任务默认落在这里 */
 .workspace-badge {

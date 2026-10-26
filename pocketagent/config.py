@@ -39,7 +39,7 @@ from pocketagent.sandbox import available_sandbox
 from pocketagent.tools.web import WebSearchSettings
 
 DEFAULT_MODEL = "deepseek-v4.1-flash"
-DEFAULT_CONTEXT_WINDOW_TOKENS = 128_000
+DEFAULT_CONTEXT_WINDOW_TOKENS = 256_000
 DEFAULT_MAX_STEPS = 50
 CONFIG_FILE_NAME = "config.json"
 
@@ -186,6 +186,12 @@ def _workspace_list(value: Any) -> list[str]:
     return workspaces
 
 
+def _workspace_path(value: Any) -> str | None:
+    """单个目录：空着就是 None，否则和 _workspace_list 一样展开 ~、转绝对路径。"""
+    text = str(value or "").strip()
+    return str(Path(text).expanduser().resolve()) if text else None
+
+
 def _name_list(value: Any) -> list[str]:
     names: list[str] = []
     for item in value or []:
@@ -212,7 +218,17 @@ def _key_hint(key: str | None) -> str:
     return f"{key[:6]}…{key[-4:]}"
 
 
+WEB_SEARCH_PROVIDERS = ["bing", "deepseek", "zhipu"]
+# 搜索没单独配密钥时，用对应厂商模型的密钥
+WEB_SEARCH_MODEL_KIND = {"deepseek": "deepseek", "zhipu": "bigmodel"}
 WEB_SEARCH_ENGINES = ["search_std", "search_pro"]
+
+
+def _web_search_provider(value: Any) -> str:
+    provider = value or "bing"
+    if provider not in WEB_SEARCH_PROVIDERS:
+        raise ConfigError(f"搜索服务只能是 {' / '.join(WEB_SEARCH_PROVIDERS)}：{value}")
+    return provider
 
 
 def _web_search_engine(value: Any) -> str:
@@ -315,8 +331,9 @@ class AppConfig:
     # 上下文占用超过窗口的这个百分比就自动压缩
     auto_compact: bool = True
     compact_threshold_percent: int = DEFAULT_COMPACT_THRESHOLD_PERCENT
-    # 联网：web_search 用智谱 Web Search，密钥空着就用智谱模型的密钥；web_fetch 读网页
+    # 联网：web_search 默认抓必应（免费），也可以换成智谱 Web Search（按次计费，密钥空着就用智谱模型的密钥）
     web_search_enabled: bool = True
+    web_search_provider: str = "bing"
     web_search_engine: str = "search_std"
     web_search_api_key: str | None = None
     web_fetch_enabled: bool = True
@@ -330,6 +347,8 @@ class AppConfig:
     # 项目记忆：每个工作区一份跨会话的笔记
     memory_enabled: bool = True
     workspaces: list[str] = field(default_factory=list)
+    # 新任务默认用哪个工作区；空着就用列表里的第一个（启动目录会排第一）
+    default_workspace: str | None = None
     user_name: str | None = None
     web_token: str | None = None
 
@@ -360,6 +379,7 @@ class AppConfig:
             auto_compact=_boolean_with_default(data, "auto_compact", True),
             compact_threshold_percent=_compact_threshold_percent(data),
             web_search_enabled=_boolean_with_default(data, "web_search_enabled", True),
+            web_search_provider=_web_search_provider(data.get("web_search_provider")),
             web_search_engine=_web_search_engine(data.get("web_search_engine")),
             web_search_api_key=_optional_text(data, "web_search_api_key"),
             web_fetch_enabled=_boolean_with_default(data, "web_fetch_enabled", True),
@@ -370,11 +390,15 @@ class AppConfig:
             disabled_skills=_name_list(data.get("disabled_skills")),
             memory_enabled=_boolean_with_default(data, "memory_enabled", True),
             workspaces=_workspace_list(data.get("workspaces")),
+            default_workspace=_workspace_path(data.get("default_workspace")),
             user_name=_optional_text(data, "user_name"),
             web_token=_optional_text(data, "web_token"),
         )
         if config.default_model and config.find_model(config.default_model) is None:
             config.default_model = models[0].id if models else None
+        # 默认工作区得在列表里；配的那个目录被移除了就当没配
+        if config.default_workspace not in config.workspaces:
+            config.default_workspace = None
         return config
 
     def to_dict(self) -> dict[str, Any]:
@@ -387,6 +411,7 @@ class AppConfig:
             "auto_compact": self.auto_compact,
             "compact_threshold_percent": self.compact_threshold_percent,
             "web_search_enabled": self.web_search_enabled,
+            "web_search_provider": self.web_search_provider,
             "web_search_engine": self.web_search_engine,
             "web_search_api_key": self.web_search_api_key,
             "web_fetch_enabled": self.web_fetch_enabled,
@@ -397,6 +422,7 @@ class AppConfig:
             "disabled_skills": self.disabled_skills,
             "memory_enabled": self.memory_enabled,
             "workspaces": self.workspaces,
+            "default_workspace": self.default_workspace,
             "user_name": self.user_name,
             "web_token": self.web_token,
         }
@@ -411,6 +437,7 @@ class AppConfig:
             "auto_compact": self.auto_compact,
             "compact_threshold_percent": self.compact_threshold_percent,
             "web_search_enabled": self.web_search_enabled,
+            "web_search_provider": self.web_search_provider,
             "web_search_engine": self.web_search_engine,
             "web_search_key_hint": _key_hint(self.web_search_api_key),
             "web_search_key_source": self.web_search_key_source(),
@@ -423,32 +450,40 @@ class AppConfig:
             "disabled_skills": self.disabled_skills,
             "memory_enabled": self.memory_enabled,
             "workspaces": self.workspaces,
+            "default_workspace": self.resolved_default_workspace(),
             "user_name": self.display_user_name(),
             "reasoning_presets": REASONING_CHOICES_BY_PROVIDER,
         }
 
-    def resolved_web_search_key(self) -> str | None:
-        """单独配的搜索密钥优先，没配就用第一个智谱模型的密钥。"""
+    def resolved_web_search_key(self, provider: str | None = None) -> str | None:
+        """单独配的搜索密钥优先，没配就用对应厂商模型的密钥。"""
         if self.web_search_api_key:
             return self.web_search_api_key
+        kind = WEB_SEARCH_MODEL_KIND.get(provider or self.web_search_provider)
         for profile in self.models:
-            if profile.provider == "bigmodel" and profile.api_key:
+            if profile.provider == kind and profile.api_key:
                 return profile.api_key
         return None
 
-    def web_search_key_source(self) -> str:
+    def web_search_key_source(self, provider: str | None = None) -> str:
         if self.web_search_api_key:
             return "单独配置的密钥"
+        kind = WEB_SEARCH_MODEL_KIND.get(provider or self.web_search_provider)
         for profile in self.models:
-            if profile.provider == "bigmodel" and profile.api_key:
+            if profile.provider == kind and profile.api_key:
                 return f"用模型「{profile.name}」的密钥"
         return ""
 
     def web_search_settings(self) -> "WebSearchSettings | None":
-        key = self.resolved_web_search_key()
-        if not self.web_search_enabled or not key:
+        if not self.web_search_enabled:
             return None
-        return WebSearchSettings(api_key=key, engine=self.web_search_engine)
+        if self.web_search_provider == "bing":
+            return WebSearchSettings(provider="bing")
+        # DeepSeek / 智谱都要密钥；没配就当搜索不可用
+        key = self.resolved_web_search_key()
+        if not key:
+            return None
+        return WebSearchSettings(provider=self.web_search_provider, api_key=key, engine=self.web_search_engine)
 
     def display_user_name(self) -> str:
         return self.user_name or os.environ.get("USER") or "我"
@@ -460,6 +495,22 @@ class AppConfig:
             return False
         self.workspaces.append(path)
         return True
+
+    def resolved_default_workspace(self) -> str | None:
+        """配的默认工作区；没配、或者那个目录已经不在列表里，就用第一个。"""
+        if self.default_workspace in self.workspaces:
+            return self.default_workspace
+        return self.workspaces[0] if self.workspaces else None
+
+    def set_default_workspace(self, workspace: Path | str) -> None:
+        """把列表里的某个目录设成新任务的默认工作区。"""
+        text = str(workspace).strip()
+        if not text:
+            raise ConfigError("没给工作区路径")
+        path = str(Path(text).expanduser().resolve())
+        if path not in self.workspaces:
+            raise ConfigError(f"这个目录不在工作区列表里：{workspace}")
+        self.default_workspace = path
 
     @classmethod
     def load(cls, path: Path) -> "AppConfig":

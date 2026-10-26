@@ -98,6 +98,7 @@ function signature() {
     state.currentTaskId,
     state.tasks,
     state.info.workspaces,
+    state.info.default_workspace,
     state.info.user_name,
     [...state.expandedWorkspaces],
     [...tree.expandedDirs],
@@ -148,23 +149,32 @@ function renderWorkspaces() {
 function renderWorkspace(workspace) {
   const group = el("div", "workspace-group");
   const expanded = state.expandedWorkspaces.has(workspace.path);
+  const isDefault = workspace.path === state.info.default_workspace;
   const header = el("div", "workspace-row");
   header.classList.toggle("missing", !workspace.exists);
   header.title = workspace.exists ? workspace.path : `${workspace.path}（目录不存在）`;
   const toggle = el("button", "workspace-toggle");
   toggle.type = "button";
-  toggle.append(icon(expanded ? "chevronDown" : "chevronRight", "tree-chevron"), icon("folder"), el("span", "workspace-name", workspace.name));
+  const title = el("span", "workspace-title");
+  title.append(el("span", "workspace-name", workspace.name));
+  if (isDefault) {
+    title.appendChild(el("span", "workspace-badge", "默认"));
+  }
+  toggle.append(icon(expanded ? "chevronDown" : "chevronRight", "tree-chevron"), icon("folder"), title);
   if (state.tasks.some((task) => task.workspace === workspace.path && task.running)) {
     toggle.appendChild(el("span", "running-dot"));
   }
   toggle.addEventListener("click", () => toggleWorkspace(workspace));
+  const makeDefault = button("row-action", "", "star", isDefault ? "新任务默认就在这个工作区" : "设为新任务的默认工作区");
+  makeDefault.classList.toggle("active", isDefault);
+  makeDefault.addEventListener("click", () => setDefaultWorkspace(workspace));
   const newTask = button("row-action", "", "plus", "在这个工作区开新任务");
   newTask.addEventListener("click", () => callbacks.onNewTask(workspace.path));
   const refresh = button("row-action", "", "refresh", "刷新文件列表");
   refresh.addEventListener("click", () => refreshWorkspace(workspace));
   const remove = button("row-action", "", "close", "从列表里移除（目录和任务记录都不动）");
   remove.addEventListener("click", () => removeWorkspace(workspace));
-  header.append(toggle, newTask, refresh, remove);
+  header.append(toggle, makeDefault, newTask, refresh, remove);
   group.appendChild(header);
   if (expanded && workspace.exists) {
     group.appendChild(renderDirectory(workspace.path, "", 1));
@@ -305,6 +315,11 @@ async function removeWorkspace(workspace) {
     return;
   }
   await sendJson("api/workspaces", "DELETE", { path: workspace.path });
+  await reloadInfo();
+}
+
+async function setDefaultWorkspace(workspace) {
+  await sendJson("api/workspaces/default", "POST", { path: workspace.path });
   await reloadInfo();
 }
 

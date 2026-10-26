@@ -380,9 +380,8 @@ class SessionManager:
     # ---- 工作区 ----
 
     def default_workspace(self) -> Path:
-        if self.app_config.workspaces:
-            return Path(self.app_config.workspaces[0])
-        return self.base_settings.workspace
+        configured = self.app_config.resolved_default_workspace()
+        return Path(configured) if configured else self.base_settings.workspace
 
     def workspace_list(self) -> list[dict[str, Any]]:
         return [
@@ -401,6 +400,13 @@ class SessionManager:
         """只从列表里拿掉，这个工作区的历史任务不删。"""
         resolved = str(Path(raw_path).expanduser().resolve())
         self.app_config.workspaces = [path for path in self.app_config.workspaces if path != resolved]
+        if self.app_config.default_workspace == resolved:
+            self.app_config.default_workspace = None
+        self.app_config.save(self.base_settings.config_path)
+
+    def set_default_workspace(self, raw_path: str) -> None:
+        """把列表里的某个目录设成新任务的默认工作区，存进配置。"""
+        self.app_config.set_default_workspace(raw_path)
         self.app_config.save(self.base_settings.config_path)
 
     # ---- 任务 ----

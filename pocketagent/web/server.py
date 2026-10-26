@@ -15,6 +15,7 @@ REST（都在 /api 下）：
   info                                   工作区、模型（含可选思考档位、上下文长度）、审批模式、用户名
   models/{id}         PATCH              选模型面板里改思考档位、上下文长度（存进配置，马上生效）
   workspaces          POST / DELETE      加 / 移除工作区
+  workspaces/default  POST               把某个工作区设成新任务的默认
   files / file / file/raw                工作区文件树 / 文件预览 / 原始文件（图片预览）
   browse                                 选工作区时浏览本机目录（只列目录）
   sessions            GET / POST         任务列表 / 新建任务（指定工作区、模型、审批模式）
@@ -198,6 +199,18 @@ async def remove_workspace(request: web.Request) -> web.Response:
     payload = await request.json()
     _manager(request).remove_workspace(str(payload.get("path", "")))
     return _json_response({"workspaces": _manager(request).workspace_list()})
+
+
+async def set_default_workspace(request: web.Request) -> web.Response:
+    payload = await request.json()
+    manager = _manager(request)
+    manager.set_default_workspace(str(payload.get("path", "")))
+    return _json_response(
+        {
+            "workspaces": manager.workspace_list(),
+            "default_workspace": str(manager.default_workspace()),
+        }
+    )
 
 
 # ---- 任务 ----
@@ -493,6 +506,7 @@ def _add_routes(router: web.UrlDispatcher) -> None:
     router.add_get("/api/file/raw", raw_file)
     router.add_get("/api/browse", browse_directories)
     router.add_post("/api/workspaces", add_workspace)
+    router.add_post("/api/workspaces/default", set_default_workspace)
     router.add_delete("/api/workspaces", remove_workspace)
     router.add_get("/api/sessions", list_sessions)
     router.add_post("/api/sessions", create_session)
@@ -589,7 +603,8 @@ async def _serve(app: web.Application, settings: Settings, host: str, port: int 
             url += f"?token={app[TOKEN_KEY]}"
         # flush：后台运行时 stdout 是块缓冲，不 flush 日志里看不到地址
         print(f"PocketAgent web 界面：{url}", flush=True)
-        print(f"默认工作区 {settings.workspace} · 模型 {settings.display_model()} · Ctrl-C 停止服务", flush=True)
+        default_workspace = app[MANAGER_KEY].default_workspace()
+        print(f"默认工作区 {default_workspace} · 模型 {settings.display_model()} · Ctrl-C 停止服务", flush=True)
         if open_browser:
             webbrowser.open(url)
         await asyncio.Event().wait()
@@ -605,7 +620,7 @@ def run_web(
     require_token: bool = True,
     open_browser: bool = True,
 ) -> None:
-    """settings.workspace（-C 或当前目录）会加进工作区列表，并作为新任务的默认工作区。"""
+    """settings.workspace（-C 或当前目录）会加进工作区列表；没配默认工作区时，就用它当默认。"""
     if not require_token and not _is_loopback(host):
         raise SystemExit("监听非本机地址时必须带 token：这个服务能在你的机器上执行任意命令")
     app_config = AppConfig.load(settings.config_path)
@@ -619,7 +634,10 @@ def run_web(
 
 
 def _put_workspace_first(app_config: AppConfig, settings: Settings) -> None:
+    """启动目录排在最前面；配置里已经指定了默认工作区就尊重配置，不覆盖。"""
     workspace = str(settings.workspace.resolve())
     workspaces = [path for path in app_config.workspaces if path != workspace]
     app_config.workspaces = [workspace] + workspaces
+    if app_config.default_workspace is None:
+        app_config.default_workspace = workspace
     app_config.save(settings.config_path)
