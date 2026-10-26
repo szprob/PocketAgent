@@ -307,6 +307,9 @@ function handleAgentEvent(event) {
       hideActivity();
       addToolCard(event.call_id, event.name, event.summary);
       break;
+    case "subagent_progress":
+      addSubagentStep(event.call_id, event);
+      break;
     case "tool_review":
       setToolReview(event.call_id, { allow: event.allow, reason: event.reason });
       break;
@@ -625,6 +628,37 @@ function addToolCard(callId, name, summary) {
   chat.toolCards.set(callId, card);
   appendToTranscript(card);
   return card;
+}
+
+// 子 agent 的进度：在它那张工具卡片下面列出最近几步（样式先写在这里，整理目录时挪进 style.css）
+const SUBAGENT_STEPS_SHOWN = 4;
+
+function addSubagentStep(callId, step) {
+  const card = chat.toolCards.get(callId);
+  if (!card) {
+    return;
+  }
+  let steps = card.querySelector(".subagent-steps");
+  if (!steps) {
+    steps = el("div", "subagent-steps");
+    steps.style.cssText = "padding: 2px 12px 8px 36px; font-size: 12px; color: var(--text-muted); font-family: var(--mono);";
+    steps.dataset.count = "0";
+    card.insertBefore(steps, card.querySelector(".tool-body"));
+  }
+  const count = Number(steps.dataset.count) + (step.step === "tool" ? 1 : 0);
+  steps.dataset.count = String(count);
+  const line = el("div", "subagent-step", `${step.step === "tool_error" ? "✗" : "↳"} ${step.name}  ${step.summary}`);
+  line.style.cssText = "overflow: hidden; text-overflow: ellipsis; white-space: nowrap;";
+  if (step.step === "tool_error") {
+    line.style.color = "var(--warning)";
+  }
+  steps.querySelector(".subagent-count")?.remove();
+  steps.appendChild(line);
+  const lines = [...steps.querySelectorAll(".subagent-step")];
+  lines.slice(0, Math.max(0, lines.length - SUBAGENT_STEPS_SHOWN)).forEach((each) => each.remove());
+  if (count > SUBAGENT_STEPS_SHOWN) {
+    steps.prepend(el("div", "subagent-count", `子 agent 已经调了 ${count} 次工具，下面是最近几步`));
+  }
 }
 
 function setToolReview(callId, review) {

@@ -5,6 +5,7 @@
 
 import json
 from abc import ABC, abstractmethod
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -26,6 +27,11 @@ class ToolKind(str, Enum):
 class ToolResult:
     content: str
     is_error: bool = False
+
+
+# 正在执行的那次工具调用的 id。并发执行的工具各有一份（contextvars 跟着 asyncio 任务走），
+# 子 agent 用它把自己的进度挂到主 agent 对应的那张工具卡片上
+current_tool_call_id: ContextVar[str] = ContextVar("current_tool_call_id", default="")
 
 
 @dataclass
@@ -63,6 +69,8 @@ class ToolContext:
     history: Callable[[], list[dict[str, Any]]] = field(default=lambda: [])
     # 向用户提问（ask_user 用）；None 表示没人能回答（单次执行、测试）。返回 None 表示用户跳过
     ask_user: Callable[[list[Question]], Awaitable[list[QuestionAnswer] | None]] | None = None
+    # 派子 agent（subagent 工具用）；子 agent 自己的工具上下文里是 None，不能再派
+    spawn_subagent: Callable[[Any], Awaitable[Any]] | None = None
 
     def resolve_path(self, raw_path: str) -> Path:
         """相对路径按工作目录解析。工作目录外的路径也能用，要不要确认由权限审批决定（见 path_access）。"""

@@ -92,6 +92,9 @@ class ConsoleRenderer:
                 tokens_before = event.data["tokens_before"]
                 tokens_after = event.data["tokens_after"]
                 self._print_line(self.style.dim(f"[上下文已压缩：约 {tokens_before} → {tokens_after} tokens]"))
+            case EventType.SUBAGENT_PROGRESS:
+                mark = "✗ " if event.data["step"] == "tool_error" else ""
+                self._print_line(self.style.dim(f"    ↳ 子 agent {mark}{event.data['name']} {event.data['summary']}"))
             case EventType.STEP_LIMIT:
                 self._print_line(self.style.yellow(f"[这一轮已调用模型 {event.data['max_steps']} 次，达到上限，先停下]"))
             case EventType.ERROR:

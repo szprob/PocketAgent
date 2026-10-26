@@ -3,7 +3,7 @@
 基于 [PocketFlow](https://github.com/The-Pocket/PocketFlow) 的编程 agent，目标是做成 Codex / Claude Code / WorkBuddy / Qoder 这一类：
 在本地仓库里读代码、改文件、跑命令，用户在旁边审批。
 
-已经能用的：主循环、内置工具（文件、搜索、bash、联网搜索、读网页、技能、向用户提问）、三档权限（含 AI 自动审批）、
+已经能用的：主循环、内置工具（文件、搜索、bash、联网搜索、读网页、技能、向用户提问、子 agent）、三档权限（含 AI 自动审批）、
 bash 沙箱、工作目录外的访问审批、影子 git 检查点（看变更、撤销、整体恢复）、技能（Agent Skills 标准）、项目记忆、
 流式事件、trace、会话续跑、后台自动压缩上下文、多模型配置（思考档位 / 上下文长度随模型走）、
 附件（图片 / 文件）、插话和排队、token 用量和缓存命中统计、定时自动化，以及命令行和 web 两套界面。
@@ -141,6 +141,16 @@ bash 默认关在沙箱里（macOS 用系统自带的 `sandbox-exec`，Linux 用
 问题卡片刷新页面后还在；命令行里按编号回答，0 是自己写，直接回车跳过。没人能回答的时候（单次执行、自动化等太久），
 它会自己判断着往下做。
 
+### 子 agent
+
+agent 可以用 `subagent` 工具派子 agent 去独立干一件事。子 agent 从零开始（看不到主对话），有自己的上下文，
+做完只把结论交回来，主 agent 的上下文不会被它读过的大量文件塞满。
+
+- `type=explore`：只读（读文件、搜索、查资料），互不相关的几件事可以在一次回复里同时派几个，并行跑
+- `type=general`：能改文件、跑命令，每一步照常按权限审批，审批卡片上标着是哪个子 agent
+- 子 agent 不能问用户，也不能再派子 agent；模型、用量、沙箱、「本任务总是允许」和主 agent 共用
+- 子 agent 每调一个工具，它那张工具卡片下面就实时多一行；点停止时子 agent 一起停
+
 ### agent 干活时又发了一句话
 
 在 ⚙ 设置 → 通用里选：
@@ -255,13 +265,14 @@ pocketagent/
   context.py           AgentContext：节点间共享的状态（PocketFlow 的 shared store），含 token 锚点
   config.py            配置文件（多个模型、默认值、工作区、沙箱、技能）和运行时 Settings
   llm/                 模型接口：openai_compat（流式、工具调用拼接、重试）、scripted（测试用假模型）
-  tools/               工具基类 + 注册表；files / search / shell / web / skill / ask
+  tools/               工具基类 + 注册表；files / search / shell / web / skill / ask / subagent
   permissions.py       权限模式、审批接口；按工具类别和这次调用碰到的地方（工作目录外、沙箱外、密钥）决定
   sandbox.py           bash 沙箱：macOS Seatbelt 规则、Linux bubblewrap 参数
   checkpoints.py       影子 git 检查点：拍快照、列变更、diff、撤销、整体恢复；嵌套仓库各一个影子仓库
   skills.py            技能：找技能、校验、<available_skills> 清单、<skill_content> 正文、/技能名、压缩时保留
   memory.py            项目记忆：目录位置、系统提示里的说明和索引、列出 / 删除
   questions.py         ask_user 的问题和回答：校验、整理成给模型看的结果
+  subagents.py         子 agent：同一张图、自己的上下文和工具集，进度转成主 agent 的事件
   frontmatter.py       解析 Markdown 开头 --- 包着的元数据（技能、记忆共用）
   reviewer.py          AI 自动审批：让模型判断一次工具调用能不能放行
   attachments.py       附件存储；消息里只放引用，发给模型前展开（图片缩小 + 编码缓存）
@@ -310,14 +321,13 @@ tests/                 unittest；vendor_pocketflow/ 是上游测试
 对照 Codex / Claude Code / WorkBuddy / Qoder，还缺这些，大致按优先级排：
 
 1. **MCP 客户端**：把 MCP server 的工具包装成 `Tool` 注册进来
-2. **子 agent**：一个工具起一个独立上下文的 `Agent`，只把结论交回来
-3. **Anthropic 等其他协议的 provider**（现在只有 OpenAI 兼容接口）
-4. **todo / plan 工具**
-5. **hooks**（工具调用前后跑用户脚本）
-6. **沙箱联网白名单**：现在只有开 / 关，可以像 Claude Code 那样走代理按域名放行；Linux bubblewrap 要在真机上验证
-7. **trace 回放和评测**：拿 JSONL trace 重放、对比不同模型或提示词
-8. **界面**：TUI、IDE 插件；web 里搜索任务
-9. grep 换成 ripgrep
+2. **Anthropic 等其他协议的 provider**（现在只有 OpenAI 兼容接口）
+3. **todo / plan 工具**
+4. **hooks**（工具调用前后跑用户脚本）
+5. **沙箱联网白名单**：现在只有开 / 关，可以像 Claude Code 那样走代理按域名放行；Linux bubblewrap 要在真机上验证
+6. **trace 回放和评测**：拿 JSONL trace 重放、对比不同模型或提示词
+7. **界面**：TUI、IDE 插件；web 里搜索任务
+8. grep 换成 ripgrep
 
 ## 测试
 

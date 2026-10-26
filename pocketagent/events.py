@@ -32,6 +32,8 @@ class EventType(str, Enum):
     COMPACTION_FAILED = "compaction_failed"
     COMPACTION = "compaction"
     STEP_LIMIT = "step_limit"
+    # 子 agent 调了一个工具（call_id 是主 agent 里那次 subagent 调用的 id）
+    SUBAGENT_PROGRESS = "subagent_progress"
     ERROR = "error"
 
 

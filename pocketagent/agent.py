@@ -36,6 +36,7 @@ from pocketagent.prompts import build_system_prompt
 from pocketagent.sandbox import SandboxPolicy, available_sandbox, default_secret_dirs
 from pocketagent.session import Session, SessionStore
 from pocketagent.skills import Skill, discover_skills, find_skill_command, skill_content, skill_directories
+from pocketagent.subagents import attach_subagent_runner
 from pocketagent.tools import default_tool_registry
 from pocketagent.tools.base import ToolContext, ToolRegistry
 from pocketagent.trace import JsonlTracer
@@ -295,6 +296,7 @@ class Agent:
         self.context.tool_context = build_tool_context(
             settings, self.session, self.skills, self.context.permissions.approver
         )
+        attach_subagent_runner(self.context)
         self.refresh_system_prompt()
 
 
@@ -357,6 +359,7 @@ def create_agent(
         session=session,
         attachments_root=settings.attachments_dir,
     )
+    attach_subagent_runner(context)
     return Agent(context, session_store, usage_log, skills=skills)
 
 

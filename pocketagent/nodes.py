@@ -24,7 +24,14 @@ from pocketagent.events import EventBus, EventType
 from pocketagent.llm.base import ContextOverflowError, LLMProvider, LLMResponse, ToolCall, build_assistant_message
 from pocketagent.permissions import ApprovalRequest, Decision, PermissionCheck
 from pocketagent.reviewer import ReviewResult, review_tool_call
-from pocketagent.tools.base import Tool, ToolKind, ToolResult, find_missing_arguments, truncate_middle
+from pocketagent.tools.base import (
+    Tool,
+    ToolKind,
+    ToolResult,
+    current_tool_call_id,
+    find_missing_arguments,
+    truncate_middle,
+)
 
 
 # 一轮里最多压缩几次：系统提示本身就很长时，再压也压不下去，别一直压
@@ -383,7 +390,11 @@ async def run_tool_call(call: ToolCall, context: AgentContext) -> ToolCallOutcom
     await context.events.emit(
         EventType.TOOL_CALL, call_id=call.id, name=call.name, summary=summary, arguments=call.arguments
     )
-    outcome = await _check_and_execute(tool, call, summary, context)
+    token = current_tool_call_id.set(call.id)
+    try:
+        outcome = await _check_and_execute(tool, call, summary, context)
+    finally:
+        current_tool_call_id.reset(token)
     outcome.result.content = truncate_middle(outcome.result.content, context.settings.max_tool_output_chars)
     await context.events.emit(
         EventType.TOOL_RESULT,
