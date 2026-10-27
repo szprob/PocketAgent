@@ -34,9 +34,11 @@ def default_tool_registry(
     ripgrep_path: str | None = None,
     image_gen: ImageGenSettings | None = None,
     image_search: bool = True,
+    computer_use: bool = False,
 ) -> ToolRegistry:
     """内置工具。配了联网搜索的密钥才有 web_search；web_fetch 不要密钥，默认带上；有技能才有 activate_skill。
-    image_gen 配了密钥才有 generate_image；search_images 和 download_image 默认带上。"""
+    image_gen 配了密钥才有 generate_image；search_images 和 download_image 默认带上；
+    screenshot / computer 能操作整台电脑，只在 macOS 上、而且用户在设置里勾了才有。"""
     tools: list[Tool] = [
         ReadFileTool(),
         ListDirTool(),
@@ -61,7 +63,7 @@ def default_tool_registry(
         tools.append(DownloadImageTool())
     if skills:
         tools.append(ActivateSkillTool(skills))
-    if sys.platform == "darwin":
+    if computer_use and sys.platform == "darwin":
         # 截屏（screenshot）+ 键鼠操作（computer），需要「屏幕录制」「辅助功能」权限，见 tools/computer.py
         tools.append(ScreenshotTool())
         tools.append(ComputerTool())

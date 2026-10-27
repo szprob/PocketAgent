@@ -105,7 +105,7 @@ def build_tool_context(
     on_todos_changed: Callable[[list[dict[str, Any]]], Awaitable[None]] | None = None,
 ) -> ToolContext:
     """附件目录、技能目录不用确认就能读，项目记忆目录读写都不用确认；
-    用户配的免问目录读写都不用确认；PocketAgent 自己的目录（有密钥）和 ~/.ssh 这类算密钥目录。"""
+    用户配的免问目录和工作目录一样对待（读不问、改照审批模式走）；PocketAgent 自己的目录（有密钥）和 ~/.ssh 这类算密钥目录。"""
     tool_outputs_dir = session_directory(settings.tool_outputs_root, session.id)
     tool_outputs_dir.mkdir(parents=True, exist_ok=True)
     extra_read_dirs = [settings.attachments_dir / session.id, tool_outputs_dir] + [
@@ -134,6 +134,7 @@ def build_tool_context(
         shell_timeout_seconds=settings.shell_timeout_seconds,
         extra_read_dirs=extra_read_dirs,
         trusted_dirs=trusted_dirs,
+        allow_outside_workspace=settings.allow_outside_workspace,
         secret_dirs=secret_dirs,
         sandbox=sandbox,
         memory_dir=memory_dir,
@@ -155,6 +156,7 @@ def build_tool_registry(settings: Settings, skills: list[Skill]) -> ToolRegistry
         ripgrep_path=settings.ripgrep_path,
         image_gen=settings.image_gen,
         image_search=settings.image_search,
+        computer_use=settings.computer_use,
     )
 
 

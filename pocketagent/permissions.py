@@ -9,12 +9,13 @@
 web 界面只给前三种，后两种命令行 --mode 可用。
 
 模式之外，有三种情况要多问一句（PermissionGate.check）：
-- 碰到工作目录以外的路径：完全访问放行；AI 自动审批下读交给 AI 判断、改要问用户；其余问用户。选「总是允许」时可以只放行这个目录，也可以连同它的父目录一起放行（之后兄弟目录也不再问）
+- 碰到工作目录以外的路径：完全访问放行；AI 自动审批下读交给 AI 判断、改要问用户；其余问用户。选「总是允许」时可以只放行这个目录，
+  也可以放行它的上一级目录（兄弟目录也不再问）；上一级是根目录、家目录这一层的，只放行它自己（见 parent_scope）
 - bash 要在沙箱外执行：除了完全访问都问用户（不交给 AI）
 - 碰到密钥、凭据目录：什么模式都问用户，也不给「总是允许」
 改的全是项目记忆目录里的文件时直接放行（只读模式除外）。
-用户配的免问目录不算工作目录以外（和密钥目录重叠的部分不算），那里的读写也不问；
-bash 没法静态判断会碰哪里，所以命令仍按模式审批。
+用户配的免问目录、以及设置里勾了「工作目录外不再询问」时的所有非密钥路径，都和工作目录一样对待：
+读不问，改照审批模式走（见 ToolContext.path_access）。bash 没法静态判断会碰哪里，所以命令仍按模式审批。
 """
 
 from dataclasses import dataclass, field
@@ -121,6 +122,19 @@ def _directory_of(path: Path) -> Path:
     return path if path.is_dir() else path.parent
 
 
+def parent_scope(directory: Path) -> Path:
+    """「连上一级目录一起放行」实际放行到哪：上一级目录（这样兄弟目录也不再问）。
+
+    放行一个目录等于放行它下面的所有东西，所以上一级是根目录、/Users、家目录这一层时只放行它自己，
+    不然点一下就等于放开了整个家目录甚至整个磁盘。
+    """
+    parent = directory.parent
+    home = Path.home()
+    if parent == directory or parent == home or parent in home.parents:
+        return directory
+    return parent
+
+
 @dataclass
 class PermissionCheck:
     """一次调用的审批结果，以及选「本任务总是允许」时要记住什么。"""
@@ -133,6 +147,9 @@ class PermissionCheck:
     # 碰到密钥目录时只能一次一批
     offer_always: bool = True
 
+    def parent_scopes(self) -> list[Path]:
+        return sorted({parent_scope(directory) for directory in self.remember_dirs})
+
     def _label(self, include_parents: bool) -> str:
         if not self.offer_always:
             return ""
@@ -142,16 +159,20 @@ class PermissionCheck:
         if self.remember_command:
             parts.append("在沙箱外执行这条命令")
         if self.remember_dirs:
-            directories = "、".join(str(directory) for directory in self.remember_dirs)
-            parts.append("访问 " + directories + (" 及其父目录" if include_parents else ""))
+            if include_parents:
+                directories = "、".join(str(directory) for directory in self.parent_scopes())
+                parts.append("访问 " + directories + " 下的所有目录")
+            else:
+                directories = "、".join(str(directory) for directory in self.remember_dirs)
+                parts.append("访问 " + directories)
         return "本任务总是允许 " + "，".join(parts) if parts else ""
 
     def always_label(self) -> str:
         return self._label(include_parents=False)
 
     def always_parents_label(self) -> str:
-        # 只有涉及目录时才有「连父目录一起放行」这个选项
-        if not self.remember_dirs:
+        # 只有涉及目录、而且上一级确实比目录本身大时，才给「连上一级目录一起放行」这个选项
+        if not self.remember_dirs or self.parent_scopes() == sorted(set(self.remember_dirs)):
             return ""
         return self._label(include_parents=True)
 
@@ -172,8 +193,8 @@ class PermissionGate:
         by_mode = decide_by_mode(self.mode, tool.kind)
         if by_mode == Decision.DENY:
             return PermissionCheck(Decision.DENY)
-        if access.memory_only or access.trusted_only:
-            # 记项目记忆是 agent 自己的笔记、免问目录是用户明确放行的，不打扰用户
+        if access.memory_only:
+            # 记项目记忆是 agent 自己的笔记，不打扰用户
             return PermissionCheck(Decision.ALLOW)
         check = PermissionCheck(Decision.ALLOW)
         if by_mode != Decision.ALLOW and tool.name not in self.always_allowed_tools:
@@ -224,5 +245,4 @@ class PermissionGate:
             self.always_allowed_commands.add(check.remember_command)
         self.always_allowed_dirs.update(check.remember_dirs)
         if include_parents:
-            for directory in check.remember_dirs:
-                self.always_allowed_dirs.update(directory.parents)
+            self.always_allowed_dirs.update(check.parent_scopes())

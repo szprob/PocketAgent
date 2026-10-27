@@ -77,9 +77,12 @@ export function initSettings() {
     imageGenKey: byId("image-gen-key"),
     imageGenKeyHint: byId("image-gen-key-hint"),
     imageSearchEnabled: byId("image-search-enabled"),
+    computerUseEnabled: byId("computer-use-enabled"),
+    computerUseHint: byId("computer-use-hint"),
     sandboxEnabled: byId("sandbox-enabled"),
     sandboxNetwork: byId("sandbox-network"),
     sandboxHint: byId("sandbox-hint"),
+    allowOutsideWorkspace: byId("allow-outside-workspace"),
     skillsEnabled: byId("skills-enabled"),
     skillList: byId("skill-list"),
     skillProblems: byId("skill-problems"),
@@ -301,9 +304,15 @@ export async function openSettings(tabName) {
     : config.image_gen_key_source || "没有可用的密钥：填一个，或者在模型里加一个智谱模型";
   elements.imageSearchEnabled.checked = config.image_search_enabled;
   updateImageGenFields();
+  elements.computerUseEnabled.checked = config.computer_use_enabled;
+  elements.computerUseEnabled.disabled = !config.computer_use_available;
+  elements.computerUseHint.textContent = config.computer_use_available
+    ? "要给运行 PocketAgent 的应用打开「屏幕录制」和「辅助功能」权限（系统设置 → 隐私与安全性）。"
+    : "目前只支持 macOS。";
   elements.sandboxEnabled.checked = config.sandbox_enabled;
   elements.sandboxNetwork.checked = config.sandbox_network;
   elements.sandboxHint.textContent = sandboxHint(config.sandbox_available);
+  elements.allowOutsideWorkspace.checked = config.allow_outside_workspace;
   elements.skillsEnabled.checked = config.skills_enabled;
   elements.memoryEnabled.checked = config.memory_enabled;
   elements.skillDirs.value = (config.skill_dirs || []).join("\n");
@@ -629,8 +638,10 @@ async function saveSettings() {
     image_gen_base_url: elements.imageGenBaseUrl.value,
     image_gen_api_key: elements.imageGenKey.value,
     image_search_enabled: elements.imageSearchEnabled.checked,
+    computer_use_enabled: elements.computerUseEnabled.checked,
     sandbox_enabled: elements.sandboxEnabled.checked,
     sandbox_network: elements.sandboxNetwork.checked,
+    allow_outside_workspace: elements.allowOutsideWorkspace.checked,
     skills_enabled: elements.skillsEnabled.checked,
     skill_dirs: pathLinesFromInput(elements.skillDirs),
     disabled_skills: [...draft.disabledSkills],

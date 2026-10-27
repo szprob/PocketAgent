@@ -238,6 +238,10 @@ async def _run_status(argument: str, context: CommandContext) -> CommandResult:
         lines.append(f"审批  {settings.approval_mode.value}")
     if settings.trusted_dirs:
         lines.append(f"免问目录  {'、'.join(settings.trusted_dirs)}")
+    if settings.allow_outside_workspace:
+        lines.append("工作目录外  不再询问（密钥目录照样问）")
+    if settings.computer_use:
+        lines.append("操作电脑  已开启（screenshot / computer）")
     return CommandResult("\n".join(lines))
 
 
