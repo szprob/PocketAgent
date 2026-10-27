@@ -31,15 +31,21 @@ def _is_within(path: Path, root: Path) -> bool:
     return path == root or root in path.parents
 
 
+def resolve_under(root: Path, relative_path: str) -> tuple[Path, Path]:
+    """返回 (根目录, 目标绝对路径)；路径跑出根目录就报错。"""
+    root = root.expanduser().resolve()
+    target = (root / relative_path).resolve()
+    if not _is_within(target, root):
+        raise ConfigError(f"路径不在工作区里：{relative_path}")
+    return root, target
+
+
 def resolve_in_workspace(workspaces: list[str], workspace: str, relative_path: str) -> tuple[Path, Path]:
     """返回 (工作区根, 目标绝对路径)；工作区没登记、路径跑出工作区都报错。"""
     root = Path(workspace).expanduser().resolve()
     if str(root) not in workspaces:
         raise ConfigError(f"不是已添加的工作区：{workspace}")
-    target = (root / relative_path).resolve()
-    if not _is_within(target, root):
-        raise ConfigError(f"路径不在工作区里：{relative_path}")
-    return root, target
+    return resolve_under(root, relative_path)
 
 
 def _sorted_children(directory: Path) -> list[Path]:
@@ -84,6 +90,14 @@ def read_workspace_file(workspaces: list[str], workspace: str, relative_path: st
 
 def workspace_file_path(workspaces: list[str], workspace: str, relative_path: str) -> Path:
     _, target = resolve_in_workspace(workspaces, workspace, relative_path)
+    if not target.is_file():
+        raise ConfigError(f"不是文件：{relative_path}")
+    return target
+
+
+def session_file_path(workspace: str, relative_path: str) -> Path:
+    """会话自己的文件：不要求工作区登记过，临时任务的目录也能取；仍然不能跑出该目录。"""
+    _, target = resolve_under(Path(workspace), relative_path)
     if not target.is_file():
         raise ConfigError(f"不是文件：{relative_path}")
     return target

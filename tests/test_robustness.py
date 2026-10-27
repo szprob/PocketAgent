@@ -22,8 +22,9 @@ from pocketagent.llm.openai_compat import (
     retry_delay_seconds,
 )
 from pocketagent.tokens import IMAGE_TOKENS, estimate_message_tokens, estimate_text_tokens
-from pocketagent.tools import ToolContext
+from pocketagent.tools import ToolContext, default_tool_registry
 from pocketagent.tools.files import READ_MAX_LINE_CHARS, READ_MAX_TOTAL_CHARS, ReadFileTool
+from pocketagent.web.history import history_items
 from tests.helpers import TemporaryDirectories, build_harness, tool_call
 
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
@@ -184,6 +185,61 @@ class TruncationTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(harness.agent.context.turn.stop_reason, "truncated")
         self.assertEqual(len(harness.provider.remaining_responses), 2)
+
+
+class CutOffReplyTest(unittest.IsolatedAsyncioTestCase):
+    """上游把生成掐断（内容审核 / 流没结束就断了）：半截回复留着，但要标出这一轮是断的。"""
+
+    def setUp(self) -> None:
+        self.directories = TemporaryDirectories()
+
+    def tearDown(self) -> None:
+        self.directories.cleanup()
+
+    async def test_content_filter_keeps_the_partial_reply_and_marks_it(self) -> None:
+        cut_off = LLMResponse(text="这是一段说到一半的话（", finish_reason="content_filter")
+        harness = build_harness(self.directories, [cut_off])
+
+        await harness.agent.run_turn("讲讲这件事")
+
+        turn = harness.agent.context.turn
+        self.assertEqual(turn.stop_reason, "filtered")
+        self.assertEqual(turn.final_text, "这是一段说到一半的话（")
+        last_message = harness.agent.context.messages[-1]
+        self.assertEqual(last_message["role"], "assistant")
+        self.assertEqual(last_message["_finish"], "filtered")
+        # 不重试也不让模型接着写：剧本只有一条，多调一次就会报「剧本用完」
+        self.assertEqual(len(harness.provider.remaining_responses), 0)
+        self.assertFalse([m for m in harness.agent.context.messages if m.get("_kind") == "notice"])
+
+    async def test_incomplete_stream_is_marked_the_same_way(self) -> None:
+        cut_off = LLMResponse(text="只写了一半", finish_reason="incomplete")
+        harness = build_harness(self.directories, [cut_off])
+
+        await harness.agent.run_turn("随便说说")
+
+        self.assertEqual(harness.agent.context.turn.stop_reason, "incomplete")
+        self.assertEqual(harness.agent.context.messages[-1]["_finish"], "incomplete")
+
+    async def test_cut_off_marker_survives_history_replay(self) -> None:
+        cut_off = LLMResponse(text="说到一半", finish_reason="content_filter")
+        harness = build_harness(self.directories, [cut_off])
+        await harness.agent.run_turn("讲讲这件事")
+
+        items = history_items(harness.agent.context.messages, default_tool_registry())
+
+        replies = [item for item in items if item["kind"] == "assistant"]
+        self.assertEqual(replies[-1]["text"], "说到一半")
+        self.assertEqual(replies[-1]["finish"], "filtered")
+
+    async def test_marker_key_is_not_sent_to_the_model(self) -> None:
+        cut_off = LLMResponse(text="说到一半", finish_reason="content_filter")
+        harness = build_harness(self.directories, [cut_off])
+        await harness.agent.run_turn("讲讲这件事")
+
+        # _finish 只是给界面看的，发请求前要去掉，否则有的网关会因为多出来的字段报 400
+        materialized = materialize_messages(harness.agent.context.messages, None, supports_images=False)
+        self.assertFalse([key for message in materialized for key in message if key.startswith("_")])
 
 
 class ReadFileLimitsTest(unittest.IsolatedAsyncioTestCase):

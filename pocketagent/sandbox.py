@@ -1,4 +1,4 @@
-"""bash 的笼子：命令只能写工作目录、临时目录和缓存目录，读不到密钥，默认不能联网。
+"""bash 的笼子：命令只能写工作目录、临时目录、缓存目录和免问目录，读不到密钥，默认不能联网。
 
 - macOS：系统自带的 sandbox-exec（Seatbelt），Codex 用的也是它
 - Linux：bubblewrap（bwrap）；Linux 这条路径还没有在真机上测过
@@ -46,7 +46,7 @@ def default_secret_dirs() -> list[Path]:
     return [Path(os.path.expanduser(item)) for item in SECRET_PATHS]
 
 
-def _is_within(path: Path, root: Path) -> bool:
+def is_within(path: Path, root: Path) -> bool:
     return path == root or root in path.parents
 
 
@@ -58,6 +58,7 @@ class SandboxPolicy:
     secret_dirs: list[Path] = field(default_factory=default_secret_dirs)
     # 上面这些目录里例外能读的，例如这个会话的附件目录
     readable_exceptions: list[Path] = field(default_factory=list)
+    # 额外能写的地方：用户配的免问目录（工作目录以外，读写都不用确认）
     writable_roots: list[Path] = field(default_factory=list)
 
     def all_writable(self) -> list[Path]:
@@ -71,7 +72,7 @@ class SandboxPolicy:
         密钥目录默认连读都不让读，这些得单独放开，否则临时任务里连 ls 都跑不动。
         """
         secrets = _unique_real_paths(self.secret_dirs)
-        return [root for root in self.all_writable() if any(_is_within(root, secret) for secret in secrets)]
+        return [root for root in self.all_writable() if any(is_within(root, secret) for secret in secrets)]
 
     def protected_paths(self) -> list[Path]:
         return [self.workspace.resolve() / relative for relative in PROTECTED_IN_WORKSPACE]
@@ -160,7 +161,7 @@ def bubblewrap_arguments(policy: SandboxPolicy) -> list[str]:
     # 密钥目录盖住之后，再把例外的子目录挂回来（只读）
     writable_inside_secret = policy.writable_inside_secret()
     for exception in policy.readable_exceptions:
-        if any(_is_within(exception, root) for root in writable_inside_secret):
+        if any(is_within(exception, root) for root in writable_inside_secret):
             # 这个是临时任务的工作区，下面要按可写挂回来，别先挂成只读
             continue
         if exception.exists():

@@ -1,6 +1,6 @@
 // 文件预览弹窗：从左侧文件树点开。文本带行号，图片直接显示；可以把 @路径 插进输入框让 agent 去读。
 
-import { requestJson } from "./api.js";
+import { requestJson, withToken } from "./api.js";
 import { copyText, el, formatBytes, show } from "./dom.js";
 import { emit } from "./state.js";
 
@@ -59,7 +59,7 @@ export async function openFilePreview(workspace, path) {
   elements.meta.textContent = `${formatBytes(preview.size)} · ${preview.mime}`;
   if (preview.kind === "image") {
     const image = el("img", "file-image");
-    image.src = `api/file/raw?${fileQuery(workspace, path)}`;
+    image.src = withToken(`api/file/raw?${fileQuery(workspace, path)}`);
     image.alt = path;
     elements.body.replaceChildren(image);
   } else if (preview.kind === "binary") {

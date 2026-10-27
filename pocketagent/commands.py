@@ -236,6 +236,8 @@ async def _run_status(argument: str, context: CommandContext) -> CommandResult:
         lines.append(f"上下文 约 {tokens} / {settings.context_window_tokens} tokens")
     else:
         lines.append(f"审批  {settings.approval_mode.value}")
+    if settings.trusted_dirs:
+        lines.append(f"免问目录  {'、'.join(settings.trusted_dirs)}")
     return CommandResult("\n".join(lines))
 
 

@@ -48,6 +48,21 @@ class AppConfigTest(unittest.TestCase):
         self.assertEqual(config.models, [])
         self.assertIsNone(config.default_profile())
 
+    def test_trusted_dirs_are_expanded_and_kept_in_both_dicts(self) -> None:
+        config = AppConfig.from_dict({"trusted_dirs": ["~/my-data", "~/my-data", "/tmp/elsewhere"]})
+        expected = [str(Path("~/my-data").expanduser().resolve()), str(Path("/tmp/elsewhere").resolve())]
+
+        self.assertEqual(config.trusted_dirs, expected)
+        self.assertEqual(config.to_dict()["trusted_dirs"], expected)
+        self.assertEqual(config.public_dict()["trusted_dirs"], expected)
+
+    def test_ripgrep_path_round_trips(self) -> None:
+        config = AppConfig.from_dict({"ripgrep_path": "/opt/homebrew/bin/rg"})
+
+        self.assertEqual(config.ripgrep_path, "/opt/homebrew/bin/rg")
+        self.assertEqual(config.to_dict()["ripgrep_path"], "/opt/homebrew/bin/rg")
+        self.assertEqual(AppConfig.from_dict(config.to_dict()).ripgrep_path, "/opt/homebrew/bin/rg")
+
     def test_public_dict_hides_api_key(self) -> None:
         config = AppConfig.from_dict({"models": [DS_PROFILE]})
 
@@ -199,6 +214,20 @@ class SettingsLoadTest(unittest.TestCase):
         # 不是配置里的模型：用默认模型的接口，只换模型名
         self.assertEqual(raw_model.model, "deepseek-v5")
         self.assertEqual(raw_model.base_url, "https://new-api.example/v1")
+
+    def test_trusted_dirs_reach_the_runtime_settings(self) -> None:
+        self.write_config({"models": [DS_PROFILE], "trusted_dirs": ["/tmp/my-data"]})
+
+        settings = self.load()
+
+        self.assertEqual(settings.trusted_dirs, [str(Path("/tmp/my-data").resolve())])
+
+    def test_ripgrep_path_reaches_the_runtime_settings(self) -> None:
+        self.write_config({"models": [DS_PROFILE], "ripgrep_path": "/opt/homebrew/bin/rg"})
+
+        settings = self.load()
+
+        self.assertEqual(settings.ripgrep_path, "/opt/homebrew/bin/rg")
 
     def test_broken_config_file_raises(self) -> None:
         path = config_path(self.directories.home_dir)

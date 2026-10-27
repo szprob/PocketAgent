@@ -6,10 +6,18 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from pocketagent.compaction import estimate_tokens, shrink_for_summary
+from pocketagent.compaction import (
+    PRESERVED_SKILLS_HEADER,
+    RESUME_HINT,
+    SUMMARY_PREFIX,
+    estimate_tokens,
+    previous_summary_text,
+    shrink_for_summary,
+)
 from pocketagent.config import AppConfig, ConfigError, ModelProfile
 from pocketagent.llm.base import ContextOverflowError, is_context_overflow
 from pocketagent.llm.openai_compat import OpenAICompatibleProvider, parse_usage
+from pocketagent.nodes import _snapshot_length
 from pocketagent.session import SessionStore
 from pocketagent.tools import ToolContext
 from pocketagent.tools.web import WebFetchTool, _format_result, html_to_text
@@ -158,6 +166,57 @@ class ShrinkForSummaryTest(unittest.TestCase):
         ids_called = {call["id"] for message in shrunk for call in message.get("tool_calls") or []}
         ids_answered = {message["tool_call_id"] for message in shrunk if message["role"] == "tool"}
         self.assertEqual(ids_called, ids_answered)
+
+
+class IncrementalCompactionTest(unittest.TestCase):
+    """增量合并：历史开头已是旧摘要时，摘要在旧摘要基础上合并，而不是从头重压。"""
+
+    def test_previous_summary_text_strips_markers_and_skills(self) -> None:
+        message = {
+            "role": "user",
+            "content": SUMMARY_PREFIX + "旧摘要正文" + PRESERVED_SKILLS_HEADER + "技能正文" + RESUME_HINT,
+        }
+
+        self.assertEqual(previous_summary_text([{"role": "system", "content": "s"}, message]), "旧摘要正文")
+
+    def test_previous_summary_text_returns_none_for_fresh_history(self) -> None:
+        messages = [{"role": "system", "content": "s"}, {"role": "user", "content": "普通对话"}]
+
+        self.assertIsNone(previous_summary_text(messages))
+
+    def test_shrink_never_truncates_or_drops_the_previous_summary(self) -> None:
+        summary_message = {"role": "user", "content": SUMMARY_PREFIX + "旧摘要" * 5000}
+        messages = [
+            {"role": "system", "content": "s"},
+            summary_message,
+            {"role": "assistant", "content": "新增" * 9000},
+        ]
+
+        shrunk = shrink_for_summary(messages, limit_tokens=100)
+
+        self.assertEqual(shrunk[1]["content"], summary_message["content"])
+
+    def test_snapshot_boundary_never_starts_on_a_tool_result(self) -> None:
+        messages = [
+            {"role": "system", "content": "s"},
+            {"role": "user", "content": "任务"},
+            {"role": "assistant", "content": None, "tool_calls": [{"id": "a", "type": "function", "function": {"name": "x", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "a", "content": "结果"},
+        ]
+
+        self.assertEqual(_snapshot_length(messages), 2)
+
+    def test_snapshot_keeps_at_most_the_tail(self) -> None:
+        messages = [{"role": "system", "content": "s"}, {"role": "user", "content": "任务"}]
+        for index in range(20):
+            messages.append({"role": "assistant", "content": f"回复{index}"})
+            messages.append({"role": "user", "content": f"追问{index}"})
+
+        start = _snapshot_length(messages)
+
+        self.assertGreaterEqual(start, 3)
+        self.assertLessEqual(len(messages) - start, 8)
+        self.assertNotEqual(messages[start].get("role"), "tool")
 
 
 class SessionSummaryCacheTest(unittest.TestCase):

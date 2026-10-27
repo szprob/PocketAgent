@@ -11,7 +11,7 @@ from typing import Any
 
 from pocketflow import AsyncNode
 
-from pocketagent.attachments import materialize_messages, message_display
+from pocketagent.attachments import AttachmentStore, materialize_messages, message_display, tool_message_content
 from pocketagent.compaction import (
     PendingCompaction,
     rebuild_messages_with_summary,
@@ -29,15 +29,25 @@ from pocketagent.tools.base import (
     ToolKind,
     ToolResult,
     current_tool_call_id,
+    current_tool_output,
     find_missing_arguments,
     truncate_middle,
 )
+from pocketagent.tool_outputs import save_tool_output
 
 
 # 一轮里最多压缩几次：系统提示本身就很长时，再压也压不下去，别一直压
 MAX_COMPACTIONS_PER_TURN = 3
 # 做摘要时给历史留的上下文比例（剩下的留给摘要指令和输出）
 SUMMARY_INPUT_RATIO = 0.85
+
+# 上游把生成掐掉的 finish_reason → 这一轮停下来时记的 stop_reason。
+# content_filter：模型或网关的审核在句子中间掐断；incomplete：流没给结束标记就断了（多半是连接中途断）。
+# 这两种都只收到半句话，重试没用（同样的内容还会被掐一次），但必须让用户看出「这不是答完了」。
+CUT_OFF_FINISH_REASONS = {
+    "content_filter": "filtered",
+    "incomplete": "incomplete",
+}
 
 
 def messages_for_model(context: AgentContext) -> list[dict[str, Any]]:
@@ -58,6 +68,8 @@ class AgentNode(AsyncNode):
         action = await super()._run_async(context)
         elapsed_seconds = round(time.monotonic() - started_at, 3)
         await context.events.emit(EventType.NODE_END, node=node_name, action=action, seconds=elapsed_seconds)
+        # 节点边界存一次会话：一轮里工具跑了很多步、进程被杀时，历史不会停在上一轮结束
+        await context.record_history()
         return action
 
 
@@ -100,6 +112,20 @@ def _can_compact(context: AgentContext) -> bool:
 # ---- 后台压缩 ----
 
 
+# 后台压缩时，末尾这么多条消息不进摘要、原样保留：最近的工具输出和文件内容摘要容易走样
+TAIL_KEEP_MESSAGES = 8
+
+
+def _snapshot_length(messages: list[dict[str, Any]]) -> int:
+    """摘要覆盖到哪里为止：前面换成摘要，末尾留几条原文。边界不落在 tool 结果上
+    （快照之后的第一条消息不能是没有 assistant 开头的 tool 结果），
+    也至少给摘要留一条真消息，不然等于白压一次。"""
+    start = max(3, len(messages) - TAIL_KEEP_MESSAGES)
+    while start < len(messages) and messages[start].get("role") == "tool":
+        start -= 1
+    return start
+
+
 def _summary_request_messages(context: AgentContext) -> list[dict[str, Any]]:
     """做摘要用的历史：不发图片；本身超长时先截短、丢掉最早的对话。"""
     messages = materialize_messages(context.messages, context.attachments_root, supports_images=False)
@@ -114,7 +140,7 @@ async def start_background_compaction(context: AgentContext, reason: str) -> boo
     task = asyncio.create_task(summarize_history(context.provider, _summary_request_messages(context)))
     context.pending_compaction = PendingCompaction(
         task=task,
-        snapshot_length=len(context.messages),
+        snapshot_length=_snapshot_length(context.messages),
         history_version=context.history_version,
         reason=reason,
         tokens_before=context.estimated_context_tokens(),
@@ -263,6 +289,9 @@ class ThinkNode(AgentNode):
         )
         if response.finish_reason == "length":
             return await _handle_truncated_response(context, response)
+        cut_off_stop_reason = CUT_OFF_FINISH_REASONS.get(response.finish_reason or "")
+        if cut_off_stop_reason:
+            return _finish_cut_off(context, response, cut_off_stop_reason)
         context.messages.append(build_assistant_message(response))
         if response.usage and response.usage.prompt_tokens:
             context.record_usage(response.usage)
@@ -293,7 +322,10 @@ async def _handle_truncated_response(context: AgentContext, response: LLMRespons
     gave_up = context.turn.truncations > MAX_TRUNCATION_RECOVERIES
     await context.events.emit(EventType.LLM_TRUNCATED, had_tool_calls=had_tool_calls, gave_up=gave_up)
     if gave_up:
-        context.messages.append({"role": "assistant", "content": response.text or "（回复多次超出长度上限，先停下）"})
+        # _finish 记下断在哪：界面重放历史时还能在回复末尾标出来
+        context.messages.append(
+            {"role": "assistant", "content": response.text or "（回复多次超出长度上限，先停下）", "_finish": "truncated"}
+        )
         context.turn.final_text = response.text
         context.turn.stop_reason = "truncated"
         return "done"
@@ -303,6 +335,24 @@ async def _handle_truncated_response(context: AgentContext, response: LLMRespons
     # _kind 标成内部提示：界面重放历史时显示成提示行，也不当成用户的原话
     context.messages.append({"role": "user", "content": note, "_kind": "notice"})
     return "continue"
+
+
+def _finish_cut_off(context: AgentContext, response: LLMResponse, stop_reason: str) -> str:
+    """上游把生成掐断了：半截话留在对话里并标上原因，这一轮就停在这儿。
+
+    不重试、也不让模型「接着写」：审核掐掉的内容再问一次还是会被掐，
+    连接断掉的那半句也接不回来，硬续反而会让用户以为后面是完整内容。
+    """
+    if response.text:
+        message = build_assistant_message(response)
+        # _finish 记下断在哪：界面重放历史时还能在回复末尾标出来
+        message["_finish"] = stop_reason
+        context.messages.append(message)
+    if response.usage and response.usage.prompt_tokens:
+        context.record_usage(response.usage)
+    context.turn.final_text = response.text
+    context.turn.stop_reason = stop_reason
+    return "done"
 
 
 @dataclass
@@ -368,9 +418,57 @@ def _all_read_only(batch: ToolBatch) -> bool:
     return True
 
 
+# 工具输出事件最多这么频繁地发，避免 `yes` 这类命令把 WebSocket 刷爆
+OUTPUT_EVENT_INTERVAL_SECONDS = 0.1
+OUTPUT_EVENT_MAX_CHARS = 8_000
+
+
+class _ToolOutputEmitter:
+    """把工具吐出来的输出合并成 TOOL_OUTPUT_DELTA 事件，界面只用来实时显示，不进模型上下文。"""
+
+    def __init__(self, events: EventBus, call_id: str, name: str) -> None:
+        self.events = events
+        self.call_id = call_id
+        self.name = name
+        self.pending: list[str] = []
+        self.pending_chars = 0
+        self.last_emit = 0.0
+
+    async def push(self, text: str) -> None:
+        # 进度条用 \r 回到行首；在网页/终端里换成换行，保留历史样子
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        if not text:
+            return
+        self.pending.append(text)
+        self.pending_chars += len(text)
+        if (
+            self.pending_chars >= OUTPUT_EVENT_MAX_CHARS
+            or time.monotonic() - self.last_emit >= OUTPUT_EVENT_INTERVAL_SECONDS
+        ):
+            await self.flush()
+
+    async def flush(self) -> None:
+        if not self.pending:
+            return
+        text = "".join(self.pending)
+        self.pending.clear()
+        self.pending_chars = 0
+        self.last_emit = time.monotonic()
+        await self.events.emit(
+            EventType.TOOL_OUTPUT_DELTA,
+            call_id=self.call_id,
+            name=self.name,
+            text=text,
+        )
+
+
 def append_tool_messages(context: AgentContext, outcomes: list[ToolCallOutcome]) -> None:
     """下划线开头的字段只给界面重放历史用，发给模型前会去掉。"""
     for outcome in outcomes:
+        content: str | list[dict[str, Any]] = outcome.result.content
+        if outcome.result.images and context.attachments_root is not None:
+            store = AttachmentStore(context.attachments_root, context.session.id)
+            content = tool_message_content(content, outcome.result.images, outcome.call.name, store)
         message = {
             "role": "tool",
             "tool_call_id": outcome.call.id,
@@ -390,12 +488,16 @@ async def run_tool_call(call: ToolCall, context: AgentContext) -> ToolCallOutcom
     await context.events.emit(
         EventType.TOOL_CALL, call_id=call.id, name=call.name, summary=summary, arguments=call.arguments
     )
+    emitter = _ToolOutputEmitter(context.events, call.id, call.name)
     token = current_tool_call_id.set(call.id)
+    output_token = current_tool_output.set(emitter.push)
     try:
         outcome = await _check_and_execute(tool, call, summary, context)
     finally:
+        current_tool_output.reset(output_token)
         current_tool_call_id.reset(token)
-    outcome.result.content = truncate_middle(outcome.result.content, context.settings.max_tool_output_chars)
+    await emitter.flush()
+    outcome.result.content = await _render_tool_result(context, call, outcome.result.content)
     await context.events.emit(
         EventType.TOOL_RESULT,
         call_id=call.id,
@@ -405,6 +507,24 @@ async def run_tool_call(call: ToolCall, context: AgentContext) -> ToolCallOutcom
         denied=outcome.denied,
     )
     return outcome
+
+
+async def _render_tool_result(context: AgentContext, call: ToolCall, content: str) -> str:
+    """太长的工具输出：头尾给模型，完整内容落盘，并告诉模型去哪读。"""
+    limit = context.settings.max_tool_output_chars
+    if len(content) <= limit:
+        return content
+    directory = context.tool_context.tool_outputs_dir
+    path = None
+    if directory is not None:
+        path = await asyncio.to_thread(save_tool_output, directory, call.id, content)
+    truncated = truncate_middle(content, limit)
+    if path is None:
+        return f"{truncated}\n\n（完整输出太长，已截断）"
+    return (
+        f"{truncated}\n\n（完整输出 {len(content)} 字符，已保存到 {path}；"
+        "需要时用 grep 搜索或 read_file 带 offset 分段查看，不要整份读进上下文）"
+    )
 
 
 @dataclass
@@ -473,7 +593,12 @@ async def _approve(
             return ApprovalOutcome(approved=True, review=review)
         summary = f"{summary}\n（AI 审批没有放行：{review.reason}）"
     request = ApprovalRequest(
-        tool_name=tool.name, summary=summary, preview=preview, notes=check.notes, always_label=check.always_label()
+        tool_name=tool.name,
+        summary=summary,
+        preview=preview,
+        notes=check.notes,
+        always_label=check.always_label(),
+        always_parents_label=check.always_parents_label(),
     )
     return ApprovalOutcome(approved=await context.permissions.ask(request, check), review=review)
 

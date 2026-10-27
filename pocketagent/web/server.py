@@ -2,7 +2,7 @@
 
 浏览器 → 服务（WebSocket，JSON）：
   {"type": "user_message", "text": ..., "attachment_ids": [...]}   空闲就开一轮；忙着就按设置插话或排队
-  {"type": "approval", "request_id": ..., "answer": "allow_once" | "allow_always" | "deny"}
+  {"type": "approval", "request_id": ..., "answer": "allow_once" | "allow_always" | "allow_always_parents" | "deny"}
   {"type": "question_answer", "request_id": ..., "answers": [{"selected": [...], "other": "..."}, ...] | null（跳过）}
   {"type": "interrupt"} / {"type": "compact"} / {"type": "remove_queued", "index": n}
   {"type": "set_mode", "mode": ...} / {"type": "set_model", "model_id": ...}
@@ -23,7 +23,9 @@ REST（都在 /api 下）：
   sessions/{id}       GET / PATCH / DELETE   快照 / 改标题 / 删除
   sessions/{id}/overview                 右侧栏概要（用量、缓存命中、最新回复），比快照轻
   sessions/{id}/attachments              POST 上传（multipart），GET .../{附件 id} 取文件
+  sessions/{id}/file/raw                 GET 会话工作区里的原始文件（聊天和产出里的图片）
   sessions/{id}/changes                  GET 文件变更 + 检查点（影子 git），GET .../diff?path=，POST .../revert
+  sessions/{id}/changes/turn              GET 本轮开始到现在改了什么（聊天里贴本轮图片）
   sessions/{id}/checkpoints/restore      POST 把整个工作区恢复到某个检查点
   usage / usage/balance                  本机 token 用量 / 各家账户余额
   config              GET / PUT          设置；config/test 测试模型连接
@@ -110,6 +112,15 @@ async def error_middleware(request: web.Request, handler: Handler) -> web.Stream
 
 
 # ---- 页面和基本信息 ----
+
+
+@web.middleware
+async def static_no_cache_middleware(request: web.Request, handler: Handler) -> web.StreamResponse:
+    """static 里的 js/css 改了要能马上生效：不声明 no-cache 时浏览器会按启发式缓存继续用旧的。"""
+    response = await handler(request)
+    if request.path.startswith("/static/"):
+        response.headers.setdefault("Cache-Control", "no-cache")
+    return response
 
 
 async def index(request: web.Request) -> web.StreamResponse:
@@ -358,6 +369,13 @@ async def get_attachment(request: web.Request) -> web.StreamResponse:
     return web.FileResponse(attachment.path, headers={"Content-Type": attachment.mime})
 
 
+async def get_session_file(request: web.Request) -> web.StreamResponse:
+    # 按会话的工作区取图：临时任务的临时目录没登记成工作区，也能在聊天里显示
+    web_session = _find_session(request)
+    path = files.session_file_path(web_session.session.workspace, request.query.get("path", ""))
+    return web.FileResponse(path)
+
+
 # ---- 文件变更 ----
 
 
@@ -374,6 +392,11 @@ async def _changes_payload(web_session: WebSession) -> dict[str, Any]:
 
 async def list_changes(request: web.Request) -> web.Response:
     return _json_response(await _changes_payload(_find_session(request)))
+
+
+async def list_turn_changes(request: web.Request) -> web.Response:
+    web_session = _find_session(request)
+    return _json_response({"changes": [change.to_dict() for change in await web_session.checkpoints.turn_changes()]})
 
 
 async def get_change_diff(request: web.Request) -> web.Response:
@@ -557,7 +580,10 @@ def create_app(
     app_config 留空就读 settings.home_dir 下的配置文件。run_scheduler 打开定时任务调度（测试里关着）。"""
     if app_config is None:
         app_config = AppConfig.load(settings.config_path)
-    app = web.Application(middlewares=[token_middleware, error_middleware], client_max_size=25 * 1024 * 1024)
+    app = web.Application(
+        middlewares=[token_middleware, error_middleware, static_no_cache_middleware],
+        client_max_size=25 * 1024 * 1024,
+    )
     app[TOKEN_KEY] = token
     app[MANAGER_KEY] = SessionManager(settings, app_config, provider_factory)
     _add_routes(app.router)
@@ -589,7 +615,9 @@ def _add_routes(router: web.UrlDispatcher) -> None:
     router.add_delete("/api/sessions/{session_id}", delete_session)
     router.add_post("/api/sessions/{session_id}/attachments", upload_attachments)
     router.add_get("/api/sessions/{session_id}/attachments/{attachment_id}", get_attachment)
+    router.add_get("/api/sessions/{session_id}/file/raw", get_session_file)
     router.add_get("/api/sessions/{session_id}/changes", list_changes)
+    router.add_get("/api/sessions/{session_id}/changes/turn", list_turn_changes)
     router.add_get("/api/sessions/{session_id}/changes/diff", get_change_diff)
     router.add_post("/api/sessions/{session_id}/changes/revert", revert_change)
     router.add_post("/api/sessions/{session_id}/checkpoints/restore", restore_checkpoint)

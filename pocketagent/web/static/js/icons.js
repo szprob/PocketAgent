@@ -30,6 +30,7 @@ const PATHS = {
   monitor: '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/>',
   star: '<path d="m12 3 2.8 5.8 6.2.9-4.5 4.4 1.1 6.2L12 17.4 6.4 20.3l1.1-6.2L3 9.7l6.2-.9Z"/>',
   pencil: '<path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
+  listCheck: '<path d="m3.5 6 1 1L7 4.5"/><path d="m3.5 12.5 1 1L7 11"/><path d="M11 6.5h10M11 13h10"/><path d="M11 19h10"/><path d="m3.5 18.5 1 1L7 17"/>',
 };
 
 export function iconSvg(name) {

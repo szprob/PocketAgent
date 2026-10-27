@@ -252,6 +252,11 @@ class OpenAICompatibleProvider:
                 await _consume_delta(choice.delta, accumulator, listener)
                 if choice.finish_reason:
                     accumulator.finish_reason = choice.finish_reason
+        if accumulator.finish_reason is None:
+            # OpenAI 兼容接口正常结束时最后一片一定带 finish_reason。
+            # 没有就是流被提前关了（网关超时、连接断掉），这时手上只有半截内容，
+            # 标成 incomplete 让上层当断掉处理，别当成完整回复。
+            accumulator.finish_reason = "incomplete"
         return accumulator.build_response()
 
 

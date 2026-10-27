@@ -15,7 +15,11 @@ class JsonlTracer:
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
     def __call__(self, event: Event) -> None:
-        if not self.include_deltas and event.type in (EventType.TEXT_DELTA, EventType.REASONING_DELTA):
+        if not self.include_deltas and event.type in (
+            EventType.TEXT_DELTA,
+            EventType.REASONING_DELTA,
+            EventType.TOOL_OUTPUT_DELTA,
+        ):
             return
         with self.path.open("a", encoding="utf-8") as trace_file:
             trace_file.write(json.dumps(event.to_record(), ensure_ascii=False, default=json_default) + "\n")

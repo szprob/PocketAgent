@@ -15,6 +15,8 @@
       "busy_input_mode": "interject",
       "max_steps": 50,
       "workspaces": ["/Users/me/projects/foo"],
+      "trusted_dirs": ["/Users/me/data"],
+      "ripgrep_path": null,
       "user_name": "me",
       "web_token": "..."
     }
@@ -36,6 +38,12 @@ from urllib.parse import urlparse
 from pocketagent.memory import project_memory_dir
 from pocketagent.permissions import ApprovalMode
 from pocketagent.sandbox import available_sandbox
+from pocketagent.tools.image import (
+    DEFAULT_IMAGE_BASE_URL_BY_PROVIDER,
+    DEFAULT_IMAGE_MODEL_BY_PROVIDER,
+    IMAGE_GEN_PROVIDERS,
+    ImageGenSettings,
+)
 from pocketagent.tools.web import WebSearchSettings
 
 DEFAULT_MODEL = "deepseek-v4.1-flash"
@@ -223,6 +231,16 @@ WEB_SEARCH_PROVIDERS = ["bing", "deepseek", "zhipu"]
 WEB_SEARCH_MODEL_KIND = {"deepseek": "deepseek", "zhipu": "bigmodel"}
 WEB_SEARCH_ENGINES = ["search_std", "search_pro"]
 
+# 生图没单独配密钥时，用对应厂商模型的密钥
+IMAGE_GEN_MODEL_KIND = {"zhipu": "bigmodel", "openai": "openai"}
+
+
+def _image_gen_provider(value: Any) -> str:
+    provider = value or "zhipu"
+    if provider not in IMAGE_GEN_PROVIDERS:
+        raise ConfigError(f"生图服务只能是 {' / '.join(IMAGE_GEN_PROVIDERS)}：{value}")
+    return provider
+
 
 def _web_search_provider(value: Any) -> str:
     provider = value or "bing"
@@ -337,6 +355,14 @@ class AppConfig:
     web_search_engine: str = "search_std"
     web_search_api_key: str | None = None
     web_fetch_enabled: bool = True
+    # 图片：generate_image 默认走智谱 CogView（cogview-3-flash 免费），密钥空着就用智谱模型的；
+    # search_images 抓必应图片结果页，免费。模型 / 接口地址空着用 IMAGE 模块里的默认
+    image_gen_enabled: bool = True
+    image_gen_provider: str = "zhipu"
+    image_gen_model: str | None = None
+    image_gen_base_url: str | None = None
+    image_gen_api_key: str | None = None
+    image_search_enabled: bool = True
     # bash 沙箱：只能写工作目录和临时目录、读不到密钥；sandbox_network 决定沙箱里能不能联网
     sandbox_enabled: bool = True
     sandbox_network: bool = False
@@ -347,6 +373,10 @@ class AppConfig:
     # 项目记忆：每个工作区一份跨会话的笔记
     memory_enabled: bool = True
     workspaces: list[str] = field(default_factory=list)
+    # 免问目录：工作目录以外、读写都不用确认的目录（和密钥目录重叠的会被忽略，见 tools/base.py）
+    trusted_dirs: list[str] = field(default_factory=list)
+    # grep/glob 用的 ripgrep 可执行文件；空着就从 PATH 找，找不到回退纯 Python 实现
+    ripgrep_path: str | None = None
     # 新任务默认用哪个工作区；空着就用列表里的第一个（启动目录会排第一）
     default_workspace: str | None = None
     user_name: str | None = None
@@ -383,6 +413,12 @@ class AppConfig:
             web_search_engine=_web_search_engine(data.get("web_search_engine")),
             web_search_api_key=_optional_text(data, "web_search_api_key"),
             web_fetch_enabled=_boolean_with_default(data, "web_fetch_enabled", True),
+            image_gen_enabled=_boolean_with_default(data, "image_gen_enabled", True),
+            image_gen_provider=_image_gen_provider(data.get("image_gen_provider")),
+            image_gen_model=_optional_text(data, "image_gen_model"),
+            image_gen_base_url=_optional_text(data, "image_gen_base_url"),
+            image_gen_api_key=_optional_text(data, "image_gen_api_key"),
+            image_search_enabled=_boolean_with_default(data, "image_search_enabled", True),
             sandbox_enabled=_boolean_with_default(data, "sandbox_enabled", True),
             sandbox_network=_boolean_with_default(data, "sandbox_network", False),
             skills_enabled=_boolean_with_default(data, "skills_enabled", True),
@@ -390,6 +426,8 @@ class AppConfig:
             disabled_skills=_name_list(data.get("disabled_skills")),
             memory_enabled=_boolean_with_default(data, "memory_enabled", True),
             workspaces=_workspace_list(data.get("workspaces")),
+            trusted_dirs=_workspace_list(data.get("trusted_dirs")),
+            ripgrep_path=_optional_text(data, "ripgrep_path"),
             default_workspace=_workspace_path(data.get("default_workspace")),
             user_name=_optional_text(data, "user_name"),
             web_token=_optional_text(data, "web_token"),
@@ -415,6 +453,12 @@ class AppConfig:
             "web_search_engine": self.web_search_engine,
             "web_search_api_key": self.web_search_api_key,
             "web_fetch_enabled": self.web_fetch_enabled,
+            "image_gen_enabled": self.image_gen_enabled,
+            "image_gen_provider": self.image_gen_provider,
+            "image_gen_model": self.image_gen_model,
+            "image_gen_base_url": self.image_gen_base_url,
+            "image_gen_api_key": self.image_gen_api_key,
+            "image_search_enabled": self.image_search_enabled,
             "sandbox_enabled": self.sandbox_enabled,
             "sandbox_network": self.sandbox_network,
             "skills_enabled": self.skills_enabled,
@@ -422,6 +466,8 @@ class AppConfig:
             "disabled_skills": self.disabled_skills,
             "memory_enabled": self.memory_enabled,
             "workspaces": self.workspaces,
+            "trusted_dirs": self.trusted_dirs,
+            "ripgrep_path": self.ripgrep_path,
             "default_workspace": self.default_workspace,
             "user_name": self.user_name,
             "web_token": self.web_token,
@@ -442,6 +488,13 @@ class AppConfig:
             "web_search_key_hint": _key_hint(self.web_search_api_key),
             "web_search_key_source": self.web_search_key_source(),
             "web_fetch_enabled": self.web_fetch_enabled,
+            "image_gen_enabled": self.image_gen_enabled,
+            "image_gen_provider": self.image_gen_provider,
+            "image_gen_model": self.image_gen_model or "",
+            "image_gen_base_url": self.image_gen_base_url or "",
+            "image_gen_key_hint": _key_hint(self.image_gen_api_key),
+            "image_gen_key_source": self.image_gen_key_source(),
+            "image_search_enabled": self.image_search_enabled,
             "sandbox_enabled": self.sandbox_enabled,
             "sandbox_network": self.sandbox_network,
             "sandbox_available": available_sandbox(),
@@ -450,6 +503,7 @@ class AppConfig:
             "disabled_skills": self.disabled_skills,
             "memory_enabled": self.memory_enabled,
             "workspaces": self.workspaces,
+            "trusted_dirs": self.trusted_dirs,
             "default_workspace": self.resolved_default_workspace(),
             "user_name": self.display_user_name(),
             "reasoning_presets": REASONING_CHOICES_BY_PROVIDER,
@@ -484,6 +538,47 @@ class AppConfig:
         if not key:
             return None
         return WebSearchSettings(provider=self.web_search_provider, api_key=key, engine=self.web_search_engine)
+
+    def first_model_of_kind(self, kind: str) -> ModelProfile | None:
+        for profile in self.models:
+            if profile.provider == kind:
+                return profile
+        return None
+
+    def resolved_image_gen_key(self) -> str | None:
+        """单独配的生图密钥优先，没配就用对应厂商模型的密钥。"""
+        if self.image_gen_api_key:
+            return self.image_gen_api_key
+        profile = self.first_model_of_kind(IMAGE_GEN_MODEL_KIND[self.image_gen_provider])
+        return profile.api_key if profile is not None else None
+
+    def image_gen_key_source(self) -> str:
+        if self.image_gen_api_key:
+            return "单独配置的密钥"
+        profile = self.first_model_of_kind(IMAGE_GEN_MODEL_KIND[self.image_gen_provider])
+        if profile is not None and profile.api_key:
+            return f"用模型「{profile.name}」的密钥"
+        return ""
+
+    def image_gen_settings(self) -> "ImageGenSettings | None":
+        """生图可用的配置；没开或者没有密钥就返回 None（工具列表里就没有 generate_image）。"""
+        if not self.image_gen_enabled:
+            return None
+        key = self.resolved_image_gen_key()
+        if not key:
+            return None
+        provider = self.image_gen_provider
+        base_url = self.image_gen_base_url
+        if provider == "openai" and not base_url:
+            # OpenAI 兼容的接口地址空着时，用第一个同类型模型的网关地址（new-api 这类）
+            profile = self.first_model_of_kind("openai")
+            base_url = profile.base_url if profile is not None else None
+        return ImageGenSettings(
+            provider=provider,
+            base_url=base_url or DEFAULT_IMAGE_BASE_URL_BY_PROVIDER[provider],
+            api_key=key,
+            model=self.image_gen_model or DEFAULT_IMAGE_MODEL_BY_PROVIDER[provider],
+        )
 
     def display_user_name(self) -> str:
         return self.user_name or os.environ.get("USER") or "我"
@@ -568,11 +663,16 @@ class Settings:
     # 联网工具：web_search 为 None 表示没开（或没有密钥）
     web_search: WebSearchSettings | None = None
     web_fetch: bool = True
+    # 图片工具：image_gen 为 None 表示没开（或没有密钥）
+    image_gen: ImageGenSettings | None = None
+    image_search: bool = True
     sandbox_enabled: bool = True
     sandbox_network: bool = False
     skills_enabled: bool = True
     skill_dirs: list[str] = field(default_factory=list)
     disabled_skills: list[str] = field(default_factory=list)
+    trusted_dirs: list[str] = field(default_factory=list)
+    ripgrep_path: str | None = None
     memory_enabled: bool = True
     # 当前用的是配置文件里哪个模型；为空表示来自环境变量
     model_profile_id: str | None = None
@@ -608,6 +708,11 @@ class Settings:
     @property
     def attachments_dir(self) -> Path:
         return self.home_dir / "attachments"
+
+    @property
+    def tool_outputs_root(self) -> Path:
+        """工具输出太长时，完整内容落在这里（每个任务一个子目录）。"""
+        return self.home_dir / "tool_outputs"
 
     @property
     def shadow_dir(self) -> Path:
@@ -652,11 +757,15 @@ class Settings:
         self.apply_compaction(app_config)
         self.web_search = app_config.web_search_settings()
         self.web_fetch = app_config.web_fetch_enabled
+        self.image_gen = app_config.image_gen_settings()
+        self.image_search = app_config.image_search_enabled
         self.sandbox_enabled = app_config.sandbox_enabled
         self.sandbox_network = app_config.sandbox_network
         self.skills_enabled = app_config.skills_enabled
         self.skill_dirs = list(app_config.skill_dirs)
         self.disabled_skills = list(app_config.disabled_skills)
+        self.trusted_dirs = list(app_config.trusted_dirs)
+        self.ripgrep_path = app_config.ripgrep_path
         self.memory_enabled = app_config.memory_enabled
 
     def apply_environment(self) -> None:

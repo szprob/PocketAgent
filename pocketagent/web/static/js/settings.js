@@ -68,6 +68,15 @@ export function initSettings() {
     webSearchKeyLabel: byId("web-search-key-label"),
     webSearchKeyHint: byId("web-search-key-hint"),
     webFetchEnabled: byId("web-fetch-enabled"),
+    imageGenEnabled: byId("image-gen-enabled"),
+    imageGenProvider: byId("image-gen-provider"),
+    imageGenModel: byId("image-gen-model"),
+    imageGenBaseUrlField: byId("image-gen-base-url-field"),
+    imageGenBaseUrl: byId("image-gen-base-url"),
+    imageGenBaseUrlHint: byId("image-gen-base-url-hint"),
+    imageGenKey: byId("image-gen-key"),
+    imageGenKeyHint: byId("image-gen-key-hint"),
+    imageSearchEnabled: byId("image-search-enabled"),
     sandboxEnabled: byId("sandbox-enabled"),
     sandboxNetwork: byId("sandbox-network"),
     sandboxHint: byId("sandbox-hint"),
@@ -78,6 +87,7 @@ export function initSettings() {
     memoryContent: byId("memory-content"),
     skillDirs: byId("skill-dirs-input"),
     skillDirsHint: byId("skill-dirs-hint"),
+    trustedDirs: byId("trusted-dirs-input"),
     configPath: byId("config-path"),
     usageContent: byId("usage-content"),
   });
@@ -100,6 +110,7 @@ export function initSettings() {
   elements.makeDefaultButton.addEventListener("click", makeSelectedDefault);
   elements.testButton.addEventListener("click", testSelectedModel);
   elements.webSearchProvider.addEventListener("change", () => updateWebSearchFields());
+  elements.imageGenProvider.addEventListener("change", () => updateImageGenFields());
 }
 
 // 智谱的档位只在选智谱时才有意义；必应不用密钥，DeepSeek / 智谱要
@@ -111,6 +122,16 @@ function updateWebSearchFields() {
   show(elements.webSearchKeyField, usesKey);
   elements.webSearchKeyLabel.textContent = usesZhipu ? "智谱搜索 API Key" : "DeepSeek 搜索 API Key";
   elements.webSearchKey.placeholder = usesZhipu ? "留空就用智谱模型的密钥" : "留空就用 DeepSeek 模型的密钥";
+}
+
+// 智谱用官方地址；OpenAI 兼容的可以走网关，没填就用第一个 OpenAI 兼容模型的地址
+function updateImageGenFields() {
+  const provider = elements.imageGenProvider.value;
+  const usesOpenAI = provider === "openai";
+  elements.imageGenModel.placeholder = usesOpenAI ? "留空用默认：gpt-image-1" : "留空用默认：cogview-3-flash";
+  elements.imageGenBaseUrlHint.textContent = usesOpenAI
+    ? "没填就用第一个 OpenAI 兼容模型的接口地址"
+    : "智谱固定用 open.bigmodel.cn/api/paas/v4，不用填";
 }
 
 export function isSettingsOpen() {
@@ -270,12 +291,23 @@ export async function openSettings(tabName) {
     : config.web_search_key_source || "没有可用的密钥：填一个，或者在模型里加一个智谱模型";
   updateWebSearchFields();
   elements.webFetchEnabled.checked = config.web_fetch_enabled;
+  elements.imageGenEnabled.checked = config.image_gen_enabled;
+  elements.imageGenProvider.value = config.image_gen_provider || "zhipu";
+  elements.imageGenModel.value = config.image_gen_model || "";
+  elements.imageGenBaseUrl.value = config.image_gen_base_url || "";
+  elements.imageGenKey.value = "";
+  elements.imageGenKeyHint.textContent = config.image_gen_key_hint
+    ? `已单独配置 ${config.image_gen_key_hint}，留空表示不改`
+    : config.image_gen_key_source || "没有可用的密钥：填一个，或者在模型里加一个智谱模型";
+  elements.imageSearchEnabled.checked = config.image_search_enabled;
+  updateImageGenFields();
   elements.sandboxEnabled.checked = config.sandbox_enabled;
   elements.sandboxNetwork.checked = config.sandbox_network;
   elements.sandboxHint.textContent = sandboxHint(config.sandbox_available);
   elements.skillsEnabled.checked = config.skills_enabled;
   elements.memoryEnabled.checked = config.memory_enabled;
   elements.skillDirs.value = (config.skill_dirs || []).join("\n");
+  elements.trustedDirs.value = (config.trusted_dirs || []).join("\n");
   draft.disabledSkills = new Set(config.disabled_skills || []);
   loadSkills();
   elements.configPath.textContent = `保存在 ${config.config_path}（文件权限 600，只有你自己能读）`;
@@ -339,15 +371,15 @@ function renderSkillItem(skill) {
   const wrapper = el("div", "skill-item");
   const row = el("div", "skill-row");
   const toggle = document.createElement("input");
-    toggle.type = "checkbox";
-    toggle.checked = !draft.disabledSkills.has(skill.name);
-    toggle.addEventListener("change", () => {
-      if (toggle.checked) {
-        draft.disabledSkills.delete(skill.name);
-      } else {
-        draft.disabledSkills.add(skill.name);
-      }
-    });
+  toggle.type = "checkbox";
+  toggle.checked = !draft.disabledSkills.has(skill.name);
+  toggle.addEventListener("change", () => {
+    if (toggle.checked) {
+      draft.disabledSkills.delete(skill.name);
+    } else {
+      draft.disabledSkills.add(skill.name);
+    }
+  });
   toggle.title = "启用 / 停用这个技能";
   const text = el("div", "skill-text");
   const title = el("div", "skill-title");
@@ -386,8 +418,8 @@ function renderSkillProblems(problems) {
   );
 }
 
-function skillDirsFromInput() {
-  return elements.skillDirs.value
+function pathLinesFromInput(input) {
+  return input.value
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean);
@@ -591,11 +623,18 @@ async function saveSettings() {
     web_search_engine: elements.webSearchEngine.value,
     web_search_api_key: elements.webSearchKey.value,
     web_fetch_enabled: elements.webFetchEnabled.checked,
+    image_gen_enabled: elements.imageGenEnabled.checked,
+    image_gen_provider: elements.imageGenProvider.value,
+    image_gen_model: elements.imageGenModel.value,
+    image_gen_base_url: elements.imageGenBaseUrl.value,
+    image_gen_api_key: elements.imageGenKey.value,
+    image_search_enabled: elements.imageSearchEnabled.checked,
     sandbox_enabled: elements.sandboxEnabled.checked,
     sandbox_network: elements.sandboxNetwork.checked,
     skills_enabled: elements.skillsEnabled.checked,
-    skill_dirs: skillDirsFromInput(),
+    skill_dirs: pathLinesFromInput(elements.skillDirs),
     disabled_skills: [...draft.disabledSkills],
+    trusted_dirs: pathLinesFromInput(elements.trustedDirs),
     memory_enabled: elements.memoryEnabled.checked,
   };
   elements.save.disabled = true;

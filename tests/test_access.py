@@ -1,5 +1,6 @@
 """沙箱、工作目录外的访问。技能和记忆在 test_skills_memory.py。"""
 
+import asyncio
 import shutil
 import subprocess
 import tempfile
@@ -114,6 +115,17 @@ class SeatbeltSandboxTest(unittest.TestCase):
         )
         self.assertNotEqual(result.returncode, 0)
 
+    def test_trusted_dirs_are_writable(self) -> None:
+        """免问目录在沙箱里也要能写，否则 bash 把结果存到那里还得跳出去。"""
+        trusted = self.outside / "data"
+        trusted.mkdir()
+        policy = SandboxPolicy(workspace=self.workspace, secret_dirs=[self.secret], writable_roots=[trusted])
+
+        result = run_in_sandbox(f"echo ok > {trusted / 'a.txt'}", policy)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((trusted / "a.txt").read_text(), "ok\n")
+
 
 class ScratchWorkspaceSandboxTest(unittest.TestCase):
     """临时任务的工作区在 ~/.pocketagent 下，而那是密钥目录：沙箱要单独把它放开。"""
@@ -222,6 +234,12 @@ class PermissionCheckTest(unittest.TestCase):
     def test_reads_inside_the_workspace_need_nothing(self) -> None:
         self.assertEqual(self.gate(ApprovalMode.ASK).decide(ReadFileTool(), ToolAccess()), Decision.ALLOW)
 
+    def test_trusted_only_paths_skip_ask_but_read_only_still_denies(self) -> None:
+        access = ToolAccess(trusted_only=True)
+
+        self.assertEqual(self.gate(ApprovalMode.ASK).decide(EditFileTool(), access), Decision.ALLOW)
+        self.assertEqual(self.gate(ApprovalMode.READ_ONLY).decide(EditFileTool(), access), Decision.DENY)
+
     def test_outside_sandbox_always_asks_a_human(self) -> None:
         access = ToolAccess(outside_sandbox=True, command="npm install")
         bash = BashTool(sandboxed=True)
@@ -261,6 +279,48 @@ class PermissionCheckTest(unittest.TestCase):
         self.assertIn("edit_file", check.always_label())
         self.assertEqual(gate.decide(EditFileTool(), ToolAccess(outside_paths=[Path("/opt/elsewhere/b.txt")])), Decision.ALLOW)
 
+    def test_parents_option_only_offered_when_directories_are_involved(self) -> None:
+        dirs = ToolAccess(outside_paths=[Path("/opt/elsewhere/a.txt")])
+        no_dirs = ToolAccess(outside_sandbox=True, command="npm install")
+
+        dirs_check = self.gate(ApprovalMode.ASK).check(ReadFileTool(), dirs)
+        no_dirs_check = self.gate(ApprovalMode.ASK).check(BashTool(sandboxed=True), no_dirs)
+
+        self.assertIn("及其父目录", dirs_check.always_parents_label())
+        self.assertEqual(no_dirs_check.always_parents_label(), "")
+
+    def test_remembering_parents_covers_sibling_directories(self) -> None:
+        access = ToolAccess(outside_paths=[Path("/opt/elsewhere/a.txt")])
+        with_parents = self.gate(ApprovalMode.ASK)
+        without = self.gate(ApprovalMode.ASK)
+
+        with_parents.remember(with_parents.check(ReadFileTool(), access), include_parents=True)
+        without.remember(without.check(ReadFileTool(), access))
+
+        sibling = ToolAccess(outside_paths=[Path("/opt/other/b.txt")])
+        self.assertEqual(with_parents.decide(ReadFileTool(), sibling), Decision.ALLOW)
+        self.assertEqual(without.decide(ReadFileTool(), sibling), Decision.ASK)
+
+    def test_ask_remembers_parents_when_chosen(self) -> None:
+        async def run() -> None:
+            gate = PermissionGate(
+                mode=ApprovalMode.ASK, approver=RecordingApprover(ApprovalAnswer.ALLOW_ALWAYS_PARENTS)
+            )
+            check = gate.check(ReadFileTool(), ToolAccess(outside_paths=[Path("/opt/elsewhere/a.txt")]))
+            request = ApprovalRequest(
+                tool_name="read_file",
+                summary="s",
+                preview="p",
+                notes=check.notes,
+                always_label=check.always_label(),
+                always_parents_label=check.always_parents_label(),
+            )
+
+            self.assertTrue(await gate.ask(request, check))
+            self.assertEqual(gate.decide(ReadFileTool(), ToolAccess(outside_paths=[Path("/opt/other/b.txt")])), Decision.ALLOW)
+
+        asyncio.run(run())
+
 
 class PathAccessTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
@@ -270,12 +330,35 @@ class PathAccessTest(unittest.IsolatedAsyncioTestCase):
         self.secret = self.root / "home" / ".pocketagent"
         self.attachments = self.secret / "attachments" / "s1"
         self.attachments.mkdir(parents=True)
+        self.trusted = self.root / "data"
+        self.trusted.mkdir()
         self.context = ToolContext(
-            workspace=self.workspace, extra_read_dirs=[self.attachments], secret_dirs=[self.secret]
+            workspace=self.workspace,
+            extra_read_dirs=[self.attachments],
+            trusted_dirs=[self.trusted],
+            secret_dirs=[self.secret],
         )
 
     def tearDown(self) -> None:
         self.directories.cleanup()
+
+    def test_trusted_dirs_are_free_to_read_and_write(self) -> None:
+        target = self.trusted / "out.parquet"
+
+        read = self.context.path_access([target], write=False)
+        write = self.context.path_access([target], write=True)
+
+        self.assertEqual((read.outside_paths, read.secret_paths), ([], []))
+        self.assertEqual((write.outside_paths, write.secret_paths), ([], []))
+
+    def test_trusted_dirs_overlapping_secrets_are_dropped(self) -> None:
+        """把家目录这种包含密钥目录的路径加进免问目录，等于把 ~/.ssh 也免了，所以整条忽略。"""
+        context = ToolContext(workspace=self.workspace, trusted_dirs=[self.secret, self.root], secret_dirs=[self.secret])
+
+        self.assertEqual(context.trusted_dirs, [])
+        access = context.path_access([self.secret / "config.json"], write=True)
+
+        self.assertEqual(access.secret_paths, [self.secret / "config.json"])
 
     def test_attachments_inside_a_secret_dir_are_free_to_read_but_not_to_write(self) -> None:
         image = self.attachments / "a.png"
@@ -310,6 +393,9 @@ class OutsideAccessFlowTest(unittest.IsolatedAsyncioTestCase):
         self.outside_file = self.directories.workspace.parent / "elsewhere" / "doc.txt"
         self.outside_file.parent.mkdir()
         self.outside_file.write_text("outside content\n", encoding="utf-8")
+        self.trusted = self.directories.workspace.parent / "data"
+        self.trusted.mkdir()
+        self.trusted_file = self.trusted / "result.txt"
 
     def tearDown(self) -> None:
         self.directories.cleanup()
@@ -340,6 +426,29 @@ class OutsideAccessFlowTest(unittest.IsolatedAsyncioTestCase):
         await harness.agent.run_turn("看看那个文件")
 
         self.assertEqual(approver.requests, [])
+
+    async def test_trusted_dirs_are_written_without_asking(self) -> None:
+        approver = RecordingApprover()
+        responses = [
+            LLMResponse(
+                tool_calls=[
+                    tool_call("c1", "write_file", f'{{"path": "{self.trusted_file}", "content": "done"}}')
+                ]
+            ),
+            LLMResponse(text="写好了"),
+        ]
+        harness = build_harness(
+            self.directories,
+            responses,
+            mode=ApprovalMode.ASK,
+            approver=approver,
+            trusted_dirs=[str(self.trusted)],
+        )
+
+        await harness.agent.run_turn("把结果存到 data 目录")
+
+        self.assertEqual(approver.requests, [])
+        self.assertEqual(self.trusted_file.read_text(encoding="utf-8"), "done")
 
 
 if __name__ == "__main__":

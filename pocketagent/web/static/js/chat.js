@@ -1,9 +1,9 @@
 // 任务页：中间的对话。一个任务一条 WebSocket，协议见 pocketagent/web/server.py 开头。
 
-import { attachmentUrl, requestJson, sendJson, socketUrl, uploadFiles } from "./api.js";
+import { attachmentUrl, requestJson, sendJson, sessionFileUrl, socketUrl, uploadFiles } from "./api.js";
 import { looksLikeCommand, loadSkillNames, runCommand } from "./commands.js";
 import { Composer } from "./composer.js";
-import { button, el, icon, renderDiff, show } from "./dom.js";
+import { button, el, icon, isImagePath, renderDiff, show } from "./dom.js";
 import { renderMarkdown } from "./markdown.js";
 import { renderQuestionCard } from "./questions.js";
 import { emit, reloadTasks, state } from "./state.js";
@@ -22,6 +22,12 @@ const chat = {
   toolCards: new Map(),
   approvalCards: new Map(),
   questionCards: new Map(),
+  // 「任务计划」面板：todo_write 维护，一张卡片原地更新
+  todoPanel: null,
+  // 本轮从哪个子元素开始画的，用来判断图片是不是已经在回复里显示过
+  turnStartChildCount: null,
+  // 本轮最后一条收尾的回复块，turn_end 判断要不要挂「被掐断」角标用
+  lastReply: null,
   // 新任务页发的第一句话：等连上、拿到快照后再发
   pendingFirstMessage: null,
   // 对话末尾的「等待中」提示
@@ -45,6 +51,40 @@ const TURN_END_NOTICES = {
   interrupted: ["已中断，可以接着说", "warning"],
   denied: ["调用被拒绝，这一轮先停下。告诉 agent 接下来怎么做。", "warning"],
 };
+
+// 回复被上游掐断时的角标，挂在回复内容末尾。
+// 不给这个标志，用户看到的就是一句没说完的话，会以为模型只是话说到一半。
+const CUT_OFF_BADGES = {
+  filtered: ["内容审核中断", "上游的内容审核在句子中间掐断了这次生成，下面是已经输出的部分"],
+  incomplete: ["输出中断", "连接中途断了，这次回复不完整"],
+  truncated: ["超出长度上限", "回复太长被截断，后面没有写完"],
+};
+
+function buildCutOffBadge(stopReason) {
+  const badge = CUT_OFF_BADGES[stopReason];
+  if (!badge) {
+    return null;
+  }
+  const element = el("div", `reply-cut-off ${stopReason}`);
+  element.append(el("span", "reply-cut-off-title", `■ ${badge[0]}`), el("span", "reply-cut-off-note", badge[1]));
+  return element;
+}
+
+// 这一轮是被上游掐断的：角标挂在最后一条回复末尾；一条回复都没有就退化成一行提示
+function markCutOffReply(stopReason) {
+  const labels = CUT_OFF_BADGES[stopReason];
+  if (!labels) {
+    return;
+  }
+  if (!chat.lastReply) {
+    addNotice(`${labels[0]}：${labels[1]}`, "warning");
+    return;
+  }
+  chat.lastReply.appendChild(buildCutOffBadge(stopReason));
+  if (isNearBottom()) {
+    scrollToBottom();
+  }
+}
 
 export function initChat({ onDeleted }) {
   elements.view = document.getElementById("chat-view");
@@ -312,6 +352,8 @@ function handleAgentEvent(event) {
   switch (event.type) {
     case "turn_start":
       finishStreamingBlocks();
+      chat.turnStartChildCount = elements.transcriptInner.children.length;
+      chat.lastReply = null;
       addUserMessage(event.user_text, event.attachments);
       showActivity("等待模型响应");
       break;
@@ -356,6 +398,9 @@ function handleAgentEvent(event) {
       hideActivity();
       addToolCard(event.call_id, event.name, event.summary);
       break;
+    case "tool_output_delta":
+      appendToolOutput(event.call_id, event.text);
+      break;
     case "subagent_progress":
       addSubagentStep(event.call_id, event);
       break;
@@ -370,6 +415,12 @@ function handleAgentEvent(event) {
       if (FILE_TOOLS.has(event.name)) {
         emit("files-changed", state.currentTaskId);
       }
+      if (!event.denied && event.content) {
+        emit("task-links", { taskId: state.currentTaskId, links: extractLocalLinks(event.content) });
+      }
+      break;
+    case "todos_updated":
+      renderTodoPanel(event.todos);
       break;
     case "checkpoint":
       // 每轮开始前拍的检查点，右侧栏的检查点列表跟着刷新
@@ -396,11 +447,13 @@ function handleAgentEvent(event) {
     case "turn_end": {
       finishStreamingBlocks();
       hideActivity();
+      markCutOffReply(event.stop_reason);
       const notice = TURN_END_NOTICES[event.stop_reason];
       if (notice) {
         addNotice(notice[0], notice[1]);
       }
       emit("turn-ended", { taskId: state.currentTaskId, finalText: event.final_text });
+      showTurnImages();
       break;
     }
     default:
@@ -439,9 +492,12 @@ function clearTranscript() {
   elements.transcriptInner.replaceChildren();
   chat.currentAssistant = null;
   chat.currentReasoning = null;
+  chat.turnStartChildCount = null;
+  chat.lastReply = null;
   chat.toolCards.clear();
   chat.approvalCards.clear();
   chat.questionCards.clear();
+  chat.todoPanel = null;
   show(elements.pendingInputs, false);
 }
 
@@ -482,9 +538,14 @@ function addUserMessage(text, attachments, badge) {
   appendToTranscript(message);
 }
 
-function addAssistantMessage(text) {
+function addAssistantMessage(text, finish = "") {
   const element = el("div", "message-assistant");
-  element.innerHTML = renderMarkdown(text);
+  element.innerHTML = renderMarkdown(text, { imageUrl: chatImageUrl });
+  const badge = buildCutOffBadge(finish);
+  if (badge) {
+    // 历史里重放时也把「这条是被掐断的」标出来
+    element.appendChild(badge);
+  }
   appendToTranscript(element);
 }
 
@@ -492,9 +553,100 @@ function addSummaryCard(text) {
   const details = el("details", "summary-card");
   details.appendChild(el("summary", "", "之前的对话已压缩，点开看摘要"));
   const body = el("div", "message-assistant");
-  body.innerHTML = renderMarkdown(text);
+  body.innerHTML = renderMarkdown(text, { imageUrl: chatImageUrl });
   details.appendChild(body);
   appendToTranscript(details);
+}
+
+// 回复里的 ![说明](路径)：工作区内的相对路径换成会话取图地址，临时任务也能显示
+function chatImageUrl(source) {
+  const workspace = chat.status?.workspace;
+  if (!workspace) {
+    return null;
+  }
+  let relative = source;
+  const root = workspace.replace(/\/+$/, "");
+  if (relative.startsWith(`${root}/`)) {
+    relative = relative.slice(root.length + 1);
+  }
+  if (relative.startsWith("./")) {
+    relative = relative.slice(2);
+  }
+  if (!relative || relative.startsWith("/") || relative.startsWith("~") || /^[a-z][a-z0-9+.-]*:/i.test(relative)) {
+    return null;
+  }
+  return sessionFileUrl(state.currentTaskId, relative);
+}
+
+// 一轮结束时，把本轮新增 / 改过的图片补在回复下面；回复里已经贴过的就不重复
+async function showTurnImages() {
+  const taskId = state.currentTaskId;
+  if (!taskId) {
+    return;
+  }
+  let result;
+  try {
+    result = await requestJson(`api/sessions/${encodeURIComponent(taskId)}/changes/turn`);
+  } catch (error) {
+    return;
+  }
+  if (taskId !== state.currentTaskId) {
+    return;
+  }
+  const seen = new Set();
+  const images = [];
+  for (const change of result.changes || []) {
+    if (change.status === "deleted" || !isImagePath(change.path) || seen.has(change.path)) {
+      continue;
+    }
+    seen.add(change.path);
+    images.push(change.path);
+  }
+  if (images.length === 0) {
+    return;
+  }
+  const shown = shownImageUrlsSince(chat.turnStartChildCount);
+  const missing = images.filter((path) => !shown.has(sessionFileUrl(taskId, path)));
+  if (missing.length > 0) {
+    appendToTranscript(renderTurnImages(taskId, missing));
+  }
+}
+
+function shownImageUrlsSince(startIndex) {
+  const urls = new Set();
+  const children = [...elements.transcriptInner.children];
+  const start = Number.isInteger(startIndex) ? startIndex : 0;
+  for (const child of children.slice(start)) {
+    child.querySelectorAll("img").forEach((image) => {
+      const source = image.getAttribute("src");
+      if (source) {
+        urls.add(source);
+      }
+    });
+  }
+  return urls;
+}
+
+function renderTurnImages(taskId, paths) {
+  const wrapper = el("div", "turn-images");
+  wrapper.appendChild(el("div", "turn-images-title", "本轮产出的图片"));
+  const grid = el("div", "turn-images-grid");
+  for (const path of paths) {
+    const url = sessionFileUrl(taskId, path);
+    const link = el("a", "turn-image");
+    link.href = url;
+    link.target = "_blank";
+    link.rel = "noopener";
+    link.title = path;
+    const image = el("img");
+    image.src = url;
+    image.alt = path;
+    image.loading = "lazy";
+    link.append(image, el("span", "turn-image-path", path));
+    grid.appendChild(link);
+  }
+  wrapper.appendChild(grid);
+  return wrapper;
 }
 
 function addNotice(text, kind) {
@@ -544,7 +696,7 @@ function typewriterFrame(block) {
 
 function renderStreamingBlock(block) {
   const shouldScroll = isNearBottom();
-  block.element.innerHTML = renderMarkdown(block.shown);
+  block.element.innerHTML = renderMarkdown(block.shown, { imageUrl: chatImageUrl });
   if (shouldScroll) {
     scrollToBottom();
   }
@@ -555,6 +707,7 @@ function flushAssistantBlock(block) {
   block.pending = "";
   renderStreamingBlock(block);
   block.element.classList.remove("streaming");
+  chat.lastReply = block.element;
 }
 
 function elapsedSeconds(startedAt) {
@@ -722,12 +875,40 @@ function setToolReview(callId, review) {
   show(badge, true);
 }
 
+function appendToolOutput(callId, text) {
+  const card = chat.toolCards.get(callId);
+  if (!card || !text) {
+    return;
+  }
+  const output = card.querySelector(".tool-body pre");
+  if (!output) {
+    return;
+  }
+  if (output.dataset.streaming !== "1") {
+    // 第一次收到输出：清掉「运行中…」，展开卡片，不然流式输出来在折叠的面板里看不见
+    output.textContent = "";
+    output.dataset.streaming = "1";
+    card.classList.add("expanded");
+  }
+  const stickToBottom = output.scrollHeight - output.scrollTop - output.clientHeight < 24;
+  output.append(document.createTextNode(text));
+  if (stickToBottom) {
+    output.scrollTop = output.scrollHeight;
+  }
+  if (isNearBottom()) {
+    scrollToBottom();
+  }
+}
+
 function setToolResult(callId, content, isError, denied) {
   const card = chat.toolCards.get(callId);
   if (!card) {
     return;
   }
-  card.querySelector(".tool-body pre").textContent = content || "（无输出）";
+  const output = card.querySelector(".tool-body pre");
+  // 流式期间显示的是增量；最后换成服务端截断后的完整结果，不重复追加
+  output.textContent = content || "（无输出）";
+  delete output.dataset.streaming;
   let status = "ok";
   if (denied) {
     status = "denied";
@@ -735,6 +916,39 @@ function setToolResult(callId, content, isError, denied) {
     status = "error";
   }
   setToolStatus(card, status);
+}
+
+// ---- 「任务计划」面板：todo_write 发的 todos_updated 事件驱动，一张卡片原地更新 ----
+const TODO_STATUS_ICONS = { pending: "○", in_progress: "●", completed: "✓" };
+
+function renderTodoPanel(todos) {
+  if (!Array.isArray(todos) || todos.length === 0) {
+    chat.todoPanel?.remove();
+    chat.todoPanel = null;
+    return;
+  }
+  if (!chat.todoPanel || !chat.todoPanel.isConnected) {
+    const panel = el("div", "todo-panel");
+    const header = el("div", "todo-header");
+    header.append(icon("listCheck", "todo-icon"), el("span", "todo-title"), el("span", "todo-progress"));
+    panel.append(header, el("div", "todo-items"));
+    chat.todoPanel = panel;
+    appendToTranscript(panel);
+  }
+  const done = todos.filter((item) => item.status === "completed").length;
+  chat.todoPanel.querySelector(".todo-title").textContent = "任务计划";
+  chat.todoPanel.querySelector(".todo-progress").textContent = `${done}/${todos.length}`;
+  const items = chat.todoPanel.querySelector(".todo-items");
+  items.replaceChildren();
+  for (const item of todos) {
+    const row = el("div", `todo-item ${item.status}`);
+    const label = item.status === "in_progress" ? item.active_form || item.content : item.content;
+    row.append(el("span", "todo-mark", TODO_STATUS_ICONS[item.status] || "○"), el("span", "todo-text", label));
+    items.appendChild(row);
+  }
+  if (isNearBottom()) {
+    scrollToBottom();
+  }
 }
 
 function showApproval(request) {
@@ -760,6 +974,10 @@ function showApproval(request) {
   // 碰到密钥目录时不给「总是允许」
   if (request.always_label) {
     choices.push({ label: request.always_label, answer: "allow_always", className: "ghost-button" });
+  }
+  // 访问工作目录外时可以连父目录一起放行，之后兄弟目录也不再问
+  if (request.always_parents_label) {
+    choices.push({ label: request.always_parents_label, answer: "allow_always_parents", className: "ghost-button" });
   }
   choices.push({ label: "拒绝", answer: "deny", className: "ghost-button danger-text" });
   for (const choice of choices) {
@@ -807,7 +1025,7 @@ function renderHistoryItem(item) {
   if (item.kind === "user") {
     addUserMessage(item.text, item.attachments);
   } else if (item.kind === "assistant") {
-    addAssistantMessage(item.text);
+    addAssistantMessage(item.text, item.finish);
   } else if (item.kind === "summary") {
     addSummaryCard(item.text);
   } else if (item.kind === "notice") {
@@ -829,6 +1047,8 @@ function renderSnapshot(snapshot) {
   }
   snapshot.pending_approvals.forEach(showApproval);
   (snapshot.pending_questions || []).forEach(showQuestions);
+  // 刷新 / 切回来时从会话上恢复计划面板（面板出现在历史后面，反映当前进度）
+  renderTodoPanel(snapshot.todos);
   applyStatus(snapshot);
   if (snapshot.running && snapshot.pending_approvals.length === 0 && !(snapshot.pending_questions || []).length) {
     // 中途连上来的：前面流式的那段没了，给个提示，后面的照常显示
@@ -885,4 +1105,19 @@ async function deleteTask(onDeleted) {
   leaveTask();
   await reloadTasks();
   onDeleted();
+}
+
+// 从命令输出里找本机服务的地址（dev server、API 文档页），给右侧栏的预览用。
+// 只认带协议或带端口的，避免把普通提到 localhost 的句子也当成链接。
+const LOCAL_LINK_RE = /(?:https?:\/\/)?((?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|::1)):(\d{2,5})(?:\/[^\s"'`<>)\],;]*)?|(?:https?:\/\/)(localhost)(?:\/[^\s"'`<>)\],;]*)?/gi;
+
+function extractLocalLinks(text) {
+  const links = [];
+  for (const match of text.matchAll(LOCAL_LINK_RE)) {
+    const host = match[1] || match[3];
+    const port = match[2] || "";
+    const rest = (match[0].slice(match[0].indexOf(host) + host.length + (port ? port.length + 1 : 0)) || "").replace(/[./]+$/, "");
+    links.push(`http://localhost${port ? `:${port}` : ""}${rest}`);
+  }
+  return [...new Set(links)];
 }

@@ -48,6 +48,14 @@ export function workspaceName(path) {
   return parts[parts.length - 1] || path;
 }
 
+const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "avif", "ico"]);
+
+export function isImagePath(path) {
+  const name = (path || "").split("/").pop() || "";
+  const dot = name.lastIndexOf(".");
+  return dot >= 0 && IMAGE_EXTENSIONS.has(name.slice(dot + 1).toLowerCase());
+}
+
 export function formatTokens(count) {
   const number = Number(count) || 0;
   if (number >= 1_000_000) {
