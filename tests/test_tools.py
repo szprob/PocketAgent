@@ -70,11 +70,15 @@ class ToolsTest(unittest.IsolatedAsyncioTestCase):
     def test_paths_outside_workspace_resolve_but_are_reported(self) -> None:
         outside = self.context.resolve_path("../outside.txt")
         inside = self.context.resolve_path("src/a.py")
+        elsewhere = str(self.workspace.parent / "elsewhere.txt")
 
         self.assertEqual(outside, (self.workspace / "../outside.txt").resolve())
         self.assertEqual(ReadFileTool().access({"path": "../outside.txt"}, self.context).outside_paths, [outside])
         self.assertEqual(ReadFileTool().access({"path": "src/a.py"}, self.context).outside_paths, [])
-        self.assertEqual(WriteFileTool().access({"path": "/etc/hosts", "content": ""}, self.context).outside_paths, [Path("/etc/hosts").resolve()])
+        self.assertEqual(
+            WriteFileTool().access({"path": elsewhere, "content": ""}, self.context).outside_paths,
+            [Path(elsewhere).resolve()],
+        )
         self.assertTrue(str(inside).startswith(str(self.workspace)))
 
     async def test_list_dir_marks_directories_and_skips_git(self) -> None:

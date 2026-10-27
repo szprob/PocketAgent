@@ -179,9 +179,10 @@ class GenerateImageToolTest(unittest.TestCase):
 
     def test_access_flags_outside_paths(self) -> None:
         inside = self.tool.access({"prompt": "x"}, self.context)
+        outside_directory = self.directories.workspace.parent / "pics"
+        outside = self.tool.access({"prompt": "x", "save_path": str(outside_directory)}, self.context)
         self.assertEqual(inside.outside_paths, [])
-        outside = self.tool.access({"prompt": "x", "save_path": "/tmp/pics"}, self.context)
-        self.assertEqual([str(path) for path in outside.outside_paths], [str(Path("/tmp/pics").resolve())])
+        self.assertEqual([str(path) for path in outside.outside_paths], [str(outside_directory.resolve())])
 
 
 class SearchImagesToolTest(unittest.TestCase):

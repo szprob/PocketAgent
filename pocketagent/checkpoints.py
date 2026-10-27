@@ -121,7 +121,8 @@ class ShadowRepo:
     async def _git(self, *arguments: str, timeout: float = SNAPSHOT_TIMEOUT_SECONDS, check: bool = True) -> str:
         process = await asyncio.create_subprocess_exec(
             "git",
-            "-c", "core.hooksPath=/dev/null",
+            # 关掉 hooks；os.devnull 在 Windows 上是 nul，直接写 /dev/null 不一定被认
+            "-c", f"core.hooksPath={os.devnull}",
             "-c", "commit.gpgsign=false",
             "-c", "core.autocrlf=false",
             "-c", "core.quotepath=false",

@@ -1,5 +1,7 @@
 """技能（Agent Skills 格式）和项目记忆。"""
 
+import json
+import sys
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -112,7 +114,11 @@ class SkillFormatTest(SkillTestBase):
     def test_symlinked_directories_are_scanned_once(self) -> None:
         self.write_skill(self.user_dir, "deploy-thing", SKILL_TEXT)
         alias = self.directories.workspace.parent / "alias-skills"
-        alias.symlink_to(self.user_dir)
+        try:
+            alias.symlink_to(self.user_dir)
+        except OSError as error:
+            # Windows 默认不允许普通用户建目录软链
+            self.skipTest(f"这台机器不能建软链：{error}")
 
         directories = skill_directories(None, self.directories.home_dir, [str(alias)])
 
@@ -193,7 +199,7 @@ class SkillActivationTest(SkillTestBase):
             LLMResponse(
                 tool_calls=[
                     tool_call("c1", "activate_skill", '{"name": "deploy-thing"}'),
-                    tool_call("c2", "read_file", f'{{"path": "{skill_file}"}}'),
+                    tool_call("c2", "read_file", json.dumps({"path": str(skill_file)})),
                 ]
             ),
             LLMResponse(text="好了"),
@@ -280,6 +286,7 @@ class ProjectMemoryTest(unittest.IsolatedAsyncioTestCase):
             "- [装包用 uv](prefers-uv.md) — 别用 pip\n- [别的](other.md) — 另一条\n", encoding="utf-8"
         )
 
+    @unittest.skipIf(sys.platform == "win32", "目录名规则来自 Claude Code 的 POSIX 路径习惯，Windows 盘符对不上")
     def test_directory_name_follows_claude_code(self) -> None:
         memory_dir = project_memory_dir(Path("/home"), Path("/Users/me/projects/my.app"))
 
@@ -338,7 +345,12 @@ class ProjectMemoryTest(unittest.IsolatedAsyncioTestCase):
                     tool_call(
                         "c1",
                         "write_file",
-                        f'{{"path": "{new_memory}", "content": "---\\nname: likes-tests\\ndescription: 改完跑测试\\ntype: feedback\\n---\\n"}}',
+                        json.dumps(
+                            {
+                                "path": str(new_memory),
+                                "content": "---\nname: likes-tests\ndescription: 改完跑测试\ntype: feedback\n---\n",
+                            }
+                        ),
                     )
                 ]
             ),

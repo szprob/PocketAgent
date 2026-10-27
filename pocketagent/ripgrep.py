@@ -9,10 +9,11 @@ import base64
 import json
 import os
 import shutil
-import signal
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
+
+from pocketagent.processes import terminate_process_tree
 
 GREP_TIMEOUT_SECONDS = 60.0
 GLOB_TIMEOUT_SECONDS = 30.0
@@ -121,16 +122,7 @@ async def _collect_stderr(process: asyncio.subprocess.Process) -> bytes:
 
 
 async def _stop_process(process: asyncio.subprocess.Process) -> None:
-    if process.returncode is not None:
-        return
-    try:
-        os.killpg(process.pid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):
-        try:
-            process.kill()
-        except ProcessLookupError:
-            pass
-    await process.wait()
+    await terminate_process_tree(process)
 
 
 def _error_text(stderr: bytes) -> str:

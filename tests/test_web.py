@@ -716,7 +716,8 @@ class WebRound3Test(WebTestBase):
         self.assertEqual(unregistered.status, 400)
         self.assertEqual([(entry["name"], entry["is_dir"]) for entry in root["entries"]], [("src", True), ("logo.png", False)])
         self.assertEqual(nested["entries"][0]["path"], "src/app.py")
-        self.assertEqual((preview["kind"], preview["content"]), ("text", "print('hi')\n"))
+        # Windows 上写文件会把 \n 落成 \r\n，预览原样返回
+        self.assertEqual((preview["kind"], preview["content"].replace("\r\n", "\n")), ("text", "print('hi')\n"))
         self.assertEqual(image["kind"], "image")
         self.assertEqual(await raw.read(), TINY_PNG)
         self.assertEqual(escape.status, 400)

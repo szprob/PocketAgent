@@ -3,7 +3,7 @@
 // 只通过 REST + WebSocket 和后端说话，不 import 任何 pocketagent 的 Python 或 web/static 代码。
 
 const { app, BrowserWindow, Menu, ipcMain, net, protocol, shell } = require("electron");
-const { spawn } = require("node:child_process");
+const { execFileSync, spawn } = require("node:child_process");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -29,15 +29,32 @@ protocol.registerSchemesAsPrivileged([
 ]);
 
 function resolvePython() {
-  // 优先用显式指定的；本机约定主环境是 ~/env/s11（和 AGENTS.md 里 make test 的 PYTHON 一致）；最后退回 PATH
+  // 优先用显式指定的；本机约定主环境是 ~/env/s11（和 AGENTS.md 里 make test 的 PYTHON 一致）；
+  // Windows 上 PATH 里的 python 常常是应用商店占位符，改用官方安装器带的 py 启动器；最后退回 PATH
   if (process.env.POCKETAGENT_PYTHON) {
-    return process.env.POCKETAGENT_PYTHON;
+    return { command: process.env.POCKETAGENT_PYTHON, arguments: [] };
   }
   const localEnvironment = path.join(os.homedir(), "env", "s11", "bin", "python");
   if (fs.existsSync(localEnvironment)) {
-    return localEnvironment;
+    return { command: localEnvironment, arguments: [] };
   }
-  return "python3";
+  if (process.platform === "win32") {
+    if (commandExists("py.exe")) {
+      return { command: "py", arguments: ["-3"] };
+    }
+    return { command: "python", arguments: [] };
+  }
+  return { command: "python3", arguments: [] };
+}
+
+function commandExists(name) {
+  // 只用在 Windows 上找 py 启动器；where 是系统自带的
+  try {
+    execFileSync("where", [name], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function resolveWorkspace() {
@@ -73,8 +90,8 @@ function startBackend() {
   backendState = { status: "starting", baseUrl: "", token, error: "" };
 
   const child = spawn(
-    python,
-    ["-m", "pocketagent", "--web", "--no-browser", "--host", "127.0.0.1", "--token", token],
+    python.command,
+    [...python.arguments, "-m", "pocketagent", "--web", "--no-browser", "--host", "127.0.0.1", "--token", token],
     { cwd: workspace, env: process.env },
   );
   backendProcess = child;
@@ -106,7 +123,7 @@ function startBackend() {
   child.on("error", (error) => {
     updateBackendState({
       status: "exited",
-      error: `启动 ${python} 失败：${error.message}。用 POCKETAGENT_PYTHON 指定装了 pocketagent 的 Python。`,
+      error: `启动 ${python.command} 失败：${error.message}。用 POCKETAGENT_PYTHON 指定装了 pocketagent 的 Python。`,
     });
   });
 

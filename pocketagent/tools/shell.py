@@ -8,10 +8,9 @@
 
 import asyncio
 import codecs
-import os
-import signal
 from typing import Any
 
+from pocketagent.processes import terminate_process_tree
 from pocketagent.sandbox import denial_hint, wrap_command
 from pocketagent.tools.base import (
     Tool,
@@ -83,11 +82,11 @@ class BashTool(Tool):
         try:
             await asyncio.wait_for(process.wait(), timeout=timeout_seconds)
         except asyncio.TimeoutError:
-            await _kill_process_group(process)
+            await terminate_process_tree(process)
             await _finish_pump(pump_task)
             return ToolResult(f"命令超过 {timeout_seconds} 秒未结束，已终止", is_error=True)
         except asyncio.CancelledError:
-            await _kill_process_group(process)
+            await terminate_process_tree(process)
             pump_task.cancel()
             await _finish_pump(pump_task)
             raise
@@ -133,11 +132,3 @@ async def _finish_pump(pump_task: asyncio.Task) -> None:
         await pump_task
     except asyncio.CancelledError:
         pass
-
-
-async def _kill_process_group(process: asyncio.subprocess.Process) -> None:
-    try:
-        os.killpg(process.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
-    await process.wait()
