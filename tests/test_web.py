@@ -3,6 +3,7 @@ import base64
 import json
 import shutil
 import socket
+import sys
 import unittest
 from pathlib import Path
 from typing import Any, Callable
@@ -722,6 +723,23 @@ class WebRound3Test(WebTestBase):
         self.assertEqual(await raw.read(), TINY_PNG)
         self.assertEqual(escape.status, 400)
         self.assertEqual([item["name"] for item in browse["directories"]], ["src"])
+
+    async def test_folder_browsing_lists_windows_drives_at_home(self) -> None:
+        if sys.platform != "win32":
+            self.skipTest("只在 Windows 上列盘符")
+        browse = await (await self.client.get("/api/browse", params={**AUTH, "path": str(Path.home())})).json()
+        drive_names = [
+            item["name"]
+            for item in browse["directories"]
+            if len(item["name"]) == 3 and item["name"][1:] == ":\\"
+        ]
+
+        self.assertTrue(drive_names)
+        # 只填盘符也要落到盘符根目录，不能落到该盘的当前目录
+        drive_only = await (
+            await self.client.get("/api/browse", params={**AUTH, "path": drive_names[0][:2]})
+        ).json()
+        self.assertEqual(drive_only["path"], drive_names[0])
 
     async def test_session_file_raw_serves_images_without_workspace_registration(self) -> None:
         session_id = await self._create_session()
