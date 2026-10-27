@@ -160,7 +160,8 @@ class SlowCheckpointTest(unittest.IsolatedAsyncioTestCase):
         await harness.agent.run_turn("写个文件")
 
         self.assertLess(marks["model_called"], marks["checkpoint_done"])
-        self.assertGreater(marks["tool_called"], marks["checkpoint_done"])
+        # Windows 的计时器精度约 15ms，两个事件可能记到同一个时刻，这里只要求不早于快照
+        self.assertGreaterEqual(marks["tool_called"], marks["checkpoint_done"])
         self.assertEqual(len(harness.agent.checkpoints.all_checkpoints()), 1)
         self.assertEqual([change.path for change in await harness.agent.checkpoints.changes()], ["a.txt"])
 

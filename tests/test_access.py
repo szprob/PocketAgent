@@ -1,6 +1,7 @@
 """沙箱、工作目录外的访问。技能和记忆在 test_skills_memory.py。"""
 
 import asyncio
+import json
 import shutil
 import subprocess
 import tempfile
@@ -150,10 +151,13 @@ class ScratchWorkspaceSandboxTest(unittest.TestCase):
     def test_seatbelt_reads_the_workspace_but_still_not_the_config(self) -> None:
         profile = seatbelt_profile(SandboxPolicy(workspace=self.scratch, secret_dirs=[self.secret]))
         read_exceptions = [line for line in profile.splitlines() if line.startswith("(allow file-read* (subpath")]
+        # 规则文件里的路径做了转义，Windows 的反斜杠会变成两个
+        workspace_text = str(self.scratch.resolve()).replace("\\", "\\\\")
+        secret_text = str(self.secret.resolve()).replace("\\", "\\\\")
 
         self.assertEqual(len(read_exceptions), 1)
-        self.assertIn(str(self.scratch.resolve()), read_exceptions[0])
-        self.assertIn(f'(deny file-read* (subpath "{self.secret.resolve()}")', profile)
+        self.assertIn(workspace_text, read_exceptions[0])
+        self.assertIn(f'(deny file-read* (subpath "{secret_text}")', profile)
         self.assertNotIn("config.json", profile)
 
     def test_bubblewrap_mounts_the_workspace_back_after_hiding_the_secret_directory(self) -> None:
@@ -266,7 +270,8 @@ class PermissionCheckTest(unittest.TestCase):
 
         gate.remember(check)
 
-        self.assertIn("/opt/elsewhere", check.always_label())
+        # Path("/opt/elsewhere") 在 Windows 上是 \opt\elsewhere，标签跟着平台走
+        self.assertIn(str(Path("/opt/elsewhere")), check.always_label())
         self.assertEqual(gate.decide(ReadFileTool(), ToolAccess(outside_paths=[Path("/opt/elsewhere/sub/b.txt")])), Decision.ALLOW)
         self.assertEqual(gate.decide(ReadFileTool(), ToolAccess(outside_paths=[Path("/opt/other.txt")])), Decision.ASK)
 
@@ -402,7 +407,7 @@ class OutsideAccessFlowTest(unittest.IsolatedAsyncioTestCase):
 
     def responses(self) -> list[LLMResponse]:
         return [
-            LLMResponse(tool_calls=[tool_call("c1", "read_file", f'{{"path": "{self.outside_file}"}}')]),
+            LLMResponse(tool_calls=[tool_call("c1", "read_file", json.dumps({"path": str(self.outside_file)}))]),
             LLMResponse(text="读完了"),
         ]
 
@@ -432,7 +437,7 @@ class OutsideAccessFlowTest(unittest.IsolatedAsyncioTestCase):
         responses = [
             LLMResponse(
                 tool_calls=[
-                    tool_call("c1", "write_file", f'{{"path": "{self.trusted_file}", "content": "done"}}')
+                    tool_call("c1", "write_file", json.dumps({"path": str(self.trusted_file), "content": "done"}))
                 ]
             ),
             LLMResponse(text="写好了"),

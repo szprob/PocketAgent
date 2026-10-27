@@ -139,8 +139,9 @@ class ToolContext:
         return any(is_within(path, directory.resolve()) for directory in self.secret_dirs)
 
     def display_path(self, path: Path) -> str:
+        # 给模型和界面看的路径统一用 /：Windows 上 str(Path) 是反斜杠，和提示词里的例子不一致
         try:
-            return str(path.relative_to(self.workspace.resolve()))
+            return path.relative_to(self.workspace.resolve()).as_posix()
         except ValueError:
             return str(path)
 

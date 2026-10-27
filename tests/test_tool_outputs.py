@@ -31,7 +31,9 @@ class ToolOutputStoreTest(unittest.TestCase):
 
         self.assertEqual(path, self.directory / "call_1.log")
         self.assertEqual(path.read_text(encoding="utf-8"), text)
-        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+        if sys.platform != "win32":
+            # Windows 只认只读位，0o600 这类权限位落不下去
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
 
     def test_unsafe_call_id_cannot_escape_the_directory(self) -> None:
         path = save_tool_output(self.directory, "../../etc/passwd", "x")

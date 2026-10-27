@@ -2,6 +2,7 @@
 
 - macOS：系统自带的 sandbox-exec（Seatbelt），Codex 用的也是它
 - Linux：bubblewrap（bwrap）；Linux 这条路径还没有在真机上测过
+- Windows：还没有沙箱实现，命令直接执行
 - 都没有：照常执行，但在结果里写明「没有隔离」
 
 真需要在笼子外跑（装依赖要联网、写工作目录外的文件），bash 带上 outside_sandbox=true，
@@ -14,6 +15,8 @@ import sys
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from pocketagent.processes import bash_executable
 
 # 不管怎样都不让命令读的地方：密钥、凭据
 SECRET_PATHS = [
@@ -44,6 +47,10 @@ DENIAL_HINTS = (
 
 def default_secret_dirs() -> list[Path]:
     return [Path(os.path.expanduser(item)) for item in SECRET_PATHS]
+
+
+class BashUnavailable(RuntimeError):
+    """找不到 bash，命令没法执行。"""
 
 
 def is_within(path: Path, root: Path) -> bool:
@@ -177,7 +184,13 @@ def bubblewrap_arguments(policy: SandboxPolicy) -> list[str]:
 
 def wrap_command(command: str, policy: SandboxPolicy | None) -> tuple[list[str], str]:
     """返回 (要执行的参数, 说明)；说明非空时附在工具结果里告诉模型。"""
-    plain = ["bash", "-c", command]
+    bash = bash_executable()
+    if bash is None:
+        raise BashUnavailable(
+            "找不到 bash：Windows 上需要安装 Git for Windows（https://git-scm.com/download/win），"
+            "已经装了就把 Git 的 bin 目录放进 PATH；macOS / Linux 上装好 bash 后重试"
+        )
+    plain = [bash, "-c", command]
     if policy is None:
         return plain, ""
     kind = available_sandbox()
@@ -185,7 +198,7 @@ def wrap_command(command: str, policy: SandboxPolicy | None) -> tuple[list[str],
         return ["sandbox-exec", "-p", seatbelt_profile(policy), *plain], ""
     if kind == "bubblewrap":
         return [*bubblewrap_arguments(policy), *plain], ""
-    return plain, "（这台机器没有可用的沙箱：macOS 需要 sandbox-exec，Linux 需要 bubblewrap；这条命令没有隔离）"
+    return plain, "（这台机器没有可用的沙箱：macOS 需要 sandbox-exec，Linux 需要 bubblewrap，Windows 还没有沙箱实现；这条命令没有隔离）"
 
 
 def denial_hint(output: str, policy: SandboxPolicy | None) -> str:

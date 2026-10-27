@@ -1,6 +1,7 @@
 import json
 import os
 import stat
+import sys
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -35,7 +36,9 @@ class AppConfigTest(unittest.TestCase):
         config.save(self.path)
         loaded = AppConfig.load(self.path)
 
-        self.assertEqual(stat.S_IMODE(self.path.stat().st_mode), 0o600)
+        if sys.platform != "win32":
+            # Windows 只认只读位，0o600 这类权限位落不下去
+            self.assertEqual(stat.S_IMODE(self.path.stat().st_mode), 0o600)
         self.assertEqual(loaded.default_profile().name, "Qwen 27B")
         self.assertEqual(loaded.find_model("ds").reasoning_effort, "low")
         self.assertEqual(loaded.find_model("ds").context_window_tokens, 64000)

@@ -61,7 +61,7 @@ def list_workspace_dir(workspaces: list[str], workspace: str, relative_path: str
     entries = []
     for child in _sorted_children(directory)[:LIST_LIMIT]:
         size = None if child.is_dir() else child.stat().st_size
-        entries.append(FileEntry(child.name, str(child.relative_to(root)), child.is_dir(), size).to_dict())
+        entries.append(FileEntry(child.name, child.relative_to(root).as_posix(), child.is_dir(), size).to_dict())
     return entries
 
 

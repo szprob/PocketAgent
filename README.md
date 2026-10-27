@@ -115,6 +115,26 @@ pocketagent -m "DS 4.1 Flash" -p "跑一下测试，把失败的修好" --mode f
 
 不安装也能用：在仓库根目录 `python -m pocketagent ...`。
 
+### Windows
+
+Windows 上 web、命令行和桌面端都能跑，装依赖和启动换成：
+
+```powershell
+py -3.12 -m pip install -e ".[web]"
+py -3.12 -m pocketagent --web -C D:\SZ\git\foo
+```
+
+和 macOS / Linux 的差别：
+
+- bash 工具用 Git for Windows 自带的 `bash.exe`：不在 PATH 时按默认安装位置找（`%ProgramFiles%\Git`、
+  `%LOCALAPPDATA%\Programs\Git`），都没有就提示装 Git，不会静默失败
+- 没有沙箱：命令直接执行，系统提示里写明「不在沙箱里」，审批模式是唯一的防线
+- 命令超时或点停止时结束整棵进程树（POSIX 杀进程组，Windows 用 `taskkill /T`）
+- `screenshot` / `computer` 只在 macOS 上注册
+- 桌面端默认用 `py -3` 启动后端；Python 装在别处就设 `POCKETAGENT_PYTHON`
+- 测试用 `py -m unittest discover -s tests -t .`（Windows 上不一定有 make）；
+  `tests/vendor_pocketflow/` 里上游的并行 batch 测试依赖字典插入顺序，在 Windows 上会挂，和本项目代码无关
+
 ## 斜杠命令
 
 输入以 / 开头的行按命令处理（web 和命令行共用同一套，见 `pocketagent/commands.py`）；命中 `/技能名` 的照常交给 agent，
