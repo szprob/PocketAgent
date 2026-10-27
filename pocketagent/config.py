@@ -30,6 +30,7 @@ POCKETAGENT_HOME 决定配置、会话、trace 放在哪，默认 ~/.pocketagent
 import json
 import os
 import secrets
+import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -363,9 +364,13 @@ class AppConfig:
     image_gen_base_url: str | None = None
     image_gen_api_key: str | None = None
     image_search_enabled: bool = True
+    # computer use（截屏 + 键鼠，只有 macOS）：能操作整台电脑，默认关，用户在设置里勾了才给模型
+    computer_use_enabled: bool = False
     # bash 沙箱：只能写工作目录和临时目录、读不到密钥；sandbox_network 决定沙箱里能不能联网
     sandbox_enabled: bool = True
     sandbox_network: bool = False
+    # 勾了以后读写工作目录以外的文件不再询问（密钥目录照样问），改文件仍按审批模式走
+    allow_outside_workspace: bool = False
     # 技能：除了默认目录还去哪找；关掉的技能名
     skills_enabled: bool = True
     skill_dirs: list[str] = field(default_factory=list)
@@ -373,7 +378,7 @@ class AppConfig:
     # 项目记忆：每个工作区一份跨会话的笔记
     memory_enabled: bool = True
     workspaces: list[str] = field(default_factory=list)
-    # 免问目录：工作目录以外、读写都不用确认的目录（和密钥目录重叠的会被忽略，见 tools/base.py）
+    # 免问目录：和工作目录一样对待——读不问、改照审批模式走（和密钥目录重叠的会被忽略，见 tools/base.py）
     trusted_dirs: list[str] = field(default_factory=list)
     # grep/glob 用的 ripgrep 可执行文件；空着就从 PATH 找，找不到回退纯 Python 实现
     ripgrep_path: str | None = None
@@ -419,8 +424,10 @@ class AppConfig:
             image_gen_base_url=_optional_text(data, "image_gen_base_url"),
             image_gen_api_key=_optional_text(data, "image_gen_api_key"),
             image_search_enabled=_boolean_with_default(data, "image_search_enabled", True),
+            computer_use_enabled=_boolean_with_default(data, "computer_use_enabled", False),
             sandbox_enabled=_boolean_with_default(data, "sandbox_enabled", True),
             sandbox_network=_boolean_with_default(data, "sandbox_network", False),
+            allow_outside_workspace=_boolean_with_default(data, "allow_outside_workspace", False),
             skills_enabled=_boolean_with_default(data, "skills_enabled", True),
             skill_dirs=_workspace_list(data.get("skill_dirs")),
             disabled_skills=_name_list(data.get("disabled_skills")),
@@ -459,8 +466,10 @@ class AppConfig:
             "image_gen_base_url": self.image_gen_base_url,
             "image_gen_api_key": self.image_gen_api_key,
             "image_search_enabled": self.image_search_enabled,
+            "computer_use_enabled": self.computer_use_enabled,
             "sandbox_enabled": self.sandbox_enabled,
             "sandbox_network": self.sandbox_network,
+            "allow_outside_workspace": self.allow_outside_workspace,
             "skills_enabled": self.skills_enabled,
             "skill_dirs": self.skill_dirs,
             "disabled_skills": self.disabled_skills,
@@ -495,9 +504,12 @@ class AppConfig:
             "image_gen_key_hint": _key_hint(self.image_gen_api_key),
             "image_gen_key_source": self.image_gen_key_source(),
             "image_search_enabled": self.image_search_enabled,
+            "computer_use_enabled": self.computer_use_enabled,
+            "computer_use_available": sys.platform == "darwin",
             "sandbox_enabled": self.sandbox_enabled,
             "sandbox_network": self.sandbox_network,
             "sandbox_available": available_sandbox(),
+            "allow_outside_workspace": self.allow_outside_workspace,
             "skills_enabled": self.skills_enabled,
             "skill_dirs": self.skill_dirs,
             "disabled_skills": self.disabled_skills,
@@ -666,8 +678,10 @@ class Settings:
     # 图片工具：image_gen 为 None 表示没开（或没有密钥）
     image_gen: ImageGenSettings | None = None
     image_search: bool = True
+    computer_use: bool = False
     sandbox_enabled: bool = True
     sandbox_network: bool = False
+    allow_outside_workspace: bool = False
     skills_enabled: bool = True
     skill_dirs: list[str] = field(default_factory=list)
     disabled_skills: list[str] = field(default_factory=list)
@@ -759,8 +773,10 @@ class Settings:
         self.web_fetch = app_config.web_fetch_enabled
         self.image_gen = app_config.image_gen_settings()
         self.image_search = app_config.image_search_enabled
+        self.computer_use = app_config.computer_use_enabled
         self.sandbox_enabled = app_config.sandbox_enabled
         self.sandbox_network = app_config.sandbox_network
+        self.allow_outside_workspace = app_config.allow_outside_workspace
         self.skills_enabled = app_config.skills_enabled
         self.skill_dirs = list(app_config.skill_dirs)
         self.disabled_skills = list(app_config.disabled_skills)

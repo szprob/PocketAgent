@@ -285,6 +285,12 @@
                 <div class="field-hint">生成的图存到工作区 images/ 下，回复里直接显示；搜图只给链接和简介，要用哪张让 agent 用 download_image 存下来。</div>
               </fieldset>
               <fieldset class="radio-group">
+                <legend>操作电脑</legend>
+                <label class="checkbox-field"><input type="checkbox" id="computer-use-enabled">
+                  <span>允许 agent 截屏、点鼠标、敲键盘（screenshot / computer：能操作整台电脑，不在沙箱里）</span></label>
+                <div class="field-hint" id="computer-use-hint"></div>
+              </fieldset>
+              <fieldset class="radio-group">
                 <legend>命令沙箱</legend>
                 <label class="checkbox-field"><input type="checkbox" id="sandbox-enabled">
                   <span>把 bash 关进沙箱：命令只能写工作目录、临时目录和缓存目录，读不到 ~/.ssh、API Key 这类密钥</span></label>
@@ -293,11 +299,13 @@
                 <div class="field-hint" id="sandbox-hint"></div>
               </fieldset>
               <fieldset class="radio-group">
-                <legend>免问目录</legend>
-                <label class="field"><span>这些目录里的文件读写不用确认（一行一个）</span>
+                <legend>工作目录以外</legend>
+                <label class="checkbox-field"><input type="checkbox" id="allow-outside-workspace">
+                  <span>读写工作目录以外的文件不再询问（密钥目录照样问；改文件仍按审批模式走）</span></label>
+                <label class="field"><span>免问目录：和工作目录一样对待（一行一个）</span>
                   <textarea id="trusted-dirs-input" rows="3" placeholder="/Users/me/data"></textarea></label>
-                <div class="field-hint">工作目录以外、你固定会用的目录（存数据、放结果）配在这里：文件读写不弹审批，bash 沙箱里也能写（bash
-                  命令本身仍按审批模式问）。和密钥目录重叠的不会生效（比如把家目录加进来没用）。</div>
+                <div class="field-hint">工作目录以外、你固定会用的目录（存数据、放结果）配在这里：读文件不弹审批，改文件和工作目录一样按审批模式走，
+                  bash 沙箱里也能写。和密钥目录重叠的不会生效（比如把家目录加进来没用）。注意：检查点只管工作目录，工作目录以外的改动撤销不了。</div>
               </fieldset>
               <fieldset class="radio-group">
                 <legend>agent 正在干活时，我又发了一句话</legend>

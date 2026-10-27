@@ -1,6 +1,7 @@
 """搜索工具的 ripgrep 路径，以及 rg 用不了时的 Python 回退。"""
 
 import json
+import sys
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -11,6 +12,9 @@ from pocketagent.tools.search import GlobTool, GrepTool
 from tests.helpers import TemporaryDirectories
 
 HAS_RIPGREP = find_ripgrep() is not None
+# 只要是个存在的可执行文件就行（rg 的调用已经被 patch 掉，不会真跑）；
+# 别写 /bin/true，macOS 上只有 /usr/bin/true，会被当成「没有 rg」走回退
+STAND_IN_EXECUTABLE = sys.executable
 
 
 class RipgrepParsingTest(unittest.TestCase):
@@ -162,7 +166,7 @@ class RipgrepFallbackTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_grep_timeout_is_reported_without_python_fallback(self) -> None:
         with patch("pocketagent.tools.search.ripgrep.grep", side_effect=RipgrepTimeout("搜索超过 60 秒")):
-            tool = GrepTool(ripgrep_path="/bin/true")
+            tool = GrepTool(ripgrep_path=STAND_IN_EXECUTABLE)
 
             result = await tool.run({"pattern": "needle"}, self.context)
 
@@ -171,7 +175,7 @@ class RipgrepFallbackTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_glob_timeout_is_reported_without_python_fallback(self) -> None:
         with patch("pocketagent.tools.search.ripgrep.list_files", side_effect=RipgrepTimeout("列文件超过 30 秒")):
-            tool = GlobTool(ripgrep_path="/bin/true")
+            tool = GlobTool(ripgrep_path=STAND_IN_EXECUTABLE)
 
             result = await tool.run({"pattern": "**/*.py"}, self.context)
 

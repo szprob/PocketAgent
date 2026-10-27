@@ -237,6 +237,12 @@
                     <span>读网页（web_fetch：打开搜索结果里的链接、读文档）</span></label>
                 </fieldset>
                 <fieldset class="radio-group">
+                  <legend>操作电脑</legend>
+                  <label class="checkbox-field"><input type="checkbox" id="computer-use-enabled" />
+                    <span>允许 agent 截屏、点鼠标、敲键盘（能操作整台电脑，不在沙箱里）</span></label>
+                  <div class="field-hint" id="computer-use-hint"></div>
+                </fieldset>
+                <fieldset class="radio-group">
                   <legend>命令沙箱</legend>
                   <label class="checkbox-field"><input type="checkbox" id="sandbox-enabled" />
                     <span>把 bash 关进沙箱：只能写工作目录、临时目录和缓存目录，读不到密钥</span></label>
@@ -245,10 +251,13 @@
                   <div class="field-hint" id="sandbox-hint"></div>
                 </fieldset>
                 <fieldset class="radio-group">
-                  <legend>免问目录</legend>
-                  <label class="field"><span>这些目录里的文件读写不用确认（一行一个）</span>
+                  <legend>工作目录以外</legend>
+                  <label class="checkbox-field"><input type="checkbox" id="allow-outside-workspace" />
+                    <span>读写工作目录以外的文件不再询问（密钥目录照样问；改文件仍按审批模式走）</span></label>
+                  <label class="field"><span>免问目录：和工作目录一样对待（一行一个）</span>
                     <textarea id="trusted-dirs-input" rows="3" placeholder="/Users/me/data"></textarea></label>
-                  <div class="field-hint">和密钥目录重叠的不会生效（比如把家目录加进来没用）。</div>
+                  <div class="field-hint">读文件不弹审批，改文件按审批模式走。和密钥目录重叠的不会生效（比如把家目录加进来没用）。
+                    检查点只管工作目录，工作目录以外的改动撤销不了。</div>
                 </fieldset>
                 <fieldset class="radio-group">
                   <legend>agent 正在干活时，我又发了一句话</legend>

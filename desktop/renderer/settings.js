@@ -55,9 +55,12 @@ export function initSettings(handlers) {
   elements.webSearchKeyLabel = document.getElementById("web-search-key-label");
   elements.webSearchKeyHint = document.getElementById("web-search-key-hint");
   elements.webFetchEnabled = document.getElementById("web-fetch-enabled");
+  elements.computerUseEnabled = document.getElementById("computer-use-enabled");
+  elements.computerUseHint = document.getElementById("computer-use-hint");
   elements.sandboxEnabled = document.getElementById("sandbox-enabled");
   elements.sandboxNetwork = document.getElementById("sandbox-network");
   elements.sandboxHint = document.getElementById("sandbox-hint");
+  elements.allowOutsideWorkspace = document.getElementById("allow-outside-workspace");
   elements.trustedDirs = document.getElementById("trusted-dirs-input");
   elements.configPath = document.getElementById("config-path");
 
@@ -253,12 +256,19 @@ function fillGeneral() {
   elements.webSearchKeyHint.textContent = config.web_search_key_hint || "留空表示不修改已保存的密钥";
   elements.webFetchEnabled.checked = Boolean(config.web_fetch_enabled);
 
+  elements.computerUseEnabled.checked = Boolean(config.computer_use_enabled);
+  elements.computerUseEnabled.disabled = !config.computer_use_available;
+  elements.computerUseHint.textContent = config.computer_use_available
+    ? "要给 PocketAgent 打开「屏幕录制」和「辅助功能」权限（系统设置 → 隐私与安全性）"
+    : "目前只支持 macOS";
+
   elements.sandboxEnabled.checked = Boolean(config.sandbox_enabled);
   elements.sandboxNetwork.checked = Boolean(config.sandbox_network);
   elements.sandboxHint.textContent = config.sandbox_available
     ? "沙箱可用：bash 命令在沙箱里跑，写不到工作目录和临时目录以外的地方"
     : "这台机器上用不了沙箱（需要 sandbox-exec 或 bubblewrap），命令会直接跑";
 
+  elements.allowOutsideWorkspace.checked = Boolean(config.allow_outside_workspace);
   elements.trustedDirs.value = (config.trusted_dirs || []).join("\n");
   elements.configPath.textContent = `配置文件：${config.config_path || ""}`;
 
@@ -673,8 +683,10 @@ async function saveConfig() {
     web_search_provider: elements.webSearchProvider.value,
     web_search_engine: elements.webSearchEngine.value,
     web_fetch_enabled: elements.webFetchEnabled.checked,
+    computer_use_enabled: elements.computerUseEnabled.checked,
     sandbox_enabled: elements.sandboxEnabled.checked,
     sandbox_network: elements.sandboxNetwork.checked,
+    allow_outside_workspace: elements.allowOutsideWorkspace.checked,
     skills_enabled: elements.skillsEnabled.checked,
     skill_dirs: linesOf(elements.skillDirs.value),
     disabled_skills: [...disabledSkills],

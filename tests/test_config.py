@@ -59,6 +59,19 @@ class AppConfigTest(unittest.TestCase):
         self.assertEqual(config.to_dict()["trusted_dirs"], expected)
         self.assertEqual(config.public_dict()["trusted_dirs"], expected)
 
+    def test_risky_switches_default_off_and_round_trip(self) -> None:
+        """操作电脑、工作目录外不再询问：默认关，勾了以后存得下来、读得回来。"""
+        default = AppConfig.from_dict({})
+        enabled = AppConfig.from_dict({"computer_use_enabled": True, "allow_outside_workspace": True})
+
+        self.assertFalse(default.computer_use_enabled)
+        self.assertFalse(default.allow_outside_workspace)
+        reloaded = AppConfig.from_dict(enabled.to_dict())
+        self.assertTrue(reloaded.computer_use_enabled)
+        self.assertTrue(reloaded.allow_outside_workspace)
+        self.assertTrue(enabled.public_dict()["allow_outside_workspace"])
+        self.assertIn("computer_use_available", enabled.public_dict())
+
     def test_ripgrep_path_round_trips(self) -> None:
         config = AppConfig.from_dict({"ripgrep_path": "/opt/homebrew/bin/rg"})
 
@@ -224,6 +237,14 @@ class SettingsLoadTest(unittest.TestCase):
         settings = self.load()
 
         self.assertEqual(settings.trusted_dirs, [str(Path("/tmp/my-data").resolve())])
+
+    def test_risky_switches_reach_the_runtime_settings(self) -> None:
+        self.write_config({"models": [DS_PROFILE], "computer_use_enabled": True, "allow_outside_workspace": True})
+
+        settings = self.load()
+
+        self.assertTrue(settings.computer_use)
+        self.assertTrue(settings.allow_outside_workspace)
 
     def test_ripgrep_path_reaches_the_runtime_settings(self) -> None:
         self.write_config({"models": [DS_PROFILE], "ripgrep_path": "/opt/homebrew/bin/rg"})

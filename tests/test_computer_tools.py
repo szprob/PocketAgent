@@ -4,11 +4,13 @@
 """
 
 import asyncio
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 from pocketagent.attachments import AttachmentStore, tool_message_content
+from pocketagent.tools import default_tool_registry
 from pocketagent.tools.base import ToolContext, ToolResult
 from pocketagent.tools.computer import (
     ComputerError,
@@ -117,6 +119,21 @@ class ToolMessageContentTest(unittest.TestCase):
             store = AttachmentStore(Path(tmp), "sess1")
             content = tool_message_content("已截屏", [Path(tmp) / "nope.png"], "screenshot", store)
             self.assertEqual(content, "已截屏")
+
+
+class ComputerUseSwitchTest(unittest.TestCase):
+    def test_off_by_default(self) -> None:
+        names = default_tool_registry().names()
+
+        self.assertNotIn("screenshot", names)
+        self.assertNotIn("computer", names)
+
+    @unittest.skipUnless(sys.platform == "darwin", "computer use 只在 macOS 上注册")
+    def test_registered_when_enabled_on_macos(self) -> None:
+        names = default_tool_registry(computer_use=True).names()
+
+        self.assertIn("screenshot", names)
+        self.assertIn("computer", names)
 
 
 class ScreenshotToolSchemaTest(unittest.TestCase):

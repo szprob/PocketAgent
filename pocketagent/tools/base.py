@@ -52,8 +52,6 @@ class ToolAccess:
     command: str = ""
     # 改的全是项目记忆目录里的文件：不用确认（只读模式除外）
     memory_only: bool = False
-    # 这次只碰免问目录（按路径的工具才能算出来；bash 没法静态判断，仍是 False）
-    trusted_only: bool = False
 
 
 def resolve_trusted_dirs(directories: list[Path], secret_dirs: list[Path]) -> list[Path]:
@@ -78,8 +76,10 @@ class ToolContext:
     shell_timeout_seconds: int = 120
     # 不用确认就能读的目录：这个会话的附件目录、技能目录
     extra_read_dirs: list[Path] = field(default_factory=list)
-    # 工作目录外、读写都不用确认的目录：用户配的免问目录（和密钥目录重叠的会被过滤掉）
+    # 用户配的免问目录：和工作目录一样对待，读不问、改照审批模式走（和密钥目录重叠的会被过滤掉）
     trusted_dirs: list[Path] = field(default_factory=list)
+    # 设置里勾了「工作目录外不再询问」：除了密钥目录，所有路径都和工作目录一样对待
+    allow_outside_workspace: bool = False
     # 密钥、凭据目录：工具碰到要确认，bash 在沙箱里读不到
     secret_dirs: list[Path] = field(default_factory=default_secret_dirs)
     # bash 的沙箱；None 表示不隔离（设置里关掉了）
@@ -112,27 +112,29 @@ class ToolContext:
         return path.resolve()
 
     def path_access(self, paths: list[Path], write: bool) -> ToolAccess:
-        """哪些路径在工作目录外、哪些是密钥目录。免问目录和记忆目录读写都放行，附件、技能目录只对读放行。"""
-        free_roots = [self.workspace.resolve()]
+        """哪些路径在工作目录外、哪些是密钥目录。
+
+        免问目录和工作目录一样（不算工作目录外，改文件仍按审批模式走）；记忆目录读写都放行；
+        附件、技能目录只对读放行；勾了「工作目录外不再询问」时，只有密钥目录还算。
+        """
+        free_roots = [self.workspace.resolve()] + self.trusted_dirs
         if not write:
             free_roots += [directory.resolve() for directory in self.extra_read_dirs]
         memory_root = self.memory_dir.resolve() if self.memory_dir is not None else None
         secret_roots = [directory.resolve() for directory in self.secret_dirs]
         access = ToolAccess(memory_only=bool(paths) and memory_root is not None)
-        trusted_only = bool(paths)
         for path in paths:
             in_memory = memory_root is not None and is_within(path, memory_root)
-            in_trusted = any(is_within(path, root) for root in self.trusted_dirs)
             if not in_memory:
                 access.memory_only = False
-            if not in_trusted:
-                trusted_only = False
-            if in_memory or in_trusted or any(is_within(path, root) for root in free_roots):
+            if in_memory or any(is_within(path, root) for root in free_roots):
+                continue
+            is_secret = any(is_within(path, root) for root in secret_roots)
+            if self.allow_outside_workspace and not is_secret:
                 continue
             access.outside_paths.append(path)
-            if any(is_within(path, root) for root in secret_roots):
+            if is_secret:
                 access.secret_paths.append(path)
-        access.trusted_only = trusted_only
         return access
 
     def is_secret(self, path: Path) -> bool:
