@@ -1,18 +1,18 @@
 // 入口：页面路由（#/new、#/task/<id>、#/automations）、把各模块接起来、侧栏和右侧栏的开关。
 
-import { sendJson } from "./api.js";
-import { closeEditor, initAutomations, isAutomationEditorOpen, showAutomations } from "./automations.js";
-import { chatComposer, initChat, interrupt, isChatRunning, leaveTask, openTask, updateChatOptions } from "./chat.js";
-import { looksLikeCommand, loadSkillNames, runCommand } from "./commands.js";
-import { Composer, SCRATCH_WORKSPACE } from "./composer.js";
-import { el, icon, show } from "./dom.js";
-import { citationText, closeFilePreview, initFilePreview, isFilePreviewOpen } from "./filepreview.js";
-import { closeFolderPicker, isFolderPickerOpen } from "./folderpicker.js";
-import { initResizers } from "./resizers.js";
-import { initRightPanel, setRightPanelVisible, showTaskInPanel } from "./rightpanel.js";
-import { closeSettings, initSettings, isSettingsOpen, openSettings } from "./settings.js";
-import { initSidebar, setActiveView } from "./sidebar.js";
-import { loadPreference, on, reloadInfo, reloadTasks, savePreference, state } from "./state.js";
+import { sendJson } from "./core/api.js";
+import { closeEditor, initAutomations, isAutomationEditorOpen, showAutomations } from "./automations/automations.js";
+import { chatComposer, initChat, interrupt, isChatRunning, leaveTask, openTask, updateChatOptions } from "./task/chat.js";
+import { looksLikeCommand, loadSkillNames, runCommand } from "./core/commands.js";
+import { Composer, SCRATCH_WORKSPACE } from "./task/composer.js";
+import { el, icon, show } from "./ui/dom.js";
+import { citationText, closeFilePreview, initFilePreview, isFilePreviewOpen } from "./sidebar/filepreview.js";
+import { closeFolderPicker, isFolderPickerOpen } from "./sidebar/folderpicker.js";
+import { initResizers } from "./ui/resizers.js";
+import { initRightPanel, setRightPanelVisible, showTaskInPanel } from "./task/rightpanel.js";
+import { closeSettings, initSettings, isSettingsOpen, openSettings } from "./settings/settings.js";
+import { initSidebar, setActiveView } from "./sidebar/sidebar.js";
+import { loadPreference, on, reloadInfo, reloadTasks, savePreference, state } from "./core/state.js";
 
 const TASK_POLL_MILLISECONDS = 5000;
 

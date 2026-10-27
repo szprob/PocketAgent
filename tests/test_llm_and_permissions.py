@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 from pocketagent.llm import LLMResponse, build_assistant_message
 from pocketagent.llm.openai_compat import StreamAccumulator, _consume_delta
-from pocketagent.permissions import ApprovalMode, Decision, decide_by_mode
+from pocketagent.safety.permissions import ApprovalMode, Decision, decide_by_mode
 from pocketagent.tools import ToolKind
 
 

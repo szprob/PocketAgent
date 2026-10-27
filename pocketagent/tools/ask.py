@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from pocketagent.questions import (
+from pocketagent.interaction.questions import (
     HEADER_LIMIT_CHARS,
     MAX_OPTIONS,
     MAX_QUESTIONS,

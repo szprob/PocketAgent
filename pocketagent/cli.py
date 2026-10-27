@@ -12,11 +12,14 @@ import sys
 from contextlib import suppress
 from pathlib import Path
 
-from pocketagent.agent import Agent, create_agent, create_provider
-from pocketagent.commands import CommandContext, CommandResult, handle_command_line
 from pocketagent.config import AppConfig, ConfigError, Settings
-from pocketagent.events import Event, EventType
-from pocketagent.permissions import (
+from pocketagent.core.agent import Agent, create_agent, create_provider
+from pocketagent.core.events import Event, EventType
+from pocketagent.core.scratch import create_scratch_workspace
+from pocketagent.core.session import Session, SessionStore
+from pocketagent.interaction.commands import CommandContext, CommandResult, handle_command_line
+from pocketagent.interaction.questions import Question, QuestionAnswer
+from pocketagent.safety.permissions import (
     AllowAllApprover,
     ApprovalAnswer,
     ApprovalMode,
@@ -24,9 +27,6 @@ from pocketagent.permissions import (
     Approver,
     DenyAllApprover,
 )
-from pocketagent.questions import Question, QuestionAnswer
-from pocketagent.scratch import create_scratch_workspace
-from pocketagent.session import Session, SessionStore
 
 TOOL_RESULT_PREVIEW_LINES = 4
 # 这一轮为什么没说完：界面上要在回复末尾说一句，不然用户以为模型只是话说一半
@@ -476,7 +476,7 @@ def _print_sessions(settings: Settings) -> None:
 
 def _run_web(arguments: argparse.Namespace, settings: Settings) -> None:
     try:
-        from pocketagent.web.server import run_web
+        from pocketagent.server.app import run_web
     except ImportError:
         sys.exit("web 界面需要 aiohttp：pip install 'pocketagent[web]'")
     run_web(

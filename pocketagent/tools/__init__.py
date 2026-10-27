@@ -1,6 +1,7 @@
 import sys
 
-from pocketagent.skills import Skill
+from pocketagent.knowledge.skills import Skill
+from pocketagent.tools.ask import AskUserTool
 from pocketagent.tools.base import (
     Tool,
     ToolAccess,
@@ -9,7 +10,6 @@ from pocketagent.tools.base import (
     ToolRegistry,
     ToolResult,
 )
-from pocketagent.tools.ask import AskUserTool
 from pocketagent.tools.computer import ComputerTool, ScreenshotTool
 from pocketagent.tools.files import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
 from pocketagent.tools.image import (

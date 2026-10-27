@@ -1,4 +1,4 @@
-"""subagent：派一个子 agent 去独立完成一件事，做完只把结论交回来。怎么跑见 pocketagent/subagents.py。"""
+"""subagent：派一个子 agent 去独立完成一件事，做完只把结论交回来。怎么跑见 pocketagent/core/subagents.py。"""
 
 from dataclasses import dataclass
 from typing import Any

@@ -5,12 +5,17 @@ import unittest
 from datetime import date, datetime
 from pathlib import Path
 
-from pocketagent.attachments import AttachmentStore, build_user_message, materialize_messages, message_display
-from pocketagent.automations import Automation, AutomationStore
+from pocketagent.account.usage import UsageLog, UsageMetadata
 from pocketagent.config import ConfigError
-from pocketagent.reviewer import parse_review, recent_user_requests
+from pocketagent.interaction.attachments import (
+    AttachmentStore,
+    build_user_message,
+    materialize_messages,
+    message_display,
+)
 from pocketagent.llm import Usage
-from pocketagent.usage import UsageLog, UsageMetadata
+from pocketagent.safety.reviewer import parse_review, recent_user_requests
+from pocketagent.server.automations import Automation, AutomationStore
 from tests.helpers import TemporaryDirectories
 
 # 1×1 的透明 PNG

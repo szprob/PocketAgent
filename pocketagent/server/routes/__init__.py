@@ -1,0 +1,49 @@
+"""REST + WebSocket 路由，按资源分文件；协议见 pocketagent/server/__init__.py。"""
+
+from aiohttp import web
+
+from pocketagent.server.routes import automations, commands, sessions, settings, socket, workspace
+
+
+def add_routes(router: web.UrlDispatcher) -> None:
+    """所有 /api 和 /ws 路由。"""
+    router.add_get("/api/info", settings.get_info)
+    router.add_post("/api/command", commands.run_command)
+    router.add_patch("/api/models/{model_id}", settings.update_model)
+    router.add_get("/api/files", workspace.list_files)
+    router.add_get("/api/file", workspace.read_file)
+    router.add_get("/api/file/raw", workspace.raw_file)
+    router.add_get("/api/browse", workspace.browse_directories)
+    router.add_post("/api/workspaces", workspace.add_workspace)
+    router.add_post("/api/workspaces/default", workspace.set_default_workspace)
+    router.add_delete("/api/workspaces", workspace.remove_workspace)
+    router.add_get("/api/sessions", sessions.list_sessions)
+    router.add_post("/api/sessions", sessions.create_session)
+    router.add_get("/api/sessions/{session_id}", sessions.get_session)
+    router.add_get("/api/sessions/{session_id}/overview", sessions.get_overview)
+    router.add_patch("/api/sessions/{session_id}", sessions.update_session)
+    router.add_delete("/api/sessions/{session_id}", sessions.delete_session)
+    router.add_post("/api/sessions/{session_id}/attachments", sessions.upload_attachments)
+    router.add_get("/api/sessions/{session_id}/attachments/{attachment_id}", sessions.get_attachment)
+    router.add_get("/api/sessions/{session_id}/file/raw", sessions.get_session_file)
+    router.add_get("/api/sessions/{session_id}/changes", sessions.list_changes)
+    router.add_get("/api/sessions/{session_id}/changes/turn", sessions.list_turn_changes)
+    router.add_get("/api/sessions/{session_id}/changes/diff", sessions.get_change_diff)
+    router.add_post("/api/sessions/{session_id}/changes/revert", sessions.revert_change)
+    router.add_post("/api/sessions/{session_id}/checkpoints/restore", sessions.restore_checkpoint)
+    router.add_get("/api/usage", settings.get_usage)
+    router.add_get("/api/usage/balance", settings.get_balances)
+    router.add_get("/api/skills", settings.list_skills)
+    router.add_get("/api/skills/content", settings.get_skill_content)
+    router.add_get("/api/memory", settings.get_memory)
+    router.add_get("/api/memory/file", settings.get_memory_file)
+    router.add_delete("/api/memory/file", settings.delete_memory_file)
+    router.add_get("/api/config", settings.get_config)
+    router.add_put("/api/config", settings.put_config)
+    router.add_post("/api/config/test", settings.test_config)
+    router.add_get("/api/automations", automations.list_automations)
+    router.add_post("/api/automations", automations.create_automation)
+    router.add_put("/api/automations/{automation_id}", automations.update_automation)
+    router.add_delete("/api/automations/{automation_id}", automations.delete_automation)
+    router.add_post("/api/automations/{automation_id}/run", automations.run_automation_now)
+    router.add_get("/ws/{session_id}", socket.session_socket)

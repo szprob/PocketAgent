@@ -36,9 +36,9 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from pocketagent.memory import project_memory_dir
-from pocketagent.permissions import ApprovalMode
-from pocketagent.sandbox import available_sandbox
+from pocketagent.knowledge.memory import project_memory_dir
+from pocketagent.safety.permissions import ApprovalMode
+from pocketagent.safety.sandbox import available_sandbox
 from pocketagent.tools.image import (
     DEFAULT_IMAGE_BASE_URL_BY_PROVIDER,
     DEFAULT_IMAGE_MODEL_BY_PROVIDER,

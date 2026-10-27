@@ -6,22 +6,22 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from pocketagent.compaction import PRESERVED_SKILLS_HEADER
-from pocketagent.frontmatter import split_frontmatter
-from pocketagent.llm import LLMResponse
-from pocketagent.memory import delete_memory, list_memories, memory_prompt_section, project_memory_dir
-from pocketagent.permissions import ApprovalAnswer, ApprovalMode, Decision, DenyAllApprover, PermissionGate
-from pocketagent.skills import (
+from pocketagent.core.compaction import PRESERVED_SKILLS_HEADER
+from pocketagent.knowledge.frontmatter import split_frontmatter
+from pocketagent.knowledge.memory import delete_memory, list_memories, memory_prompt_section, project_memory_dir
+from pocketagent.knowledge.skills import (
     SkillDirectory,
     discover_skills,
     find_skill_command,
     skill_directories,
     skills_prompt_section,
 )
+from pocketagent.llm import LLMResponse
+from pocketagent.safety.permissions import ApprovalAnswer, ApprovalMode, Decision, DenyAllApprover, PermissionGate
+from pocketagent.server.history import history_items
 from pocketagent.tools import ToolContext
 from pocketagent.tools.files import ReadFileTool, WriteFileTool
 from pocketagent.tools.skill import ActivateSkillTool
-from pocketagent.web.history import history_items
 from tests.helpers import RoutingProvider, TemporaryDirectories, build_harness, tool_call
 
 SKILL_TEXT = """---
@@ -53,7 +53,7 @@ class SkillTestBase(unittest.IsolatedAsyncioTestCase):
         self.workspace = self.directories.workspace
         self.user_dir = self.directories.home_dir / "skills"
         # 不读本机的 ~/.agents/skills、~/.claude/skills
-        patcher = mock.patch("pocketagent.skills.USER_SKILL_DIRS", [])
+        patcher = mock.patch("pocketagent.knowledge.skills.USER_SKILL_DIRS", [])
         patcher.start()
         self.addCleanup(patcher.stop)
 

@@ -10,10 +10,10 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterator
 
-from pocketagent import ripgrep
-from pocketagent.ripgrep import GrepMatch, RipgrepError, RipgrepTimeout
+from pocketagent.tools import ripgrep
 from pocketagent.tools.base import Tool, ToolAccess, ToolContext, ToolKind, ToolResult
 from pocketagent.tools.files import SKIPPED_DIRECTORY_NAMES, path_argument_access
+from pocketagent.tools.ripgrep import GrepMatch, RipgrepError, RipgrepTimeout
 
 GLOB_MAX_RESULTS = 200
 GREP_MAX_MATCHES = 200

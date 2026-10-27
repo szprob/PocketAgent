@@ -15,13 +15,13 @@ try:
 except ImportError:
     raise unittest.SkipTest("没装 aiohttp，跳过 web 测试")
 
-from pocketagent.agent import INTERRUPTED_TOOL_RESULT
 from pocketagent.config import AppConfig, Settings, config_path
+from pocketagent.core.agent import INTERRUPTED_TOOL_RESULT
+from pocketagent.knowledge.memory import project_memory_dir
 from pocketagent.llm import LLMResponse, ScriptedProvider, Usage
-from pocketagent.memory import project_memory_dir
-from pocketagent.permissions import ApprovalMode
-from pocketagent.web import server
-from pocketagent.web.server import MANAGER_KEY, create_app
+from pocketagent.safety.permissions import ApprovalMode
+from pocketagent.server import app as server
+from pocketagent.server.app import MANAGER_KEY, create_app
 from tests.helpers import TemporaryDirectories, tool_call
 
 TOKEN = "test-token"
@@ -148,7 +148,7 @@ class WebServerTest(WebTestBase):
         self.assertEqual(static_file_by_cookie.status, 200)
 
     async def test_static_files_ask_browser_to_revalidate(self) -> None:
-        response = await self.client.get("/static/js/api.js", params=AUTH)
+        response = await self.client.get("/static/js/core/api.js", params=AUTH)
 
         self.assertEqual(response.status, 200)
         self.assertEqual(response.headers.get("Cache-Control"), "no-cache")
@@ -780,7 +780,7 @@ class WebAccessTest(WebTestBase):
     async def asyncSetUp(self) -> None:
         await super().asyncSetUp()
         # 不读本机的 ~/.claude/skills
-        patcher = mock.patch("pocketagent.skills.USER_SKILL_DIRS", [])
+        patcher = mock.patch("pocketagent.knowledge.skills.USER_SKILL_DIRS", [])
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -857,7 +857,7 @@ class WebSkillsMemoryTest(WebTestBase):
 
     async def asyncSetUp(self) -> None:
         await super().asyncSetUp()
-        patcher = mock.patch("pocketagent.skills.USER_SKILL_DIRS", [])
+        patcher = mock.patch("pocketagent.knowledge.skills.USER_SKILL_DIRS", [])
         patcher.start()
         self.addCleanup(patcher.stop)
 

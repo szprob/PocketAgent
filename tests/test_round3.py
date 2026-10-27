@@ -6,7 +6,8 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from pocketagent.compaction import (
+from pocketagent.config import AppConfig, ConfigError, ModelProfile
+from pocketagent.core.compaction import (
     PRESERVED_SKILLS_HEADER,
     RESUME_HINT,
     SUMMARY_PREFIX,
@@ -14,11 +15,10 @@ from pocketagent.compaction import (
     previous_summary_text,
     shrink_for_summary,
 )
-from pocketagent.config import AppConfig, ConfigError, ModelProfile
+from pocketagent.core.nodes import _snapshot_length
+from pocketagent.core.session import SessionStore
 from pocketagent.llm.base import ContextOverflowError, is_context_overflow
 from pocketagent.llm.openai_compat import OpenAICompatibleProvider, parse_usage
-from pocketagent.nodes import _snapshot_length
-from pocketagent.session import SessionStore
 from pocketagent.tools import ToolContext
 from pocketagent.tools.web import WebFetchTool, _format_result, html_to_text
 from tests.helpers import TemporaryDirectories

@@ -22,8 +22,8 @@ pocketagent = "pocketagent.cli:main"
 include = ["pocketagent*", "pocketflow*"]
 
 [tool.setuptools.package-data]
-# 注意 static/* 不递归，js 子目录要单独列（之前漏了，wheel 里没有 js，可编辑安装掩盖了这个问题）
-"pocketagent.web" = ["static/*", "static/js/*"]
+# 注意 static/* 不递归，js 和它的子目录要单独列（之前漏了，wheel 里没有 js，可编辑安装掩盖了这个问题）
+"pocketagent.web" = ["static/*", "static/js/*", "static/js/*/*"]
 
 [tool.ruff]
 line-length = 120

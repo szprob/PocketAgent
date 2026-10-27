@@ -6,13 +6,13 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from pocketagent.agent import Agent, create_agent
-from pocketagent.compaction import MERGE_SUMMARY_INSTRUCTION, SUMMARY_INSTRUCTION
 from pocketagent.config import Settings
-from pocketagent.events import Event, EventType
+from pocketagent.core.agent import Agent, create_agent
+from pocketagent.core.compaction import MERGE_SUMMARY_INSTRUCTION, SUMMARY_INSTRUCTION
+from pocketagent.core.events import Event, EventType
+from pocketagent.core.session import Session
 from pocketagent.llm import ContextOverflowError, LLMResponse, ScriptedProvider, ToolCall
-from pocketagent.permissions import AllowAllApprover, ApprovalMode, Approver
-from pocketagent.session import Session
+from pocketagent.safety.permissions import AllowAllApprover, ApprovalMode, Approver
 from pocketagent.tools import ToolRegistry
 
 

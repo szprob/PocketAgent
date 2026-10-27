@@ -4,10 +4,10 @@ import asyncio
 import json
 import unittest
 
-from pocketagent.events import EventType
+from pocketagent.core.events import EventType
+from pocketagent.core.subagents import subagent_tools
 from pocketagent.llm import LLMResponse
-from pocketagent.permissions import ApprovalAnswer, ApprovalMode
-from pocketagent.subagents import subagent_tools
+from pocketagent.safety.permissions import ApprovalAnswer, ApprovalMode
 from pocketagent.tools import ToolContext, default_tool_registry
 from pocketagent.tools.subagent import SubagentTool
 from tests.helpers import TemporaryDirectories, build_harness, tool_call

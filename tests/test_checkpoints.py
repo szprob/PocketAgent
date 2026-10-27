@@ -6,9 +6,9 @@ import time
 import unittest
 from dataclasses import dataclass, field
 
-from pocketagent.checkpoints import Checkpoint, TaskCheckpoints, find_nested_repos
-from pocketagent.events import EventType
+from pocketagent.core.events import EventType
 from pocketagent.llm import LLMResponse
+from pocketagent.safety.checkpoints import Checkpoint, TaskCheckpoints, find_nested_repos
 from tests.helpers import TemporaryDirectories, build_harness, tool_call
 
 

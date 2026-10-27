@@ -3,17 +3,17 @@
 import unittest
 from pathlib import Path
 
-from pocketagent.commands import (
+from pocketagent.config import AppConfig
+from pocketagent.interaction.commands import (
     CommandContext,
     command_specs_for,
     handle_command_line,
     help_text,
     parse_command,
 )
-from pocketagent.config import AppConfig
+from pocketagent.knowledge.skills import Skill
 from pocketagent.llm import LLMResponse
-from pocketagent.permissions import ApprovalMode
-from pocketagent.skills import Skill
+from pocketagent.safety.permissions import ApprovalMode
 from tests.helpers import TemporaryDirectories, build_harness
 
 

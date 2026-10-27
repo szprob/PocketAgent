@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from pocketagent.skills import Skill, loaded_skill_names, skill_content
+from pocketagent.knowledge.skills import Skill, loaded_skill_names, skill_content
 from pocketagent.tools.base import Tool, ToolContext, ToolKind, ToolResult
 
 
