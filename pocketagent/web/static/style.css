@@ -180,6 +180,7 @@ button:disabled { cursor: default; opacity: 0.5; }
 /* ---------- 三栏布局 ---------- */
 
 .app {
+  position: relative;
   display: grid;
   grid-template-columns: var(--sidebar-width) minmax(0, 1fr) var(--panel-width);
   height: 100vh;
@@ -208,6 +209,45 @@ button:disabled { cursor: default; opacity: 0.5; }
 
 .sidebar-opener { display: none; }
 .app.sidebar-hidden .sidebar-opener { display: inline-flex; }
+
+/* ---------- 栏宽拖动条 ---------- */
+
+.column-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 15;
+  width: 8px;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+/* 竖线画在 8px 热区的中间，正压在两栏的分界上 */
+.column-resizer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 2px;
+  background: transparent;
+}
+
+.column-resizer:hover::after,
+.column-resizer.dragging::after { background: var(--accent); }
+
+#sidebar-resizer { left: calc(var(--sidebar-width) - 4px); }
+#panel-resizer { right: calc(var(--panel-width) - 4px); }
+
+.app.sidebar-hidden #sidebar-resizer,
+.app.right-panel-hidden #panel-resizer,
+.app:not(.in-task) #panel-resizer { display: none; }
+
+body.resizing {
+  cursor: col-resize;
+  user-select: none;
+  -webkit-user-select: none;
+}
 
 /* ---------- 左侧栏 ---------- */
 
@@ -1103,6 +1143,7 @@ pre code { padding: 0; background: none; font-size: inherit; }
 
 @media (max-width: 860px) {
   .app, .app.sidebar-hidden, .app.in-task { grid-template-columns: minmax(0, 1fr); }
+  .column-resizer { display: none; }
   .main, .app:not(.in-task) .main, .app.right-panel-hidden .main, .app.sidebar-hidden .main { margin: 0; border: 0; border-radius: 0; }
   .sidebar-opener { display: inline-flex; }
   .sidebar {
