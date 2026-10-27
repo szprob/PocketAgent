@@ -3,7 +3,11 @@
 只读。文件树和预览只允许在已登记的工作区里；选目录的浏览只列目录、不列文件。
 """
 
+import ctypes
 import mimetypes
+import re
+import string
+import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -103,10 +107,47 @@ def session_file_path(workspace: str, relative_path: str) -> Path:
     return target
 
 
+def _windows_drive_entries() -> list[FileEntry]:
+    """本机所有可访问的盘符。"""
+    if sys.platform != "win32":
+        return []
+    try:
+        drive_mask = ctypes.windll.kernel32.GetLogicalDrives()
+    except (AttributeError, OSError):
+        return []
+    drives = []
+    for index, letter in enumerate(string.ascii_uppercase):
+        if not drive_mask & (1 << index):
+            continue
+        root = Path(f"{letter}:\\")
+        try:
+            if not root.is_dir():
+                continue
+        except OSError:
+            continue
+        drives.append(FileEntry(str(root), str(root), True))
+    return drives
+
+
+def _browse_path(raw_path: str) -> Path:
+    """只给盘符（如 D:）时按 Windows 习惯打开该盘根目录。
+
+    直接 Path('D:').resolve() 会落到该盘当前的目录（可能不是根目录），用户会以为没打开 D 盘。
+    """
+    text = raw_path.strip()
+    if sys.platform == "win32" and re.fullmatch(r"[A-Za-z]:", text):
+        text += "\\"
+    return Path(text).expanduser()
+
+
 def browse_directories(raw_path: str | None) -> dict[str, Any]:
-    """选工作区用：列出某个目录下的子目录。默认从家目录开始。"""
-    directory = Path(raw_path).expanduser() if raw_path else Path.home()
-    directory = directory.resolve()
+    """选工作区用：列出某个目录下的子目录。默认从家目录开始。
+
+    Windows 上在家目录和盘符根目录还会列出本机所有盘符，否则从家目录一路点「上一级」
+    只能停在 C:\，没法切到 D 盘。
+    """
+    home = Path.home().resolve()
+    directory = (_browse_path(raw_path) if raw_path else home).resolve()
     if not directory.is_dir():
         raise ConfigError(f"目录不存在：{raw_path}")
     children = []
@@ -117,5 +158,9 @@ def browse_directories(raw_path: str | None) -> dict[str, Any]:
     for child in candidates:
         if child.is_dir() and not child.name.startswith(".") and child.name not in SKIPPED_DIRECTORY_NAMES:
             children.append(FileEntry(child.name, str(child), True).to_dict())
+    if directory == home or directory.parent == directory:
+        current = str(directory)
+        drives = [entry.to_dict() for entry in _windows_drive_entries() if entry.path != current]
+        children = drives + children
     parent = str(directory.parent) if directory.parent != directory else None
-    return {"path": str(directory), "parent": parent, "home": str(Path.home()), "directories": children[:LIST_LIMIT]}
+    return {"path": str(directory), "parent": parent, "home": str(home), "directories": children[:LIST_LIMIT]}
