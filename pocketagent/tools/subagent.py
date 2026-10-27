@@ -11,6 +11,8 @@ STOP_REASON_LABELS = {
     "step_limit": "到了步数上限，下面是它停下时的结论",
     "denied": "有操作被用户拒绝，先停下了",
     "truncated": "回复多次超长，先停下了",
+    "filtered": "回复被上游内容审核掐断，下面是它已经输出的部分",
+    "incomplete": "连接中途断了，它没说完",
     "error": "出错停下了",
 }
 

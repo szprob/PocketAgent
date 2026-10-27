@@ -29,6 +29,12 @@ from pocketagent.scratch import create_scratch_workspace
 from pocketagent.session import Session, SessionStore
 
 TOOL_RESULT_PREVIEW_LINES = 4
+# 这一轮为什么没说完：界面上要在回复末尾说一句，不然用户以为模型只是话说一半
+CUT_OFF_NOTES = {
+    "filtered": "回复被上游内容审核掐断，上面是已经输出的部分",
+    "incomplete": "连接中途断了，这次回复不完整",
+    "truncated": "回复超出长度上限，没有写完",
+}
 
 
 class Style:
@@ -67,6 +73,8 @@ class ConsoleRenderer:
         self.show_reasoning = show_reasoning
         self.at_line_start = True
         self.in_reasoning = False
+        # 已经实时打印过输出的工具调用：最后的 TOOL_RESULT 只补一行退出码，不重复整段
+        self.streamed_call_ids: set[str] = set()
 
     def __call__(self, event: Event) -> None:
         match event.type:
@@ -76,8 +84,12 @@ class ConsoleRenderer:
                 self._print_reasoning(event.data["text"])
             case EventType.TOOL_CALL:
                 self._print_tool_call(event.data["name"], event.data["summary"])
+            case EventType.TOOL_OUTPUT_DELTA:
+                self._print_tool_output(event.data["call_id"], event.data["text"])
             case EventType.TOOL_RESULT:
-                self._print_tool_result(event.data["content"], event.data["is_error"], event.data["denied"])
+                self._print_tool_result(
+                    event.data["call_id"], event.data["content"], event.data["is_error"], event.data["denied"]
+                )
             case EventType.LLM_RETRY:
                 self._print_line(self.style.yellow(f"[模型调用失败，第 {event.data['attempt']} 次尝试：{event.data['error']}]"))
             case EventType.COMPACTION:
@@ -92,6 +104,9 @@ class ConsoleRenderer:
             case EventType.ERROR:
                 self._print_line(self.style.red(f"[出错] {event.data['message']}"))
             case EventType.TURN_END:
+                note = CUT_OFF_NOTES.get(event.data.get("stop_reason") or "")
+                if note:
+                    self._print_line(self.style.yellow(f"[{note}]"))
                 self._end_line()
 
     def _write(self, text: str) -> None:
@@ -125,7 +140,23 @@ class ConsoleRenderer:
         self.in_reasoning = False
         self._print_line(f"{self.style.cyan('⏺')} {self.style.bold(name)}({summary})")
 
-    def _print_tool_result(self, content: str, is_error: bool, denied: bool) -> None:
+    def _print_tool_output(self, call_id: str, text: str) -> None:
+        self.streamed_call_ids.add(call_id)
+        self.in_reasoning = False
+        for line in text.splitlines():
+            self._print_line(self.style.dim(f"  │ {line}"))
+
+    def _print_tool_result(self, call_id: str, content: str, is_error: bool, denied: bool) -> None:
+        if call_id in self.streamed_call_ids:
+            self.streamed_call_ids.discard(call_id)
+            # 输出已经一条条打过了，这里只补退出码（或报错信息），不重复整段
+            exit_line = next(
+                (line for line in content.splitlines() if line.startswith("[exit code")),
+                content.splitlines()[0] if content else "",
+            )
+            colorize = self.style.red if is_error else self.style.dim
+            self._print_line(colorize(f"  ⎿ {exit_line}"))
+            return
         if denied:
             self._print_line(self.style.yellow(f"  ⎿ {content.splitlines()[0] if content else '已拒绝'}"))
             return
@@ -151,7 +182,8 @@ class ConsoleApprover:
             print(self.style.yellow(f"  ! {note}"))
         print(self._colorize_preview(request.preview))
         always = f"[a] {request.always_label}  " if request.always_label else ""
-        prompt = f"[y] 允许  {always}[n] 拒绝（默认）> "
+        parents = f"[p] {request.always_parents_label}  " if request.always_parents_label else ""
+        prompt = f"[y] 允许  {always}{parents}[n] 拒绝（默认）> "
         try:
             answer = input(prompt).strip().lower()
         except (EOFError, KeyboardInterrupt):
@@ -160,6 +192,8 @@ class ConsoleApprover:
             return ApprovalAnswer.ALLOW_ONCE
         if answer in ("a", "always") and request.always_label:
             return ApprovalAnswer.ALLOW_ALWAYS
+        if answer in ("p", "parents") and request.always_parents_label:
+            return ApprovalAnswer.ALLOW_ALWAYS_PARENTS
         return ApprovalAnswer.DENY
 
     async def ask_questions(self, questions: list[Question]) -> list[QuestionAnswer] | None:

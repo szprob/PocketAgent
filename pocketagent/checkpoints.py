@@ -370,23 +370,33 @@ class TaskCheckpoints:
         return checkpoint.nested.get(root, EMPTY_TREE)
 
     async def changes(self) -> list[FileChange]:
-        baseline = self.baseline()
-        if baseline is None or not self.enabled:
+        return await self._changes_since(self.baseline())
+
+    async def turn_changes(self) -> list[FileChange]:
+        """本轮开始前那张检查点到现在：只算这一轮改的文件（图片产出展示用）。"""
+        turn_checkpoint = next(
+            (checkpoint for checkpoint in reversed(self.all_checkpoints()) if checkpoint.kind in ("turn", "baseline")),
+            None,
+        )
+        return await self._changes_since(turn_checkpoint)
+
+    async def _changes_since(self, checkpoint: Checkpoint | None) -> list[FileChange]:
+        if checkpoint is None or not self.enabled:
             return []
-        nested_roots = sorted(set(await self._nested_roots()) | set(baseline.nested or {}))
-        root_changes = await self.repo.changes_since(baseline.commit)
+        nested_roots = sorted(set(await self._nested_roots()) | set(checkpoint.nested or {}))
+        root_changes = await self.repo.changes_since(checkpoint.commit)
         # 嵌套仓库在根目录的影子仓库里只是一个指针，过滤掉，改动看它自己的影子仓库
         changes = [
             change
             for change in root_changes
             if change.path not in nested_roots and self._owner(change.path, nested_roots)[0] == ""
         ]
-        if baseline.nested is None:
+        if checkpoint.nested is None:
             return changes
         for root in nested_roots:
             if not (self.workspace / root).is_dir():
                 continue
-            for change in await self._nested_repo(root).changes_since(self._base_commit(baseline, root)):
+            for change in await self._nested_repo(root).changes_since(self._base_commit(checkpoint, root)):
                 change.path = f"{root}/{change.path}"
                 changes.append(change)
         return sorted(changes, key=lambda change: change.path)

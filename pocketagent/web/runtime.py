@@ -34,6 +34,7 @@ from pocketagent.frontmatter import split_frontmatter
 from pocketagent.scratch import create_scratch_workspace, ensure_scratch_workspace
 from pocketagent.skills import discover_skills, skill_directories
 from pocketagent.session import Session, SessionStore
+from pocketagent.tool_outputs import session_directory
 from pocketagent.usage import UsageLog
 from pocketagent.web.history import history_items
 
@@ -66,6 +67,7 @@ class PendingApproval:
             "preview": self.request.preview,
             "notes": self.request.notes,
             "always_label": self.request.always_label,
+            "always_parents_label": self.request.always_parents_label,
         }
 
 
@@ -197,6 +199,7 @@ class WebSession:
             "session_id": self.id,
             **self.status_fields(),
             "items": history_items(self.agent.context.messages, self.agent.context.tools),
+            "todos": self.session.todos,
             "pending_approvals": [pending.to_message() for pending in self.pending_approvals.values()],
             "pending_questions": [pending.to_message() for pending in self.pending_questions.values()],
         }
@@ -514,6 +517,7 @@ class SessionManager:
         settings = self.base_settings
         (settings.traces_dir / f"{session_id}.jsonl").unlink(missing_ok=True)
         shutil.rmtree(settings.attachments_dir / session_id, ignore_errors=True)
+        shutil.rmtree(session_directory(settings.tool_outputs_root, session_id), ignore_errors=True)
 
     async def switch_model(self, web_session: WebSession, model_id: str) -> None:
         profile = self.app_config.find_model(model_id)
@@ -548,6 +552,10 @@ class SessionManager:
             data["web_search_api_key"] = None
         elif not payload.get("web_search_api_key"):
             data["web_search_api_key"] = self.app_config.web_search_api_key
+        if payload.get("clear_image_gen_api_key"):
+            data["image_gen_api_key"] = None
+        elif not payload.get("image_gen_api_key"):
+            data["image_gen_api_key"] = self.app_config.image_gen_api_key
         data["web_token"] = self.app_config.web_token
         data["workspaces"] = self.app_config.workspaces
         return AppConfig.from_dict(data)
@@ -657,6 +665,7 @@ class SessionManager:
                 break
         return {
             "usage": self.usage_log.session_total(session_id),
+            "turns": web_session.agent.session.turns,
             "latest_reply": latest_reply,
             "updated_at": web_session.session.updated_at,
             **web_session.status_fields(),

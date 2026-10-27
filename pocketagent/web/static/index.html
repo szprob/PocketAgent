@@ -1,17 +1,20 @@
 <!doctype html>
 <html lang="zh-CN">
+
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>PocketAgent</title>
   <link rel="stylesheet" href="static/style.css">
 </head>
+
 <body>
   <div class="app" id="app">
     <!-- 左侧栏 -->
     <aside class="sidebar">
       <div class="sidebar-top">
-        <button class="icon-button" type="button" data-action="toggle-sidebar" data-icon="panelLeft" title="收起侧栏" aria-label="收起侧栏"></button>
+        <button class="icon-button" type="button" data-action="toggle-sidebar" data-icon="panelLeft" title="收起侧栏"
+          aria-label="收起侧栏"></button>
         <span class="brand">PocketAgent</span>
       </div>
       <nav class="sidebar-nav">
@@ -21,14 +24,17 @@
       <div class="sidebar-scroll">
         <section class="sidebar-section" data-section="workspaces">
           <div class="sidebar-section-header">
-            <button class="section-toggle" type="button" data-icon="chevronDown" aria-expanded="true"><span>工作区</span><span class="section-count"></span></button>
-            <button class="icon-button small" id="add-workspace" type="button" data-icon="plus" title="添加工作区" aria-label="添加工作区"></button>
+            <button class="section-toggle" type="button" data-icon="chevronDown"
+              aria-expanded="true"><span>工作区</span><span class="section-count"></span></button>
+            <button class="icon-button small" id="add-workspace" type="button" data-icon="plus" title="添加工作区"
+              aria-label="添加工作区"></button>
           </div>
           <div class="workspace-list section-body" id="workspace-list"></div>
         </section>
         <section class="sidebar-section" data-section="tasks">
           <div class="sidebar-section-header">
-            <button class="section-toggle" type="button" data-icon="chevronDown" aria-expanded="true"><span>最近任务</span><span class="section-count" id="recent-count"></span></button>
+            <button class="section-toggle" type="button" data-icon="chevronDown"
+              aria-expanded="true"><span>最近任务</span><span class="section-count" id="recent-count"></span></button>
           </div>
           <div class="recent-list section-body" id="recent-list"></div>
         </section>
@@ -38,7 +44,8 @@
           <span class="avatar" id="avatar"></span>
           <span class="account-name" id="account-name"></span>
         </button>
-        <button class="icon-button" id="open-settings" type="button" data-icon="settings" title="设置" aria-label="设置"></button>
+        <button class="icon-button" id="open-settings" type="button" data-icon="settings" title="设置"
+          aria-label="设置"></button>
       </div>
     </aside>
     <div class="sidebar-backdrop" id="sidebar-backdrop"></div>
@@ -48,7 +55,8 @@
     <main class="main">
       <section class="view" id="new-task-view">
         <header class="view-header">
-          <button class="icon-button sidebar-opener" type="button" data-action="toggle-sidebar" data-icon="panelLeft" title="展开侧栏" aria-label="展开侧栏"></button>
+          <button class="icon-button sidebar-opener" type="button" data-action="toggle-sidebar" data-icon="panelLeft"
+            title="展开侧栏" aria-label="展开侧栏"></button>
           <div class="header-spacer"></div>
         </header>
         <div class="new-task-body">
@@ -60,10 +68,12 @@
 
       <section class="view hidden" id="chat-view">
         <header class="view-header">
-          <button class="icon-button sidebar-opener" type="button" data-action="toggle-sidebar" data-icon="panelLeft" title="展开侧栏" aria-label="展开侧栏"></button>
+          <button class="icon-button sidebar-opener" type="button" data-action="toggle-sidebar" data-icon="panelLeft"
+            title="展开侧栏" aria-label="展开侧栏"></button>
           <div class="view-title" id="chat-title"></div>
           <div class="menu-wrapper">
-            <button class="icon-button" id="chat-menu-button" type="button" data-icon="more" title="更多" aria-label="更多"></button>
+            <button class="icon-button" id="chat-menu-button" type="button" data-icon="more" title="更多"
+              aria-label="更多"></button>
             <div class="menu hidden" id="chat-menu">
               <button type="button" data-action="rename">重命名</button>
               <button type="button" data-action="compact">压缩上下文</button>
@@ -71,7 +81,8 @@
             </div>
           </div>
           <div class="header-spacer"></div>
-          <button class="icon-button" id="toggle-right-panel" type="button" data-icon="panelRight" title="显示 / 隐藏右侧栏" aria-label="显示或隐藏右侧栏"></button>
+          <button class="icon-button" id="toggle-right-panel" type="button" data-icon="panelRight" title="显示 / 隐藏右侧栏"
+            aria-label="显示或隐藏右侧栏"></button>
         </header>
         <div class="transcript" id="transcript">
           <div class="transcript-inner" id="transcript-inner"></div>
@@ -85,7 +96,8 @@
 
       <section class="view hidden" id="automations-view">
         <header class="view-header">
-          <button class="icon-button sidebar-opener" type="button" data-action="toggle-sidebar" data-icon="panelLeft" title="展开侧栏" aria-label="展开侧栏"></button>
+          <button class="icon-button sidebar-opener" type="button" data-action="toggle-sidebar" data-icon="panelLeft"
+            title="展开侧栏" aria-label="展开侧栏"></button>
           <div class="view-title">自动化</div>
           <div class="header-spacer"></div>
           <button class="primary-button" id="new-automation" type="button" data-icon="plus"><span>新建自动化</span></button>
@@ -100,11 +112,27 @@
     <!-- 右侧栏 -->
     <aside class="right-panel">
       <section class="panel-card" id="overview-card"></section>
+      <section class="panel-section" id="preview-section">
+        <div class="panel-section-title"><span>预览</span></div>
+        <div class="preview-bar">
+          <input id="preview-url" type="text" placeholder="localhost:3000 或网址，回车打开" spellcheck="false"
+            autocomplete="off">
+          <button class="icon-button" id="preview-go" type="button" data-icon="play" title="打开"
+            aria-label="打开预览"></button>
+          <button class="ghost-button small hidden" id="preview-open-window" type="button">新窗口打开</button>
+        </div>
+        <div class="preview-links hidden" id="preview-links"></div>
+        <div class="preview-frame-wrap hidden" id="preview-frame-wrap">
+          <iframe id="preview-frame" title="预览"></iframe>
+        </div>
+        <div class="panel-empty" id="preview-empty">agent 起了本地服务（如 dev server）后，输出里的地址会出现在这里，点开就能看；也可以直接输入地址。</div>
+      </section>
       <section class="panel-section">
         <div class="panel-section-title">
           <span>变更</span><span class="panel-count" id="changes-count"></span>
           <span class="header-spacer"></span>
-          <button class="icon-button small" id="refresh-changes" type="button" data-icon="refresh" title="刷新" aria-label="刷新变更"></button>
+          <button class="icon-button small" id="refresh-changes" type="button" data-icon="refresh" title="刷新"
+            aria-label="刷新变更"></button>
         </div>
         <div id="change-list"></div>
       </section>
@@ -140,7 +168,8 @@
             <div class="model-layout">
               <div class="model-sidebar">
                 <div id="model-list" class="model-list"></div>
-                <button id="add-model" class="ghost-button full-width" type="button" data-icon="plus"><span>添加模型</span></button>
+                <button id="add-model" class="ghost-button full-width" type="button"
+                  data-icon="plus"><span>添加模型</span></button>
               </div>
               <form id="model-form" class="model-form" autocomplete="off">
                 <div id="model-form-empty" class="muted">还没有模型，点「添加模型」</div>
@@ -150,7 +179,8 @@
                   <label class="field"><span>模型名 *</span>
                     <input name="model" type="text" placeholder="发给接口的 model 参数，如 deepseek-v4.1-flash"></label>
                   <label class="field"><span>接口地址</span>
-                    <input name="base_url" type="text" placeholder="OpenAI 兼容接口，如 https://your-gateway.example.com/v1"></label>
+                    <input name="base_url" type="text"
+                      placeholder="OpenAI 兼容接口，如 https://your-gateway.example.com/v1"></label>
                   <label class="field"><span>API Key</span>
                     <input name="api_key" type="password" placeholder="sk-...">
                     <span class="field-hint" id="api-key-hint"></span></label>
@@ -163,9 +193,12 @@
                       <input name="temperature" type="number" min="0" max="2" step="0.1" placeholder="不填用接口默认"></label>
                   </div>
                   <label class="field"><span>额外请求参数（JSON）</span>
-                    <textarea name="extra_body" rows="2" placeholder='如 {"chat_template_kwargs": {"enable_thinking": true}}'></textarea></label>
-                  <label class="checkbox-field"><input type="checkbox" id="supports-images"><span>能看图（上传的图片直接发给模型；不勾就只告诉它文件路径）</span></label>
-                  <label class="checkbox-field"><input type="checkbox" id="model-visible"><span>在会话的模型列表里显示（不勾就只留在设置里；已经在用它的任务照常用）</span></label>
+                    <textarea name="extra_body" rows="2"
+                      placeholder='如 {"chat_template_kwargs": {"enable_thinking": true}}'></textarea></label>
+                  <label class="checkbox-field"><input type="checkbox"
+                      id="supports-images"><span>能看图（上传的图片直接发给模型；不勾就只告诉它文件路径）</span></label>
+                  <label class="checkbox-field"><input type="checkbox"
+                      id="model-visible"><span>在会话的模型列表里显示（不勾就只留在设置里；已经在用它的任务照常用）</span></label>
                   <div class="model-actions">
                     <button id="test-model" class="ghost-button" type="button">测试连接</button>
                     <button id="make-default" class="ghost-button" type="button">设为默认</button>
@@ -196,8 +229,11 @@
                   <span>自动压缩：上下文超过阈值时在后台总结前面的历史，不打断对话；快满了才会停下来等</span></label>
                 <label class="inline-field"><span>阈值</span>
                   <select id="compact-threshold-select">
-                    <option value="50">50%</option><option value="60">60%</option><option value="70">70%</option>
-                    <option value="80">80%</option><option value="90">90%</option>
+                    <option value="50">50%</option>
+                    <option value="60">60%</option>
+                    <option value="70">70%</option>
+                    <option value="80">80%</option>
+                    <option value="90">90%</option>
                   </select></label>
                 <div class="field-hint">接口报「上下文超长」时，不管开没开自动压缩，都会先压缩再重试。</div>
               </fieldset>
@@ -226,12 +262,42 @@
                   <span>读网页（web_fetch：打开搜索结果里的链接、读文档）</span></label>
               </fieldset>
               <fieldset class="radio-group">
+                <legend>图片</legend>
+                <label class="checkbox-field"><input type="checkbox" id="image-gen-enabled">
+                  <span>生成图片（generate_image：文生图，存到工作区并显示）</span></label>
+                <div class="field-row">
+                  <label class="field"><span>生图服务</span>
+                    <select id="image-gen-provider">
+                      <option value="zhipu">智谱 CogView（cogview-3-flash 免费）</option>
+                      <option value="openai">OpenAI 兼容（gpt-image 等，按张计费）</option>
+                    </select></label>
+                  <label class="field"><span>模型</span>
+                    <input id="image-gen-model" type="text" placeholder="留空用默认：cogview-3-flash"></label>
+                </div>
+                <label class="field" id="image-gen-base-url-field"><span>接口地址</span>
+                  <input id="image-gen-base-url" type="text" placeholder="留空用智谱的地址；OpenAI 兼容的填到 /v1">
+                  <span class="field-hint" id="image-gen-base-url-hint"></span></label>
+                <label class="field"><span>生图 API Key</span>
+                  <input id="image-gen-key" type="password" placeholder="留空就用智谱模型的密钥">
+                  <span class="field-hint" id="image-gen-key-hint"></span></label>
+                <label class="checkbox-field"><input type="checkbox" id="image-search-enabled">
+                  <span>搜图（search_images：抓必应图片结果页，免费、不用密钥）</span></label>
+                <div class="field-hint">生成的图存到工作区 images/ 下，回复里直接显示；搜图只给链接和简介，要用哪张让 agent 用 download_image 存下来。</div>
+              </fieldset>
+              <fieldset class="radio-group">
                 <legend>命令沙箱</legend>
                 <label class="checkbox-field"><input type="checkbox" id="sandbox-enabled">
                   <span>把 bash 关进沙箱：命令只能写工作目录、临时目录和缓存目录，读不到 ~/.ssh、API Key 这类密钥</span></label>
                 <label class="checkbox-field"><input type="checkbox" id="sandbox-network">
                   <span>沙箱里允许联网（不勾的话，要联网的命令得在沙箱外跑，每次都会问你）</span></label>
                 <div class="field-hint" id="sandbox-hint"></div>
+              </fieldset>
+              <fieldset class="radio-group">
+                <legend>免问目录</legend>
+                <label class="field"><span>这些目录里的文件读写不用确认（一行一个）</span>
+                  <textarea id="trusted-dirs-input" rows="3" placeholder="/Users/me/data"></textarea></label>
+                <div class="field-hint">工作目录以外、你固定会用的目录（存数据、放结果）配在这里：文件读写不弹审批，bash 沙箱里也能写（bash
+                  命令本身仍按审批模式问）。和密钥目录重叠的不会生效（比如把家目录加进来没用）。</div>
               </fieldset>
               <fieldset class="radio-group">
                 <legend>agent 正在干活时，我又发了一句话</legend>
@@ -278,12 +344,16 @@
   </div>
 
   <!-- 添加工作区 -->
-  <div class="modal hidden" id="workspace-modal" role="dialog" aria-modal="true" aria-labelledby="workspace-modal-title">
+  <div class="modal hidden" id="workspace-modal" role="dialog" aria-modal="true"
+    aria-labelledby="workspace-modal-title">
     <div class="modal-panel small-panel">
-      <header class="modal-header"><h2 id="workspace-modal-title">添加工作区</h2></header>
+      <header class="modal-header">
+        <h2 id="workspace-modal-title">添加工作区</h2>
+      </header>
       <div class="modal-body folder-picker">
         <div class="folder-path-row">
-          <button id="folder-home" class="icon-button" type="button" title="回到家目录" aria-label="回到家目录" data-icon="folder"></button>
+          <button id="folder-home" class="icon-button" type="button" title="回到家目录" aria-label="回到家目录"
+            data-icon="folder"></button>
           <button id="folder-up" class="ghost-button small" type="button">上一级</button>
           <input id="workspace-path-input" type="text" placeholder="也可以直接粘贴路径，回车跳过去">
         </div>
@@ -316,9 +386,12 @@
   </div>
 
   <!-- 自动化编辑 -->
-  <div class="modal hidden" id="automation-modal" role="dialog" aria-modal="true" aria-labelledby="automation-modal-title">
+  <div class="modal hidden" id="automation-modal" role="dialog" aria-modal="true"
+    aria-labelledby="automation-modal-title">
     <div class="modal-panel">
-      <header class="modal-header"><h2 id="automation-modal-title">新建自动化</h2></header>
+      <header class="modal-header">
+        <h2 id="automation-modal-title">新建自动化</h2>
+      </header>
       <form class="modal-body form-fields" id="automation-form" autocomplete="off">
         <label class="field"><span>名称</span><input name="name" type="text" placeholder="如：每日巡检"></label>
         <label class="field"><span>要做的事（每次运行都发给 agent 的话）</span>
@@ -330,8 +403,10 @@
         </div>
         <fieldset class="radio-group">
           <legend>计划</legend>
-          <label class="radio-option inline"><input type="radio" name="schedule_kind" value="daily"><span>每天定时</span></label>
-          <label class="radio-option inline"><input type="radio" name="schedule_kind" value="interval"><span>每隔一段时间</span></label>
+          <label class="radio-option inline"><input type="radio" name="schedule_kind"
+              value="daily"><span>每天定时</span></label>
+          <label class="radio-option inline"><input type="radio" name="schedule_kind"
+              value="interval"><span>每隔一段时间</span></label>
           <div class="schedule-fields" id="daily-fields">
             <input name="daily_time" type="time">
             <div class="weekday-picker" id="weekday-picker"></div>
@@ -353,4 +428,5 @@
 
   <script type="module" src="static/js/main.js"></script>
 </body>
+
 </html>

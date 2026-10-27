@@ -3,10 +3,99 @@
 基于 [PocketFlow](https://github.com/The-Pocket/PocketFlow) 的编程 agent，目标是做成 Codex / Claude Code / WorkBuddy / Qoder 这一类：
 在本地仓库里读代码、改文件、跑命令，用户在旁边审批。
 
-已经能用的：主循环、内置工具（文件、搜索、bash、联网搜索、读网页、技能、向用户提问、子 agent）、三档权限（含 AI 自动审批）、
+已经能用的：主循环、内置工具（文件、搜索、bash、联网搜索、读网页、生图 / 搜图、技能、向用户提问、子 agent）、多档权限（含 AI 自动审批）、
 bash 沙箱、工作目录外的访问审批、影子 git 检查点（看变更、撤销、整体恢复）、技能（Agent Skills 标准）、项目记忆、
 流式事件、trace、会话续跑、后台自动压缩上下文、多模型配置（思考档位 / 上下文长度随模型走）、
 附件（图片 / 文件）、插话和排队、token 用量和缓存命中统计、定时自动化，以及命令行和 web 两套界面。
+grep / glob 优先用 ripgrep（遵守 .gitignore），没装 rg 时回退纯 Python 实现。
+
+## 设计哲学
+
+PocketAgent 有两个目标：在本地替用户完成编程任务，以及作为一个**可阅读、可拆解、可学习**的 agent 实现。
+前者决定它需要什么能力，后者决定代码、文档和默认值应该怎么设计。下面这些原则用于指导取舍，不是功能清单。
+
+### 1. 可学习性优先
+
+这个项目的代码和运行过程本身就是说明书。
+
+- 主循环只用五个阶段表达（`guard → think → run_tools → guard`，另有 `compact` / `finish`），
+  连线集中在 `pocketagent/agent.py` 的 `build_agent_flow()`，阅读连线即可看到一轮对话从哪里开始、在哪里结束。
+- 状态集中在 `AgentContext`，不在节点之间传递隐式参数；消息统一使用 OpenAI chat 格式，
+  界面需要的字段以下划线开头，发给模型前去掉。
+- 工具、provider、审批器、技能都是显式接口：增加能力是新增一个类并注册，不是修改框架内部。
+- 代码遵守 `AGENTS.md` 的约定：拆小函数、变量用全名、注释解释「为什么」；
+  不引入隐藏控制流、元编程，或必须先学一套 DSL 才能阅读的抽象。
+- 运行时同样保持可解释：工具调用有摘要，文件改动有 diff，关键取舍在回复里说明，过程可以通过 trace 复盘，
+  方便人观察和学习 agent 的工作方式。
+- 文档、测试和注释是功能的一部分。一个机制如果没有测试、没有在 README 里说明清楚，视为没有完成。
+
+衡量标准是：一个新接触这个项目的人，能否沿着「入口 → 主循环 → 工具 → 权限 / 沙箱」这条线，
+在一次系统阅读中建立完整的心智模型。
+
+### 2. 小内核，显式机制
+
+PocketFlow 只保留上游约 100 行核心代码，不额外包装；图只描述循环阶段，不为每个工具建立节点；
+工具由 `RunToolsNode` 按注册表动态分发（`pocketagent/nodes.py`）。新增工具或以后接入 MCP，都不需要修改主图。
+
+框架的职责是让流程可见，而不是替开发者隐藏流程。
+
+### 3. 内核与界面解耦
+
+agent 不感知 CLI、web、TUI 或 IDE。所有过程以事件发出（`pocketagent/events.py`），界面只是事件的订阅者；
+审批通过 `Approver` 接口注入。命令行和 web 是两套「订阅者 + 审批实现」，
+增加新的界面或编辑器插件时不需要修改 agent 本身。
+
+### 4. 权限是架构的一部分
+
+权限不是系统提示词里的请求，而是工具通过 `access()` 上报路径、沙箱和密钥，由 `PermissionGate`
+在调用前判定（`pocketagent/permissions.py`）。默认值保守：ask 模式、沙箱默认断网、
+密钥目录在任何模式下都要确认、跳出沙箱必须人工确认。AI 审批只作为第二意见，不放行就转给用户。
+
+模型不被信任为自己授权。
+
+### 5. 上下文是稀缺资源
+
+采用渐进披露：技能清单只放名字和描述，使用时才加载正文；子 agent 有独立上下文，只回传结论；
+历史超过阈值后在后台压缩；过长的工具输出截断，完整内容落盘并在结果里给出路径。
+
+目标是让模型在正确的时机读取正确的信息，而不是把所有内容一次性塞进上下文窗口。
+
+### 6. 本地优先，过程可审计，结果可回滚
+
+运行产物全部在 `~/.pocketagent/`：会话、trace、用量、附件、影子 git 检查点、工具输出，没有云端依赖和遥测。
+每轮动手前拍文件检查点，变更可以看 diff、撤销、整体恢复；会话在节点边界追加日志，
+进程异常退出后可以恢复到当前进度。
+
+信任来自可审计和可回滚，而不是来自对模型的假设。
+
+### 7. 标准协议，能力可替换、可降级
+
+消息使用 OpenAI chat 格式，模型接口只要求 OpenAI 兼容；技能遵循 Agent Skills 标准，
+项目说明读取 `AGENTS.md` / `CLAUDE.md`，记忆使用 Markdown + frontmatter。
+缺少某个组件时降级而不是崩溃：没有 ripgrep 时回退 Python，没有可用沙箱时明确提示后直接执行，
+web 和联网工具都是可选的。
+
+### 8. 工程克制
+
+基础设施保持简单：JSON / JSONL 存储、静态前端无需构建、标准库 unittest、
+核心依赖只有 `openai` 和 `httpx`。复杂度留给真正困难的问题——权限、上下文管理、状态恢复——
+而不是构建系统、数据库或插件框架。
+
+### 对扩展的约束
+
+新增能力时按以下顺序判断：
+
+1. 能否通过现有接口完成（Tool / LLMProvider / Approver / Skill）？
+2. 能否只增加工具或事件，而不修改主循环？
+3. 新机制能否在 README 和测试里讲清楚？
+4. 默认值是否保守，能力是否显式开启？
+
+如果必须修改主循环或消息格式，先说明为什么现有抽象不够；不要为了一个功能引入第二套状态或隐藏的控制流。
+
+### 设计边界
+
+PocketAgent 不追求功能数量最多、默认权限最宽、把 agent 做成云端黑盒、绑定单一模型或网关、
+用提示词代替权限控制，或为了扩展性预先引入复杂框架。它优先保证代码可读、过程可见、权限可控、结果可回滚。
 
 ## 快速开始
 
@@ -97,20 +186,29 @@ pocketagent --web --host 0.0.0.0        # 让别的机器访问（比如开发�
 | 改工作目录以外的路径 | 问你 | 问你 | 放行 |
 | bash 要在沙箱外执行 | 问你 | 问你（不交给 AI） | 放行 |
 | 碰到密钥目录（`~/.ssh`、`~/.aws`、`~/.pocketagent` 等） | 问你 | 问你 | 也问你 |
+| 在免问目录里读写文件 | 不问 | 不问 | 不问 |
 
 「本任务总是允许」记的是具体的东西：工具名、工作目录外的那个目录、那条沙箱外的命令；碰到密钥目录时不给这个选项。
 附件目录和技能目录不算工作目录外，读它们不用问。
+
+免问目录（⚙ 设置 → 通用，或者配置文件里的 `trusted_dirs`）用来放工作目录以外、你固定会用的目录，
+比如存数据的 `~/data`、多个仓库共用的 `~/git/skills`：读写文件不用审批（仍然受只读模式限制），bash 沙箱里也能写。
+bash 命令本身没法静态判断会碰哪里，所以命令还是按审批模式问；让它少问用「AI 自动审批」。
+和密钥目录有父子关系的条目不会生效（把家目录加进来等于把 `~/.ssh` 也免了，所以直接忽略）。
 
 ### 沙箱
 
 bash 默认关在沙箱里（macOS 用系统自带的 `sandbox-exec`，Linux 用 bubblewrap，Linux 这条还没在真机上测过）：
 
 - 能读大部分文件，读不到 `~/.ssh`、`~/.aws`、`~/.gnupg`、`~/.netrc`、`~/.config/gh` 和 PocketAgent 自己的目录（有 API Key）
-- 只能写工作目录、临时目录和 `~/.cache`、`~/Library/Caches`；工作目录里的 `.git/hooks`、`.git/config` 也不能写
+- 只能写工作目录、临时目录、`~/.cache`、`~/Library/Caches` 和设置里的免问目录；工作目录里的 `.git/hooks`、`.git/config` 也不能写
 - 默认不能联网（⚙ 设置 → 通用里可以打开）
 
 被拦下时工具结果会提示模型；它确实需要时（装依赖、`git push`、写别处）会带 `outside_sandbox=true` 重新执行，
 这一次要你确认，界面上的工具卡片标着「沙箱外」。机器上没有可用的沙箱时命令直接执行，设置里会说明。
+
+bash 的输出边跑边显示：网页里工具卡片会自动展开并实时追加，命令行逐行打印；模型最后拿到的仍然是完整结果，
+不是流式增量。
 
 ### 检查点
 
@@ -123,6 +221,13 @@ bash 默认关在沙箱里（macOS 用系统自带的 `sandbox-exec`，Linux 用
   所以每个嵌套仓库单独一个影子仓库，各自的 `.gitignore` 照常生效；变更列表里的路径还是相对工作区的
 - 每一轮的快照和第一次调用模型同时进行，工具动工作区之前一定拍完；新任务的 index 从同一工作区上一个任务复制，
   只重新读改过的文件
+
+### 会话持久化
+
+一轮正常结束会把整份会话原子地写进 `~/.pocketagent/sessions/<id>.json`。一轮进行中每到一个节点边界，
+把新增消息追加到旁边的 `<id>.messages.jsonl`：进程被杀、断电或直接关窗口后，`--continue` / 重新打开旧任务
+会从 JSON + 日志恢复到当前进度，压缩把历史换掉时日志里写一条 reset。续跑前如果有 assistant 的 tool_calls
+没拿到结果（崩在工具执行中间），会补一条「用户中断」的 tool 消息，避免下一次请求 400。
 
 ### 技能
 
@@ -159,6 +264,35 @@ bash 默认关在沙箱里（macOS 用系统自带的 `sandbox-exec`，Linux 用
   或智谱 Web Search（0.01 元/次起），密钥不单独配就用对应厂商模型的密钥
 - `web_fetch`：打开网页转成正文，只认 http / https
 
+### 图片
+
+- `generate_image`：文生图，走 OpenAI 兼容的 `/images/generations`。默认智谱 CogView
+  （`cogview-3-flash` 免费，密钥不单独配就用智谱模型的）；也可以在设置里换成其他 OpenAI 兼容接口
+  （接口地址空着就用第一个 OpenAI 兼容模型的网关地址）。图片存到工作区 `images/` 下，回复里用相对路径
+  `![说明](路径)` 引用就会直接显示，一轮结束的「本轮产出的图片」也会自动带上
+- `search_images`：搜现成的图片，抓必应图片结果页，免费、不用密钥；只给标题、原图链接、缩略图和来源，不下载
+- `download_image`：把搜到的图下载到工作区再引用。单独一个工具，因为下载是写文件（要按写权限审批），
+  而默认沙箱里不联网，用 bash 去抓每次都得走「沙箱外」审批
+- 工具结果是文本，模型看不到生成出来的画面；生成的图是写文件，按审批模式决定要不要确认
+
+### 本机屏幕（仅 macOS）
+
+- `screenshot`：截主屏幕，截图直接进工具结果，模型看得到；走系统 `screencapture`，需要
+  「屏幕录制」权限。同时记下「截图宽 / 屏幕逻辑宽」的缩放比，供 `computer` 换算坐标
+- `computer`：键盘鼠标操作（单击 / 双击 / 输入文字 / 按键，坐标用截图像素坐标自动换算），
+  走 AppleScript（System Events），零第三方依赖，需要「辅助功能」权限。没截图过就先 `screenshot`
+  ——工具会拦住没有换算比的点击。右键和拖拽不支持；`screenshot` 是只读工具，
+  `computer` 按执行类审批
+
+### 搜索
+
+`grep` / `glob` 优先调用 [ripgrep](https://github.com/BurntSushi/ripgrep)：
+
+- 遵守 `.gitignore`，默认跳过 `.git`；大仓库上比纯 Python 遍历快很多
+- rg 的 Rust 正则不支持 lookaround（`(?=...)`）这类写法，遇到时自动回退到 Python 正则，结果不变
+- 机器上没有 rg 就用原来的 Python 实现。配置里的 `ripgrep_path` 或环境变量 `POCKETAGENT_RIPGREP`
+  可以指定可执行文件位置（Homebrew 装在 `/opt/homebrew/bin/rg`，Qoder 插件缓存里也可能有一个）
+
 ### 上下文
 
 - 记账：每次模型调用后以接口报的 `prompt_tokens` 为锚点，之后新加的消息按字符估算（中文每字 0.7、其他 0.27 token，
@@ -167,6 +301,13 @@ bash 默认关在沙箱里（macOS 用系统自带的 `sandbox-exec`，Linux 用
   快满了（95%）才停下来等。接口报上下文超长时不管开没开自动压缩，都会压缩后重试
 - 重试只针对 429 / 5xx / 连接错误，指数退避加抖动，有 `Retry-After` 就按它等；400 / 401 不重试
 - 回复超出输出上限（`finish_reason=length`）时，截断的工具调用不执行，让模型拆小了重来；纯文字就让它接着写
+
+### 工具输出
+
+单个工具结果超过 30k 字符时，头尾照常给模型（中间标出省略了多少），完整内容写到
+`~/.pocketagent/tool_outputs/<任务>/<call id>.log`，结果里告诉模型路径和怎么分段读。这个目录不在工作区，
+检查点、变更列表、撤销都看不到；模型用 `read_file` / `grep` 读它不用审批，bash 沙箱也放行。
+超过 7 天的自动清理，删任务时整个目录一起删。
 
 ### 向你提问
 
@@ -221,6 +362,10 @@ agent 可以用 `subagent` 工具派子 agent 去独立干一件事。子 agent 
 token 第一次启动时生成并存进配置文件，重启服务后浏览器不用重新登录；`--token` 可以指定。默认只监听 127.0.0.1，
 `--no-token` 只允许和本机监听一起用。页面里的地址都是相对路径，挂在网关子路径下也能用。
 
+页面还会把 token 记在浏览器本地（按端口和子路径分开），之后 REST、WebSocket、附件和预览图都自己带上——
+cookie 在同一个主机上不分端口，桌面端或另一个 `--web` 实例用 `?token=` 打开页面时会把 cookie 冲掉，光靠 cookie
+已经开着的页面就会一直 401。
+
 ## 配置
 
 配置存在 `~/.pocketagent/config.json`（文件权限 600），在 web 的 ⚙ 设置里改最方便，也可以手动编辑：
@@ -243,6 +388,11 @@ token 第一次启动时生成并存进配置文件，重启服务后浏览器�
   "web_search_provider": "bing",
   "web_search_engine": "search_std",
   "web_fetch_enabled": true,
+  "image_gen_enabled": true,
+  "image_gen_provider": "zhipu",
+  "image_gen_model": null,
+  "image_gen_base_url": null,
+  "image_search_enabled": true,
   "sandbox_enabled": true,
   "sandbox_network": false,
   "skills_enabled": true,
@@ -250,6 +400,8 @@ token 第一次启动时生成并存进配置文件，重启服务后浏览器�
   "disabled_skills": [],
   "memory_enabled": true,
   "workspaces": ["/Users/me/projects/foo"],
+  "trusted_dirs": ["/Users/me/data"],
+  "ripgrep_path": null,
   "user_name": "me",
   "web_token": "..."
 }
@@ -263,7 +415,7 @@ token 第一次启动时生成并存进配置文件，重启服务后浏览器�
 - 优先级：命令行参数 > 配置文件 > 环境变量 > 默认值。环境变量（`POCKETAGENT_MODEL` / `POCKETAGENT_BASE_URL` /
   `POCKETAGENT_API_KEY` 等，完整列表见 `pocketagent/config.py`）只在一个模型都没配时才用
 - `-m` 可以写配置里模型的名称、id 或模型名；都对不上就用默认模型的接口、只换模型名
-- 任务记录、trace、附件、影子仓库、用量、自动化都在 `~/.pocketagent/`（`POCKETAGENT_HOME` 可以改到别处）
+- 任务记录、trace、附件、影子仓库、用量、自动化、工具输出都在 `~/.pocketagent/`（`POCKETAGENT_HOME` 可以改到别处）
 
 ## 主循环
 
@@ -300,7 +452,8 @@ pocketagent/
   context.py           AgentContext：节点间共享的状态（PocketFlow 的 shared store），含 token 锚点
   config.py            配置文件（多个模型、默认值、工作区、沙箱、技能）和运行时 Settings
   llm/                 模型接口：openai_compat（流式、工具调用拼接、重试）、scripted（测试用假模型）
-  tools/               工具基类 + 注册表；files / search / shell / web / skill / ask / subagent
+  tools/               工具基类 + 注册表；files / search / shell / web / image / skill / ask / subagent
+  ripgrep.py           ripgrep 的调用和 --json 解析；rg 用不了时 search.py 回退 Python 实现
   permissions.py       权限模式、审批接口；按工具类别和这次调用碰到的地方（工作目录外、沙箱外、密钥）决定
   sandbox.py           bash 沙箱：macOS Seatbelt 规则、Linux bubblewrap 参数
   checkpoints.py       影子 git 检查点：拍快照、列变更、diff、撤销、整体恢复；嵌套仓库各一个影子仓库
@@ -316,9 +469,10 @@ pocketagent/
   billing.py           查各家接口的账户余额
   automations.py       自动化的定义、计划计算、存储
   events.py, trace.py  事件总线；trace 是写 JSONL 的订阅者
-  session.py           任务（会话）持久化
+  session.py           任务（会话）持久化：全量 JSON + 一轮进行中的消息日志（按节点边界追加）
   scratch.py           临时任务的工作目录（~/.pocketagent/scratch，不指定工作区时用）
   compaction.py        压缩：摘要请求、用摘要重建历史
+  tool_outputs.py      工具输出落盘：超过上限的完整输出写到 ~/.pocketagent/tool_outputs
   prompts.py           系统提示词，会拼进 ~/.pocketagent/ 和工作目录下的 AGENTS.md / CLAUDE.md、沙箱说明、技能清单、项目记忆
   cli.py               命令行界面：渲染事件 + 终端审批 + REPL
   web/
@@ -363,7 +517,6 @@ tests/                 unittest；vendor_pocketflow/ 是上游测试
 5. **沙箱联网白名单**：现在只有开 / 关，可以像 Claude Code 那样走代理按域名放行；Linux bubblewrap 要在真机上验证
 6. **trace 回放和评测**：拿 JSONL trace 重放、对比不同模型或提示词
 7. **界面**：TUI、IDE 插件；web 里搜索任务
-8. grep 换成 ripgrep
 
 ## 测试
 

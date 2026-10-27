@@ -158,6 +158,37 @@ def build_user_message(text: str, attachments: list[Attachment], store: Attachme
     return {"role": "user", "content": content, DISPLAY_KEY: display}
 
 
+def tool_message_content(
+    text: str, images: list[Path], tool_name: str, store: AttachmentStore
+) -> str | list[dict[str, Any]]:
+    """工具结果要带图（如截图）时的消息 content：文本在前，图片引用在后。
+
+    引用发给模型前由 materialize_messages 展开成 data URL；存盘 / 读盘失败就当没这张图，
+    只留文本。图片进了会话附件目录，所以缩图（model copy）也一并生效。
+    """
+    parts: list[dict[str, Any]] = []
+    for path in images:
+        try:
+            attachment = store.save(path.name, path.read_bytes())
+        except (OSError, ValueError):
+            continue
+        parts.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": store.url(attachment)},
+                "_name": attachment.name,
+                "_path": attachment.path,
+                "_note": (
+                    f"（上面是 {tool_name} 工具返回的图片 {attachment.name}，你能直接看到，"
+                    f"不需要再用工具读这个文件；本机路径 {attachment.path}）"
+                ),
+            }
+        )
+    if not parts:
+        return text
+    return [{"type": "text", "text": text}] + parts
+
+
 def message_display(message: dict[str, Any]) -> dict[str, Any]:
     """界面上怎么显示这条 user 消息：原话 + 附件清单。老消息没有 _display 就从 content 里取文字。"""
     if DISPLAY_KEY in message:
@@ -244,7 +275,8 @@ def _materialize_part(
     data_url = _image_data_url(attachments_root, url)
     if data_url is None:
         return [{"type": "text", "text": f"[用户附带的图片 {name} 已经不在了]"}]
-    note = f"（上面是用户附带的图片 {name}，你能直接看到，不需要再用工具读这个文件；本机路径 {path}）"
+    default_note = f"（上面是用户附带的图片 {name}，你能直接看到，不需要再用工具读这个文件；本机路径 {path}）"
+    note = part.get("_note") or default_note
     return [{"type": "image_url", "image_url": {"url": data_url}}, {"type": "text", "text": note}]
 
 

@@ -3,7 +3,7 @@
 import json
 from typing import Any
 
-from pocketagent.attachments import message_display
+from pocketagent.attachments import message_display, message_text
 from pocketagent.compaction import PRESERVED_SKILLS_HEADER, SUMMARY_PREFIX
 from pocketagent.tools.base import ToolRegistry
 
@@ -46,7 +46,8 @@ def _user_item(message: dict[str, Any]) -> dict[str, Any]:
 
 
 def _fill_tool_result(item: dict[str, Any], message: dict[str, Any]) -> None:
-    item["result"] = message.get("content") or ""
+    # content 一般是字符串；带图的结果（如截图）是分段列表，界面只显示其中的文字
+    item["result"] = message_text(message) or ""
     item["is_error"] = bool(message.get("_is_error"))
     item["denied"] = bool(message.get("_denied"))
     item["review"] = message.get("_review")
@@ -62,7 +63,11 @@ def history_items(messages: list[dict[str, Any]], tools: ToolRegistry) -> list[d
         elif role == "assistant":
             content = message.get("content") or ""
             if content:
-                items.append({"kind": "assistant", "text": content})
+                item: dict[str, Any] = {"kind": "assistant", "text": content}
+                if message.get("_finish"):
+                    # 这条回复是被上游掐断的，界面要在末尾标出来
+                    item["finish"] = message["_finish"]
+                items.append(item)
             for tool_call in message.get("tool_calls") or []:
                 item = _tool_call_item(tool_call, tools)
                 items.append(item)

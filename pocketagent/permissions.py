@@ -9,10 +9,12 @@
 web 界面只给前三种，后两种命令行 --mode 可用。
 
 模式之外，有三种情况要多问一句（PermissionGate.check）：
-- 碰到工作目录以外的路径：完全访问放行；AI 自动审批下读交给 AI 判断、改要问用户；其余问用户
+- 碰到工作目录以外的路径：完全访问放行；AI 自动审批下读交给 AI 判断、改要问用户；其余问用户。选「总是允许」时可以只放行这个目录，也可以连同它的父目录一起放行（之后兄弟目录也不再问）
 - bash 要在沙箱外执行：除了完全访问都问用户（不交给 AI）
 - 碰到密钥、凭据目录：什么模式都问用户，也不给「总是允许」
 改的全是项目记忆目录里的文件时直接放行（只读模式除外）。
+用户配的免问目录不算工作目录以外（和密钥目录重叠的部分不算），那里的读写也不问；
+bash 没法静态判断会碰哪里，所以命令仍按模式审批。
 """
 
 from dataclasses import dataclass, field
@@ -55,6 +57,7 @@ def stricter(first: Decision, second: Decision) -> Decision:
 class ApprovalAnswer(str, Enum):
     ALLOW_ONCE = "allow_once"
     ALLOW_ALWAYS = "allow_always"
+    ALLOW_ALWAYS_PARENTS = "allow_always_parents"
     DENY = "deny"
 
 
@@ -67,6 +70,8 @@ class ApprovalRequest:
     notes: list[str] = field(default_factory=list)
     # 「总是允许」按钮上的字；空的表示这次不给「总是允许」
     always_label: str = ""
+    # 连同父目录一起放行的按钮；空表示这次不给这个选项
+    always_parents_label: str = ""
 
 
 class Approver(Protocol):
@@ -128,7 +133,7 @@ class PermissionCheck:
     # 碰到密钥目录时只能一次一批
     offer_always: bool = True
 
-    def always_label(self) -> str:
+    def _label(self, include_parents: bool) -> str:
         if not self.offer_always:
             return ""
         parts = []
@@ -137,8 +142,18 @@ class PermissionCheck:
         if self.remember_command:
             parts.append("在沙箱外执行这条命令")
         if self.remember_dirs:
-            parts.append("访问 " + "、".join(str(directory) for directory in self.remember_dirs))
+            directories = "、".join(str(directory) for directory in self.remember_dirs)
+            parts.append("访问 " + directories + (" 及其父目录" if include_parents else ""))
         return "本任务总是允许 " + "，".join(parts) if parts else ""
+
+    def always_label(self) -> str:
+        return self._label(include_parents=False)
+
+    def always_parents_label(self) -> str:
+        # 只有涉及目录时才有「连父目录一起放行」这个选项
+        if not self.remember_dirs:
+            return ""
+        return self._label(include_parents=True)
 
 
 @dataclass
@@ -157,8 +172,8 @@ class PermissionGate:
         by_mode = decide_by_mode(self.mode, tool.kind)
         if by_mode == Decision.DENY:
             return PermissionCheck(Decision.DENY)
-        if access.memory_only:
-            # 记项目记忆是 agent 自己的笔记，不打扰用户
+        if access.memory_only or access.trusted_only:
+            # 记项目记忆是 agent 自己的笔记、免问目录是用户明确放行的，不打扰用户
             return PermissionCheck(Decision.ALLOW)
         check = PermissionCheck(Decision.ALLOW)
         if by_mode != Decision.ALLOW and tool.name not in self.always_allowed_tools:
@@ -196,9 +211,11 @@ class PermissionGate:
         answer = await self.approver.request_approval(request)
         if answer == ApprovalAnswer.ALLOW_ALWAYS:
             self.remember(check or PermissionCheck(Decision.ASK, remember_tool=request.tool_name))
-        return answer in (ApprovalAnswer.ALLOW_ONCE, ApprovalAnswer.ALLOW_ALWAYS)
+        elif answer == ApprovalAnswer.ALLOW_ALWAYS_PARENTS:
+            self.remember(check or PermissionCheck(Decision.ASK, remember_tool=request.tool_name), include_parents=True)
+        return answer in (ApprovalAnswer.ALLOW_ONCE, ApprovalAnswer.ALLOW_ALWAYS, ApprovalAnswer.ALLOW_ALWAYS_PARENTS)
 
-    def remember(self, check: PermissionCheck) -> None:
+    def remember(self, check: PermissionCheck, include_parents: bool = False) -> None:
         if not check.offer_always:
             return
         if check.remember_tool:
@@ -206,3 +223,6 @@ class PermissionGate:
         if check.remember_command:
             self.always_allowed_commands.add(check.remember_command)
         self.always_allowed_dirs.update(check.remember_dirs)
+        if include_parents:
+            for directory in check.remember_dirs:
+                self.always_allowed_dirs.update(directory.parents)

@@ -2,17 +2,29 @@
 
 默认关在沙箱里（见 sandbox.py）：只能写工作目录、临时目录和缓存目录，读不到密钥，不能联网。
 模型确实需要跳出沙箱时带上 outside_sandbox=true，这种调用一定会请用户确认（「完全访问」模式除外）。
+
+命令输出边跑边读：通过 current_tool_output 回调实时发给界面，模型最后拿到的仍然是完整结果。
 """
 
 import asyncio
+import codecs
 import os
 import signal
 from typing import Any
 
 from pocketagent.sandbox import denial_hint, wrap_command
-from pocketagent.tools.base import Tool, ToolAccess, ToolContext, ToolKind, ToolResult
+from pocketagent.tools.base import (
+    Tool,
+    ToolAccess,
+    ToolContext,
+    ToolKind,
+    ToolOutputListener,
+    ToolResult,
+    current_tool_output,
+)
 
 MAX_TIMEOUT_SECONDS = 600
+READ_CHUNK_BYTES = 4096
 
 
 BASE_DESCRIPTION = (
@@ -65,15 +77,22 @@ class BashTool(Tool):
             # 单独的进程组，超时或被中断时能把子进程一起杀掉
             start_new_session=True,
         )
+        output_parts: list[str] = []
+        output_sink = current_tool_output.get()
+        pump_task = asyncio.create_task(_pump_output(process, output_parts, output_sink))
         try:
-            output_bytes, _ = await asyncio.wait_for(process.communicate(), timeout=timeout_seconds)
+            await asyncio.wait_for(process.wait(), timeout=timeout_seconds)
         except asyncio.TimeoutError:
             await _kill_process_group(process)
+            await _finish_pump(pump_task)
             return ToolResult(f"命令超过 {timeout_seconds} 秒未结束，已终止", is_error=True)
         except asyncio.CancelledError:
             await _kill_process_group(process)
+            pump_task.cancel()
+            await _finish_pump(pump_task)
             raise
-        output = output_bytes.decode("utf-8", errors="replace")
+        await _finish_pump(pump_task)
+        output = "".join(output_parts)
         exit_code = process.returncode
         text = f"{output}\n[exit code {exit_code}]" if output else f"[exit code {exit_code}]"
         if exit_code != 0:
@@ -83,9 +102,42 @@ class BashTool(Tool):
         return ToolResult(text, is_error=exit_code != 0)
 
 
+async def _pump_output(
+    process: asyncio.subprocess.Process,
+    output_parts: list[str],
+    output_sink: ToolOutputListener | None,
+) -> None:
+    """逐块读合并后的输出；边读边交给界面，同时攒一份完整的给模型。"""
+    if process.stdout is None:
+        return
+    decoder = codecs.getincrementaldecoder("utf-8")("replace")
+    while True:
+        chunk = await process.stdout.read(READ_CHUNK_BYTES)
+        if not chunk:
+            break
+        text = decoder.decode(chunk)
+        if text:
+            output_parts.append(text)
+            if output_sink is not None:
+                await output_sink(text)
+    tail = decoder.decode(b"", final=True)
+    if tail:
+        output_parts.append(tail)
+        if output_sink is not None:
+            await output_sink(tail)
+
+
+async def _finish_pump(pump_task: asyncio.Task) -> None:
+    """等输出读干净；进程被杀时管道会 EOF，这里只吞掉取消。"""
+    try:
+        await pump_task
+    except asyncio.CancelledError:
+        pass
+
+
 async def _kill_process_group(process: asyncio.subprocess.Process) -> None:
     try:
         os.killpg(process.pid, signal.SIGKILL)
     except ProcessLookupError:
-        return
+        pass
     await process.wait()

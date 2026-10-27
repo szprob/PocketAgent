@@ -11,7 +11,8 @@
 """
 
 import asyncio
-from typing import Any
+from pathlib import Path
+from typing import Any, Awaitable, Callable
 
 from pocketflow import AsyncFlow
 
@@ -34,11 +35,12 @@ from pocketagent.nodes import (
 from pocketagent.permissions import Approver, PermissionGate
 from pocketagent.prompts import build_system_prompt
 from pocketagent.sandbox import SandboxPolicy, available_sandbox, default_secret_dirs
-from pocketagent.session import Session, SessionStore
+from pocketagent.session import Session, SessionJournal, SessionStore
 from pocketagent.skills import Skill, discover_skills, find_skill_command, skill_content, skill_directories
 from pocketagent.subagents import attach_subagent_runner
 from pocketagent.tools import default_tool_registry
-from pocketagent.tools.base import ToolContext, ToolRegistry
+from pocketagent.tools.base import ToolContext, ToolRegistry, resolve_trusted_dirs
+from pocketagent.tool_outputs import session_directory
 from pocketagent.trace import JsonlTracer
 from pocketagent.usage import UsageLog, UsageMetadata, UsageRecordingProvider
 
@@ -95,11 +97,23 @@ def sandbox_active(settings: Settings) -> bool:
     return settings.sandbox_enabled and available_sandbox() is not None
 
 
-def build_tool_context(settings: Settings, session: Session, skills: list[Skill], approver: Approver) -> ToolContext:
+def build_tool_context(
+    settings: Settings,
+    session: Session,
+    skills: list[Skill],
+    approver: Approver,
+    on_todos_changed: Callable[[list[dict[str, Any]]], Awaitable[None]] | None = None,
+) -> ToolContext:
     """附件目录、技能目录不用确认就能读，项目记忆目录读写都不用确认；
-    PocketAgent 自己的目录（有密钥）和 ~/.ssh 这类算密钥目录。"""
-    extra_read_dirs = [settings.attachments_dir / session.id] + [skill.directory for skill in skills]
+    用户配的免问目录读写都不用确认；PocketAgent 自己的目录（有密钥）和 ~/.ssh 这类算密钥目录。"""
+    tool_outputs_dir = session_directory(settings.tool_outputs_root, session.id)
+    tool_outputs_dir.mkdir(parents=True, exist_ok=True)
+    extra_read_dirs = [settings.attachments_dir / session.id, tool_outputs_dir] + [
+        skill.directory for skill in skills
+    ]
     secret_dirs = default_secret_dirs() + [settings.home_dir]
+    # 免问目录和密钥目录重叠时以密钥为准，也不把它算进沙箱的可写范围
+    trusted_dirs = resolve_trusted_dirs([Path(directory) for directory in settings.trusted_dirs], secret_dirs)
     memory_dir = None
     # 临时任务没有项目，记项目记忆没意义（目录会跟着临时工作区一起被清掉）
     if settings.memory_enabled and not settings.ephemeral:
@@ -112,17 +126,23 @@ def build_tool_context(settings: Settings, session: Session, skills: list[Skill]
             allow_network=settings.sandbox_network,
             secret_dirs=secret_dirs,
             readable_exceptions=extra_read_dirs,
+            writable_roots=trusted_dirs,
         )
     return ToolContext(
         workspace=settings.workspace,
         ask_user=getattr(approver, "ask_questions", None),
         shell_timeout_seconds=settings.shell_timeout_seconds,
         extra_read_dirs=extra_read_dirs,
+        trusted_dirs=trusted_dirs,
         secret_dirs=secret_dirs,
         sandbox=sandbox,
         memory_dir=memory_dir,
+        tool_outputs_dir=tool_outputs_dir,
         # 会话的消息列表压缩时会整个换掉，所以每次现取
         history=lambda: session.messages,
+        # 同一个 list 引用：todo_write 原地改，存会话时自然带上
+        todo_list=session.todos,
+        on_todos_changed=on_todos_changed,
     )
 
 
@@ -132,6 +152,9 @@ def build_tool_registry(settings: Settings, skills: list[Skill]) -> ToolRegistry
         web_fetch=settings.web_fetch,
         sandboxed=sandbox_active(settings),
         skills=skills,
+        ripgrep_path=settings.ripgrep_path,
+        image_gen=settings.image_gen,
+        image_search=settings.image_search,
     )
 
 
@@ -182,9 +205,13 @@ class Agent:
     async def run_turn(self, user_input: str | dict[str, Any]) -> str:
         """user_input 是一句话，或者 attachments.build_user_message 拼好的带附件的 user 消息。"""
         context = self.context
+        # 上一次进程可能崩在工具执行中间：先把没拿到结果的 tool_call 补上，不然请求会 400
+        close_dangling_tool_calls(context.messages)
         context.turn = TurnState()
+        context.session.turns += 1
         message = self._expand_skill_command(_as_user_message(user_input))
         context.messages.append(message)
+        await context.record_history()
         display = message_display(message)
         await context.events.emit(
             EventType.TURN_START,
@@ -209,12 +236,18 @@ class Agent:
             await context.events.emit(EventType.ERROR, message=f"{type(error).__name__}: {error}")
         finally:
             self.turn_running = False
-            self.session_store.save(self.session)
+            self._save_session()
             self._apply_compaction_when_done()
             await context.events.emit(
                 EventType.TURN_END, stop_reason=context.turn.stop_reason, final_text=context.turn.final_text
             )
         return context.turn.final_text
+
+    def _save_session(self) -> None:
+        """全量存一次，并清掉进行中的日志：日志里的内容已经进 JSON 了。"""
+        self.session_store.save(self.session)
+        if self.context.journal is not None:
+            self.context.journal.clear(self.context.history_version)
 
     async def _checkpoint_turn_start(self, user_text: str) -> None:
         """这一轮动手之前给工作区拍一张；第一张就是「任务开始时的样子」，变更都和它比。"""
@@ -230,6 +263,8 @@ class Agent:
             checkpoint = None
         if checkpoint is not None:
             await self.context.events.emit(EventType.CHECKPOINT, commit=checkpoint.commit, label=checkpoint.label)
+            # 检查点信息在 session.checkpoints 里，顺手落一次盘；这一轮的日志继续追加
+            self.session_store.save(self.session)
         elif was_enabled:
             await self.context.events.emit(EventType.ERROR, message=self.checkpoints.disabled_reason)
 
@@ -246,7 +281,7 @@ class Agent:
         """手动压缩并等它做完（命令行 /compact 用）。"""
         await start_background_compaction(self.context, reason="manual")
         await wait_for_compaction(self.context)
-        self.session_store.save(self.session)
+        self._save_session()
 
     async def start_compaction(self) -> bool:
         """手动压缩但不等（web 的「压缩」按钮）：后台做摘要，做完自动换上，对话照常进行。"""
@@ -270,7 +305,7 @@ class Agent:
         if self.turn_running:
             return
         if await apply_finished_compaction(self.context):
-            self.session_store.save(self.session)
+            self._save_session()
 
     def replace_provider(self, provider: LLMProvider) -> None:
         """换模型时用：新的 provider 同样包上用量记录。"""
@@ -296,10 +331,17 @@ class Agent:
         self.skills = enabled_skills(settings)
         self.context.tools = build_tool_registry(settings, self.skills)
         self.context.tool_context = build_tool_context(
-            settings, self.session, self.skills, self.context.permissions.approver
+            settings,
+            self.session,
+            self.skills,
+            self.context.permissions.approver,
+            on_todos_changed=self._emit_todos_updated,
         )
         attach_subagent_runner(self.context)
         self.refresh_system_prompt()
+
+    async def _emit_todos_updated(self, todos: list[dict[str, Any]]) -> None:
+        await self.context.events.emit(EventType.TODOS_UPDATED, todos=todos)
 
 
 def _as_user_message(user_input: str | dict[str, Any]) -> dict[str, Any]:
@@ -342,6 +384,7 @@ def create_agent(
         session = session_store.new_session(settings.workspace, ephemeral=settings.ephemeral)
     session.model_profile = settings.model_profile_id
     session.approval_mode = settings.approval_mode.value
+    journal = SessionJournal(session_store, session)
     if provider is None:
         provider = create_provider(settings)
     usage_log = UsageLog(settings.usage_log_path) if record_usage else None
@@ -355,11 +398,14 @@ def create_agent(
         settings=settings,
         provider=_with_usage_recording(provider, usage_log, settings, session),
         tools=tools or build_tool_registry(settings, skills),
-        tool_context=build_tool_context(settings, session, skills, approver),
+        tool_context=build_tool_context(
+            settings, session, skills, approver, on_todos_changed=lambda todos: events.emit(EventType.TODOS_UPDATED, todos=todos)
+        ),
         permissions=PermissionGate(mode=settings.approval_mode, approver=approver),
         events=events,
         session=session,
         attachments_root=settings.attachments_dir,
+        journal=journal,
     )
     attach_subagent_runner(context)
     return Agent(context, session_store, usage_log, skills=skills)

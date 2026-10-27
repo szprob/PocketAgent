@@ -14,7 +14,7 @@ from pocketagent.config import Settings
 from pocketagent.events import EventBus
 from pocketagent.llm.base import LLMProvider, ToolCall, Usage
 from pocketagent.permissions import PermissionGate
-from pocketagent.session import Session
+from pocketagent.session import Session, SessionJournal
 from pocketagent.tokens import estimate_tokens, estimate_tools_tokens
 from pocketagent.tools.base import ToolContext, ToolRegistry
 
@@ -68,6 +68,8 @@ class AgentContext:
     history_version: int = 0
     # 这一轮开始时拍的检查点：和第一次调用模型同时进行，执行第一个工具之前必须拍完
     pending_checkpoint: "asyncio.Task[None] | None" = None
+    # 一轮进行中的消息日志；子 agent 不落盘，所以是 None
+    journal: SessionJournal | None = None
 
     async def wait_for_turn_checkpoint(self) -> None:
         """工具要动工作区了，等这一轮的检查点拍完（被中断也让它拍完，git 拍到一半被杀会留下锁文件）。"""
@@ -76,6 +78,11 @@ class AgentContext:
             return
         await asyncio.shield(task)
         self.pending_checkpoint = None
+
+    async def record_history(self) -> None:
+        """节点边界把新增消息追加到会话日志；子 agent、没接日志的场景什么都不做。"""
+        if self.journal is not None:
+            await self.journal.record(self.messages, self.history_version)
 
     @property
     def messages(self) -> list[dict[str, Any]]:

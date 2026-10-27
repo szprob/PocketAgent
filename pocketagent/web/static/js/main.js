@@ -105,7 +105,7 @@ function prepareNewTask(workspacePath) {
   newTaskComposer.setCommands(info.commands || []);
   const hint = document.getElementById("new-task-hint");
   hint.replaceChildren();
-  hint.classList.remove("error");
+  hint.classList.remove("error", "command-output");
   if (info.models.length === 0) {
     const settingsLink = el("button", "link-button", "去设置里添加");
     settingsLink.type = "button";
@@ -159,6 +159,7 @@ function showNewTaskCommandOutput(outcome) {
   const hint = document.getElementById("new-task-hint");
   hint.textContent = outcome.text || "";
   hint.classList.toggle("error", outcome.kind === "error");
+  hint.classList.toggle("command-output", Boolean(outcome.text));
   if (outcome.action === "open_session" && outcome.argument) {
     navigate(`#/task/${encodeURIComponent(outcome.argument)}`);
     return;

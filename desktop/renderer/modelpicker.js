@@ -1,0 +1,207 @@
+// 选模型的弹出面板：选模型，顺手设思考档位和上下文长度（存进配置，用这个模型的任务马上换上）。
+
+import { sendJson } from "./api.js";
+import { button, el, formatTokens } from "./dom.js";
+import { icon } from "./icons.js";
+import { state } from "./state.js";
+
+export const REASONING_LABELS = {
+  none: "关",
+  minimal: "极低",
+  low: "低",
+  medium: "中",
+  high: "高",
+  max: "最高",
+  xhigh: "超高",
+};
+
+const CONTEXT_PRESETS = [32000, 64000, 128000, 256000, 512000, 1000000];
+
+export function reasoningLabel(effort) {
+  return effort ? REASONING_LABELS[effort] || effort : "默认";
+}
+
+export class ModelPicker {
+  constructor({ onSelectModel }) {
+    this.onSelectModel = onSelectModel;
+    this.models = [];
+    this.fallbackModel = "";
+    this.selectedId = null;
+    this.picked = false;
+
+    this.root = el("div", "model-picker");
+    this.trigger = button("pill model-trigger", "", "model", "模型、思考档位、上下文长度");
+    this.triggerLabel = el("span", "pill-label");
+    this.trigger.append(this.triggerLabel, icon("chevronDown", "pill-chevron"));
+    this.popover = el("div", "picker-popover hidden");
+    this.root.append(this.trigger, this.popover);
+
+    this.trigger.addEventListener("click", (event) => {
+      event.stopPropagation();
+      this.toggle();
+    });
+    this.popover.addEventListener("click", (event) => event.stopPropagation());
+    document.addEventListener("click", () => this.close());
+  }
+
+  setModels(models, fallbackModel) {
+    this.models = models;
+    this.fallbackModel = fallbackModel;
+    if (!models.some((model) => model.id === this.selectedId)) {
+      this.selectedId = (models.find((model) => model.visible !== false) || models[0])?.id || null;
+      this.picked = false;
+    }
+    this.renderTrigger();
+    if (this.isOpen()) {
+      this.renderPopover();
+    }
+  }
+
+  setModel(modelId) {
+    if (modelId && this.models.some((model) => model.id === modelId)) {
+      this.selectedId = modelId;
+      this.renderTrigger();
+    }
+  }
+
+  setDefaultModel(modelId) {
+    if (this.picked) {
+      return;
+    }
+    this.setModel(modelId);
+  }
+
+  getModel() {
+    return this.selectedId;
+  }
+
+  isOpen() {
+    return !this.popover.classList.contains("hidden");
+  }
+
+  close() {
+    this.popover.classList.add("hidden");
+  }
+
+  toggle() {
+    if (this.isOpen()) {
+      this.close();
+      return;
+    }
+    this.renderPopover();
+    this.popover.classList.remove("hidden");
+  }
+
+  selectedModel() {
+    return this.models.find((model) => model.id === this.selectedId) || null;
+  }
+
+  renderTrigger() {
+    const model = this.selectedModel();
+    if (!model) {
+      this.triggerLabel.textContent = this.fallbackModel ? `${this.fallbackModel}（环境变量）` : "还没有模型";
+      this.trigger.disabled = true;
+      return;
+    }
+    this.trigger.disabled = false;
+    this.triggerLabel.textContent = `${model.name} · ${reasoningLabel(model.reasoning_effort)}`;
+    this.trigger.title = `${model.model}\n思考：${reasoningLabel(model.reasoning_effort)}\n上下文：${formatTokens(model.context_window_tokens)}`;
+  }
+
+  renderPopover() {
+    this.popover.replaceChildren(this.buildModelSection());
+    const model = this.selectedModel();
+    if (model) {
+      this.popover.append(this.buildReasoningSection(model), this.buildContextSection(model), this.buildFooter());
+    }
+  }
+
+  buildModelSection() {
+    const section = el("div", "picker-section picker-models");
+    section.append(el("div", "picker-title", "模型"));
+    const listed = this.models.filter((model) => model.visible !== false || model.id === this.selectedId);
+    for (const model of listed) {
+      const item = el("button", "picker-model");
+      item.type = "button";
+      item.classList.toggle("active", model.id === this.selectedId);
+      const text = el("span", "picker-model-text");
+      text.append(el("span", "picker-model-name", model.name), el("span", "picker-model-meta", model.model));
+      item.append(icon(model.id === this.selectedId ? "check" : "model", "picker-check"), text);
+      if (model.supports_images) {
+        item.append(el("span", "vision-badge", "图"));
+      }
+      item.addEventListener("click", () => {
+        this.selectedId = model.id;
+        this.picked = true;
+        this.renderTrigger();
+        this.renderPopover();
+        this.onSelectModel?.(model.id);
+      });
+      section.append(item);
+    }
+    return section;
+  }
+
+  buildSegments(options, currentValue, onChoose) {
+    const group = el("div", "segmented");
+    for (const option of options) {
+      const choice = button("segment", option.label);
+      choice.classList.toggle("active", option.value === currentValue);
+      choice.addEventListener("click", () => onChoose(option.value));
+      group.append(choice);
+    }
+    return group;
+  }
+
+  buildReasoningSection(model) {
+    const section = el("div", "picker-section");
+    section.append(el("div", "picker-title", "思考档位"));
+    const options = [{ value: null, label: "默认" }].concat(
+      (model.reasoning_choices || []).map((choice) => ({ value: choice, label: reasoningLabel(choice) })),
+    );
+    section.append(this.buildSegments(options, model.reasoning_effort || null, (value) => this.save(model, { reasoning_effort: value })));
+    const note = (model.reasoning_choices || []).includes("none") ? "「关」不思考，最快；越高想得越久" : "这个模型不能关闭思考";
+    section.append(el("div", "picker-note", `默认 = 不传，用接口自己的默认。${note}`));
+    return section;
+  }
+
+  buildContextSection(model) {
+    const section = el("div", "picker-section");
+    section.append(el("div", "picker-title", "上下文长度"));
+    const values = CONTEXT_PRESETS.includes(model.context_window_tokens)
+      ? CONTEXT_PRESETS
+      : [...CONTEXT_PRESETS, model.context_window_tokens].sort((first, second) => first - second);
+    const options = values.map((value) => ({ value, label: formatTokens(value) }));
+    section.append(this.buildSegments(options, model.context_window_tokens, (value) => this.save(model, { context_window_tokens: value })));
+    return section;
+  }
+
+  buildFooter() {
+    const info = state.info;
+    let text = "自动压缩状态未知";
+    if (info) {
+      text = info.auto_compact
+        ? `上下文超过 ${info.compact_threshold_percent}% 时在后台自动压缩，不打断对话`
+        : "自动压缩已关闭（设置 → 通用）";
+    }
+    return el("div", "picker-footer", text);
+  }
+
+  async save(model, options) {
+    let updated;
+    try {
+      updated = await sendJson(`/api/models/${encodeURIComponent(model.id)}`, "PATCH", options);
+    } catch (error) {
+      window.alert(`保存失败：${error.message}`);
+      return;
+    }
+    const index = this.models.findIndex((each) => each.id === model.id);
+    if (index >= 0 && updated?.id) {
+      this.models[index] = updated;
+    }
+    this.renderTrigger();
+    if (this.isOpen()) {
+      this.renderPopover();
+    }
+  }
+}

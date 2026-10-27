@@ -8,6 +8,7 @@ from pocketagent.tools.base import truncate_middle
 from pocketagent.tools.files import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
 from pocketagent.tools.search import GlobTool, GrepTool
 from pocketagent.tools.shell import BashTool
+from pocketagent.tools.todo import TodoWriteTool, parse_todos, render_todos
 from pocketagent.tools.web import bing_recency_filter, deepseek_query_with_recency, parse_bing_results
 from tests.helpers import TemporaryDirectories
 
@@ -94,6 +95,55 @@ class ToolsTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(glob_result.content, "src/app.py")
         self.assertEqual(grep_result.content, "src/app.py:1:def handler():")
+
+    async def test_todo_write_replaces_the_shared_list(self) -> None:
+        tool = TodoWriteTool()
+        changed = []
+
+        async def on_changed(todos: list[dict]) -> None:
+            changed.append(todos)
+
+        self.context.todo_list = [{"content": "旧的", "status": "pending"}]
+        self.context.on_todos_changed = on_changed
+
+        result = await tool.run(
+            {
+                "todos": [
+                    {"content": "调研口径", "status": "completed"},
+                    {"content": "写 runbook", "status": "in_progress", "active_form": "写 runbook 中"},
+                    {"content": "跑第一批", "status": "pending"},
+                ]
+            },
+            self.context,
+        )
+
+        self.assertFalse(result.is_error)
+        self.assertEqual(self.context.todo_list[0]["status"], "completed")
+        self.assertEqual(self.context.todo_list[1]["active_form"], "写 runbook 中")
+        self.assertEqual(len(changed), 1)
+        self.assertIn("[x] 调研口径", result.content)
+        self.assertIn("[~] 写 runbook", result.content)
+
+    async def test_todo_write_rejects_bad_formats(self) -> None:
+        tool = TodoWriteTool()
+        bad_statuses = await tool.run({"todos": [{"content": "a", "status": "done"}]}, self.context)
+        empty = await tool.run({"todos": []}, self.context)
+        missing_content = await tool.run({"todos": [{"status": "pending"}]}, self.context)
+
+        self.assertTrue(bad_statuses.is_error)
+        self.assertIn("status", bad_statuses.content)
+        self.assertTrue(empty.is_error)
+        self.assertTrue(missing_content.is_error)
+        self.assertEqual(self.context.todo_list, [])
+
+    def test_todo_parse_defaults_and_limits(self) -> None:
+        todos = parse_todos({"todos": [{"content": "只有一句话"}]})
+        self.assertEqual(todos, [{"content": "只有一句话", "status": "pending"}])
+        self.assertEqual(render_todos(todos), "[ ] 只有一句话")
+        with self.assertRaises(ValueError):
+            parse_todos({"todos": [{"content": "x" * 201, "status": "pending"}]})
+        with self.assertRaises(ValueError):
+            parse_todos({"todos": [{"content": str(i), "status": "pending"} for i in range(51)]})
 
     async def test_bash_reports_exit_code(self) -> None:
         success = await BashTool().run({"command": "echo hi"}, self.context)

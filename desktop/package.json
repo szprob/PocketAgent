@@ -1,0 +1,15 @@
+{
+  "name": "pocketagent-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "PocketAgent 桌面客户端：独立前端，只通过 REST + WebSocket 调共享后端",
+  "main": "main.js",
+  "scripts": {
+    "postinstall": "node scripts/ensure-electron.js",
+    "start": "electron .",
+    "start:debug": "electron . --remote-debugging-port=9222"
+  },
+  "devDependencies": {
+    "electron": "^45.0.0"
+  }
+}

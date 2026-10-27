@@ -146,6 +146,12 @@ class WebServerTest(WebTestBase):
         self.assertIn("PocketAgent", await with_token.text())
         self.assertEqual(static_file_by_cookie.status, 200)
 
+    async def test_static_files_ask_browser_to_revalidate(self) -> None:
+        response = await self.client.get("/static/js/api.js", params=AUTH)
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(response.headers.get("Cache-Control"), "no-cache")
+
     async def test_info_lists_three_web_modes_and_models(self) -> None:
         info = await self._get_json("/api/info")
         missing = await self.client.get("/api/sessions/nope", params=AUTH)
@@ -190,6 +196,37 @@ class WebServerTest(WebTestBase):
         self.assertEqual(tasks["sessions"][0]["title"], "写个文件")
         # 第一次调用没报 usage，按估算记；第二次 107
         self.assertGreater(history["usage"]["total"], 107)
+
+    async def test_todo_write_updates_plan_panel_and_persists(self) -> None:
+        arguments = (
+            '{"todos": ['
+            '{"content": "调研口径", "status": "completed"},'
+            '{"content": "写 runbook", "status": "in_progress", "active_form": "正在写 runbook"}'
+            "]}"
+        )
+        self.responses.extend(
+            [
+                LLMResponse(tool_calls=[tool_call("call_1", "todo_write", arguments)]),
+                LLMResponse(text="计划列好了", usage=Usage(prompt_tokens=10, completion_tokens=5)),
+            ]
+        )
+        session_id = await self._create_session()
+
+        async with self._connect(session_id) as socket_client:
+            await socket_client.receive_json()
+            await socket_client.send_json({"type": "user_message", "text": "列个计划"})
+            todos_updated = await self._receive_until(socket_client, is_event("todos_updated"))
+            await self._receive_until(socket_client, is_event("turn_end"))
+            await self._receive_until(socket_client, is_idle_state)
+            # 重连拿快照：todos 要跟着会话恢复
+            async with self._connect(session_id) as again:
+                snapshot = await again.receive_json()
+                self.assertEqual(snapshot["todos"], todos_updated["event"]["todos"])
+
+        self.assertEqual(todos_updated["event"]["todos"][1]["status"], "in_progress")
+        self.assertEqual(todos_updated["event"]["todos"][1]["active_form"], "正在写 runbook")
+        history = await self._get_json(f"/api/sessions/{session_id}")
+        self.assertEqual(history["items"][1]["name"], "todo_write")
 
     async def test_interrupt_returns_pending_inputs_to_the_composer(self) -> None:
         self.responses.append(LLMResponse(tool_calls=[tool_call("call_1", "bash", '{"command": "touch never"}')]))
@@ -371,6 +408,29 @@ class WebServerTest(WebTestBase):
         self.assertEqual((self.directories.workspace / "old.txt").read_text(encoding="utf-8"), "old\n")
         self.assertEqual(restored["changes"], [])
         self.assertEqual([checkpoint["kind"] for checkpoint in restored["checkpoints"]][-1], "safety")
+
+    async def test_turn_changes_only_cover_the_current_turn(self) -> None:
+        self.responses.extend(
+            [
+                LLMResponse(tool_calls=[tool_call("c1", "write_file", '{"path": "first.svg", "content": "<svg/>"}')]),
+                LLMResponse(text="第一轮好了"),
+                LLMResponse(tool_calls=[tool_call("c2", "write_file", '{"path": "second.svg", "content": "<svg/>"}')]),
+                LLMResponse(text="第二轮好了"),
+            ]
+        )
+        session_id = await self._create_session(mode="full_auto")
+        async with self._connect(session_id) as socket_client:
+            await socket_client.receive_json()
+            for text in ("第一轮", "第二轮"):
+                await socket_client.send_json({"type": "user_message", "text": text})
+                await self._receive_until(socket_client, is_event("turn_end"))
+                await self._receive_until(socket_client, is_idle_state)
+
+        turn = await self._get_json(f"/api/sessions/{session_id}/changes/turn")
+        everything = await self._get_json(f"/api/sessions/{session_id}/changes")
+
+        self.assertEqual([change["path"] for change in turn["changes"]], ["second.svg"])
+        self.assertEqual([change["path"] for change in everything["changes"]], ["first.svg", "second.svg"])
 
     # ---- 工作区、任务、用量 ----
 
@@ -573,6 +633,16 @@ class WebScratchTaskTest(WebTestBase):
         tasks = await self._get_json("/api/sessions")
         self.assertTrue(tasks["sessions"][0]["ephemeral"])
 
+    async def test_session_file_raw_works_in_the_scratch_directory(self) -> None:
+        session_id = await self._create_session(ephemeral=True)
+        workspace = Path((await self._get_json(f"/api/sessions/{session_id}"))["workspace"])
+        (workspace / "chart.png").write_bytes(TINY_PNG)
+
+        image = await self.client.get(f"/api/sessions/{session_id}/file/raw", params={**AUTH, "path": "chart.png"})
+
+        self.assertEqual(image.status, 200)
+        self.assertEqual(await image.read(), TINY_PNG)
+
     async def test_reopening_a_task_whose_scratch_directory_was_cleaned(self) -> None:
         self.responses.append(LLMResponse(text="收到"))
         session_id = await self._create_session(ephemeral=True, mode="full_auto")
@@ -621,6 +691,7 @@ class WebRound3Test(WebTestBase):
         overview = await self._get_json(f"/api/sessions/{session_id}/overview")
 
         self.assertEqual(overview["latest_reply"], "最新的回复")
+        self.assertEqual(overview["turns"], 1)
         self.assertEqual(overview["usage"]["cached"], 60)
         self.assertEqual(overview["usage"]["cache_hit_rate"], 0.6)
 
@@ -650,6 +721,19 @@ class WebRound3Test(WebTestBase):
         self.assertEqual(await raw.read(), TINY_PNG)
         self.assertEqual(escape.status, 400)
         self.assertEqual([item["name"] for item in browse["directories"]], ["src"])
+
+    async def test_session_file_raw_serves_images_without_workspace_registration(self) -> None:
+        session_id = await self._create_session()
+        (self.directories.workspace / "chart.png").write_bytes(TINY_PNG)
+
+        image = await self.client.get(f"/api/sessions/{session_id}/file/raw", params={**AUTH, "path": "chart.png"})
+        escape = await self.client.get(f"/api/sessions/{session_id}/file/raw", params={**AUTH, "path": "../outside.png"})
+        missing = await self.client.get(f"/api/sessions/{session_id}/file/raw", params={**AUTH, "path": "nope.png"})
+
+        self.assertEqual(image.status, 200)
+        self.assertEqual(await image.read(), TINY_PNG)
+        self.assertEqual(escape.status, 400)
+        self.assertEqual(missing.status, 400)
 
     async def test_web_search_key_is_kept_when_left_blank(self) -> None:
         await self._send_json("PUT", "/api/config", {"web_search_api_key": "search-secret-key-1"})
@@ -720,10 +804,16 @@ class WebAccessTest(WebTestBase):
         listed = await (await self.client.get("/api/skills", params={**AUTH, "workspace": workspace})).json()
         without_workspace = await self._get_json("/api/skills")
         tools_before = web_session.agent.context.tools.names()
+        trusted = self.directories.workspace.parent / "pocket-data"
         await self._send_json(
             "PUT",
             "/api/config",
-            {"disabled_skills": ["deploy"], "skill_dirs": ["~/my-skills"], "sandbox_network": True},
+            {
+                "disabled_skills": ["deploy"],
+                "skill_dirs": ["~/my-skills"],
+                "sandbox_network": True,
+                "trusted_dirs": [str(trusted)],
+            },
         )
         after = await (await self.client.get("/api/skills", params={**AUTH, "workspace": workspace})).json()
         config = await self._get_json("/api/config")
@@ -735,9 +825,12 @@ class WebAccessTest(WebTestBase):
         self.assertNotIn("activate_skill", web_session.agent.context.tools.names())
         self.assertEqual(config["disabled_skills"], ["deploy"])
         self.assertEqual(config["skill_dirs"], [str(Path("~/my-skills").expanduser().resolve())])
+        self.assertEqual(config["trusted_dirs"], [str(trusted.resolve())])
+        self.assertEqual(web_session.agent.context.tool_context.trusted_dirs, [trusted.resolve()])
         self.assertTrue(config["sandbox_network"])
         if web_session.agent.context.tool_context.sandbox is not None:
             self.assertTrue(web_session.agent.context.tool_context.sandbox.allow_network)
+            self.assertIn(trusted.resolve(), web_session.agent.context.tool_context.sandbox.writable_roots)
 
 
 class WebSkillsMemoryTest(WebTestBase):
