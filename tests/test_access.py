@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 
 from pocketagent.llm import LLMResponse
-from pocketagent.permissions import (
+from pocketagent.safety.permissions import (
     ApprovalAnswer,
     ApprovalMode,
     ApprovalRequest,
@@ -18,7 +18,7 @@ from pocketagent.permissions import (
     PermissionGate,
     parent_scope,
 )
-from pocketagent.sandbox import (
+from pocketagent.safety.sandbox import (
     SandboxPolicy,
     available_sandbox,
     bubblewrap_arguments,

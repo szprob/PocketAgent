@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest import mock
 
 from pocketagent.config import AppConfig, ConfigError, ModelProfile, Settings, config_path
-from pocketagent.permissions import ApprovalMode
+from pocketagent.safety.permissions import ApprovalMode
 from tests.helpers import TemporaryDirectories
 
 DS_PROFILE = {

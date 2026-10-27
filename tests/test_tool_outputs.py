@@ -9,9 +9,9 @@ import time
 import unittest
 from pathlib import Path
 
-from pocketagent.events import EventType
+from pocketagent.core.events import EventType
+from pocketagent.core.tool_outputs import save_tool_output
 from pocketagent.llm import LLMResponse
-from pocketagent.tool_outputs import save_tool_output
 from pocketagent.tools.files import ReadFileTool
 from tests.helpers import TemporaryDirectories, build_harness, tool_call
 
@@ -44,7 +44,7 @@ class ToolOutputStoreTest(unittest.TestCase):
         self.assertNotIn("/", path.name)
 
     def test_old_outputs_are_pruned(self) -> None:
-        import pocketagent.tool_outputs as tool_outputs
+        import pocketagent.core.tool_outputs as tool_outputs
 
         self.addCleanup(setattr, tool_outputs, "_last_prune_at", tool_outputs._last_prune_at)
         tool_outputs._last_prune_at = 0.0

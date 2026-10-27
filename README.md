@@ -19,7 +19,7 @@ PocketAgent 有两个目标：在本地替用户完成编程任务，以及作�
 这个项目的代码和运行过程本身就是说明书。
 
 - 主循环只用五个阶段表达（`guard → think → run_tools → guard`，另有 `compact` / `finish`），
-  连线集中在 `pocketagent/agent.py` 的 `build_agent_flow()`，阅读连线即可看到一轮对话从哪里开始、在哪里结束。
+  连线集中在 `pocketagent/core/agent.py` 的 `build_agent_flow()`，阅读连线即可看到一轮对话从哪里开始、在哪里结束。
 - 状态集中在 `AgentContext`，不在节点之间传递隐式参数；消息统一使用 OpenAI chat 格式，
   界面需要的字段以下划线开头，发给模型前去掉。
 - 工具、provider、审批器、技能都是显式接口：增加能力是新增一个类并注册，不是修改框架内部。
@@ -35,20 +35,20 @@ PocketAgent 有两个目标：在本地替用户完成编程任务，以及作�
 ### 2. 小内核，显式机制
 
 PocketFlow 只保留上游约 100 行核心代码，不额外包装；图只描述循环阶段，不为每个工具建立节点；
-工具由 `RunToolsNode` 按注册表动态分发（`pocketagent/nodes.py`）。新增工具或以后接入 MCP，都不需要修改主图。
+工具由 `RunToolsNode` 按注册表动态分发（`pocketagent/core/nodes.py`）。新增工具或以后接入 MCP，都不需要修改主图。
 
 框架的职责是让流程可见，而不是替开发者隐藏流程。
 
 ### 3. 内核与界面解耦
 
-agent 不感知 CLI、web、TUI 或 IDE。所有过程以事件发出（`pocketagent/events.py`），界面只是事件的订阅者；
+agent 不感知 CLI、web、TUI 或 IDE。所有过程以事件发出（`pocketagent/core/events.py`），界面只是事件的订阅者；
 审批通过 `Approver` 接口注入。命令行和 web 是两套「订阅者 + 审批实现」，
 增加新的界面或编辑器插件时不需要修改 agent 本身。
 
 ### 4. 权限是架构的一部分
 
 权限不是系统提示词里的请求，而是工具通过 `access()` 上报路径、沙箱和密钥，由 `PermissionGate`
-在调用前判定（`pocketagent/permissions.py`）。默认值保守：ask 模式、沙箱默认断网、
+在调用前判定（`pocketagent/safety/permissions.py`）。默认值保守：ask 模式、沙箱默认断网、
 密钥目录在任何模式下都要确认、跳出沙箱必须人工确认。AI 审批只作为第二意见，不放行就转给用户。
 
 模型不被信任为自己授权。
@@ -137,7 +137,7 @@ py -3.12 -m pocketagent --web -C D:\SZ\git\foo
 
 ## 斜杠命令
 
-输入以 / 开头的行按命令处理（web 和命令行共用同一套，见 `pocketagent/commands.py`）；命中 `/技能名` 的照常交给 agent，
+输入以 / 开头的行按命令处理（web 和命令行共用同一套，见 `pocketagent/interaction/commands.py`）；命中 `/技能名` 的照常交给 agent，
 普通文字和 `/usr/bin` 这种路径不会被误认成命令。
 
 | 命令 | 说明 |
@@ -472,43 +472,55 @@ guard ──think──▶ think ──tool_calls──▶ run_tools ──next�
 ## 分层
 
 ```
-pocketflow/            上游核心代码原样复制（100 行），不改，见 VENDORED.md
+pocketflow/              上游核心代码原样复制（100 行），不改，见 VENDORED.md
 pocketagent/
-  agent.py             连线成图 + Agent（run_turn / interject / compact）+ create_agent 组装（工具、沙箱、技能、检查点）
-  nodes.py             上面那 5 个节点 + 后台压缩；AgentNode 基类负责发节点进出事件
-  context.py           AgentContext：节点间共享的状态（PocketFlow 的 shared store），含 token 锚点
-  config.py            配置文件（多个模型、默认值、工作区、沙箱、技能）和运行时 Settings
-  llm/                 模型接口：openai_compat（流式、工具调用拼接、重试）、scripted（测试用假模型）
-  tools/               工具基类 + 注册表；files / search / shell / web / image / skill / ask / subagent
-  ripgrep.py           ripgrep 的调用和 --json 解析；rg 用不了时 search.py 回退 Python 实现
-  permissions.py       权限模式、审批接口；按工具类别和这次调用碰到的地方（工作目录外、沙箱外、密钥）决定
-  sandbox.py           bash 沙箱：macOS Seatbelt 规则、Linux bubblewrap 参数
-  checkpoints.py       影子 git 检查点：拍快照、列变更、diff、撤销、整体恢复；嵌套仓库各一个影子仓库
-  skills.py            技能：找技能、校验、<available_skills> 清单、<skill_content> 正文、/技能名、压缩时保留
-  memory.py            项目记忆：目录位置、系统提示里的说明和索引、列出 / 删除
-  questions.py         ask_user 的问题和回答：校验、整理成给模型看的结果
-  subagents.py         子 agent：同一张图、自己的上下文和工具集，进度转成主 agent 的事件
-  frontmatter.py       解析 Markdown 开头 --- 包着的元数据（技能、记忆共用）
-  reviewer.py          AI 自动审批：让模型判断一次工具调用能不能放行
-  attachments.py       附件存储；消息里只放引用，发给模型前展开（图片缩小 + 编码缓存）
-  tokens.py            上下文 token 估算
-  usage.py             token 用量记录和统计
-  billing.py           查各家接口的账户余额
-  automations.py       自动化的定义、计划计算、存储
-  events.py, trace.py  事件总线；trace 是写 JSONL 的订阅者
-  session.py           任务（会话）持久化：全量 JSON + 一轮进行中的消息日志（按节点边界追加）
-  scratch.py           临时任务的工作目录（~/.pocketagent/scratch，不指定工作区时用）
-  compaction.py        压缩：摘要请求、用摘要重建历史
-  tool_outputs.py      工具输出落盘：超过上限的完整输出写到 ~/.pocketagent/tool_outputs
-  prompts.py           系统提示词，会拼进 ~/.pocketagent/ 和工作目录下的 AGENTS.md / CLAUDE.md、沙箱说明、技能清单、项目记忆
-  cli.py               命令行界面：渲染事件 + 终端审批 + REPL
-  web/
-    server.py          aiohttp 服务：页面 + REST + 每个任务一条 WebSocket（协议写在文件开头）
-    runtime.py         每个任务一个 Agent，插话 / 排队、审批广播；任务、工作区、配置、技能、记忆、自动化调度
-    files.py           文件树、文件预览、选目录（只能看登记过的工作区）
-    history.py         把存下来的消息转成前端渲染用的条目
-    static/            前端：index.html / style.css / js/（ES 模块，不用构建、不依赖 CDN）
-tests/                 unittest；vendor_pocketflow/ 是上游测试
+  cli.py                 命令行界面：渲染事件 + 终端审批 + REPL
+  config.py              配置文件（多个模型、默认值、工作区、沙箱、技能）和运行时 Settings
+  core/                  agent 主循环
+    agent.py             连线成图 + Agent（run_turn / interject / compact）+ create_agent 组装（工具、沙箱、技能、检查点）
+    nodes.py             上面那 5 个节点 + 后台压缩；AgentNode 基类负责发节点进出事件
+    context.py           AgentContext：节点间共享的状态（PocketFlow 的 shared store），含 token 锚点
+    prompts.py           系统提示词，会拼进 ~/.pocketagent/ 和工作目录下的 AGENTS.md / CLAUDE.md、沙箱说明、技能清单、项目记忆
+    compaction.py        压缩：摘要请求、用摘要重建历史
+    tokens.py            上下文 token 估算
+    events.py, trace.py  事件总线；trace 是写 JSONL 的订阅者
+    session.py           任务（会话）持久化：全量 JSON + 一轮进行中的消息日志（按节点边界追加）
+    subagents.py         子 agent：同一张图、自己的上下文和工具集，进度转成主 agent 的事件
+    tool_outputs.py      工具输出落盘：超过上限的完整输出写到 ~/.pocketagent/tool_outputs
+    scratch.py           临时任务的工作目录（~/.pocketagent/scratch，不指定工作区时用）
+  llm/                   模型接口：openai_compat（流式、工具调用拼接、重试）、scripted（测试用假模型）
+  tools/                 工具基类 + 注册表；files / search / shell / web / image / computer / skill / ask / todo / subagent
+    ripgrep.py           ripgrep 的调用和 --json 解析；rg 用不了时 search.py 回退 Python 实现
+  safety/                权限和兜底
+    permissions.py       权限模式、审批接口；按工具类别和这次调用碰到的地方（工作目录外、沙箱外、密钥）决定
+    reviewer.py          AI 自动审批：让模型判断一次工具调用能不能放行
+    sandbox.py           bash 沙箱：macOS Seatbelt 规则、Linux bubblewrap 参数
+    checkpoints.py       影子 git 检查点：拍快照、列变更、diff、撤销、整体恢复；嵌套仓库各一个影子仓库
+  knowledge/             技能和记忆
+    skills.py            技能：找技能、校验、<available_skills> 清单、<skill_content> 正文、/技能名、压缩时保留
+    memory.py            项目记忆：目录位置、系统提示里的说明和索引、列出 / 删除
+    frontmatter.py       解析 Markdown 开头 --- 包着的元数据（技能、记忆共用）
+  interaction/           和用户打交道
+    questions.py         ask_user 的问题和回答：校验、整理成给模型看的结果
+    attachments.py       附件存储；消息里只放引用，发给模型前展开（图片缩小 + 编码缓存）
+    commands.py          斜杠命令：命令行和 web 共用一套
+  account/
+    usage.py             token 用量记录和统计
+    billing.py           查各家接口的账户余额
+  server/                HTTP + WebSocket 后端，web、桌面端等所有前端共用（协议写在 __init__.py）
+    app.py               组装和启动：token 鉴权、错误转 JSON、路由、web 前端的静态页面、定时任务调度
+    routes/              按资源分的接口：sessions / workspace / settings / commands / automations / socket
+    session.py           一个任务一个 Agent（WebSession）：插话 / 排队、审批和提问广播给所有连接
+    manager.py           所有任务、工作区、配置、技能、记忆（SessionManager），自动化调度
+    automations.py       自动化的定义、计划计算、存储
+    files.py             文件树、文件预览、选目录（只能看登记过的工作区）
+    history.py           把存下来的消息转成前端渲染用的条目
+  web/                   浏览器前端（ES 模块，不用构建、不依赖 CDN），由 server 一起服务
+    static/              index.html / style.css / js/
+      js/                main.js 入口；core/ 不碰 DOM 的接口和状态，ui/ 通用界面件，
+                         task/ 任务页，sidebar/ 左栏，settings/ 设置，automations/ 自动化
+desktop/                 Electron 客户端：前端独立实现，只调 server 的 REST + WebSocket
+tests/                   unittest；vendor_pocketflow/ 是上游测试
 ```
 
 几条设计约定：
@@ -531,7 +543,7 @@ tests/                 unittest；vendor_pocketflow/ 是上游测试
 - **加技能**：不用写代码，放一个带 `SKILL.md` 的目录进技能目录。
 - **换模型协议**：实现 `LLMProvider.complete(messages, tools, listener) -> LLMResponse`，传给 `create_agent(provider=...)`。
 - **换界面**：订阅 `agent.context.events`，实现 `Approver.request_approval` 和 `Approver.ask_questions`。
-- **改流程**：在 `nodes.py` 加节点、在 `agent.py` 的 `build_agent_flow` 里连线。子流程可以直接用 PocketFlow 的 Flow 嵌套。
+- **改流程**：在 `core/nodes.py` 加节点、在 `core/agent.py` 的 `build_agent_flow` 里连线。子流程可以直接用 PocketFlow 的 Flow 嵌套。
 
 ## 路线图
 

@@ -11,8 +11,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from pocketagent.questions import Question, QuestionAnswer
-from pocketagent.sandbox import SandboxPolicy, default_secret_dirs, is_within
+from pocketagent.interaction.questions import Question, QuestionAnswer
+from pocketagent.safety.sandbox import SandboxPolicy, default_secret_dirs, is_within
 
 
 class ToolKind(str, Enum):

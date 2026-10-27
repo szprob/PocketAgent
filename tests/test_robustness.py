@@ -11,8 +11,14 @@ from unittest import mock
 import httpx
 import openai
 
-from pocketagent import attachments
-from pocketagent.attachments import AttachmentStore, build_user_message, materialize_messages, model_copy_path
+from pocketagent.core.tokens import IMAGE_TOKENS, estimate_message_tokens, estimate_text_tokens
+from pocketagent.interaction import attachments
+from pocketagent.interaction.attachments import (
+    AttachmentStore,
+    build_user_message,
+    materialize_messages,
+    model_copy_path,
+)
 from pocketagent.llm import LLMResponse, Usage
 from pocketagent.llm.base import SilentListener
 from pocketagent.llm.openai_compat import (
@@ -21,10 +27,9 @@ from pocketagent.llm.openai_compat import (
     is_retryable,
     retry_delay_seconds,
 )
-from pocketagent.tokens import IMAGE_TOKENS, estimate_message_tokens, estimate_text_tokens
+from pocketagent.server.history import history_items
 from pocketagent.tools import ToolContext, default_tool_registry
 from pocketagent.tools.files import READ_MAX_LINE_CHARS, READ_MAX_TOTAL_CHARS, ReadFileTool
-from pocketagent.web.history import history_items
 from tests.helpers import TemporaryDirectories, build_harness, tool_call
 
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent

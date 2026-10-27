@@ -11,7 +11,7 @@ import codecs
 from typing import Any
 
 from pocketagent.processes import terminate_process_tree
-from pocketagent.sandbox import denial_hint, wrap_command
+from pocketagent.safety.sandbox import denial_hint, wrap_command
 from pocketagent.tools.base import (
     Tool,
     ToolAccess,

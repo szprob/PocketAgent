@@ -6,8 +6,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from pocketagent.ripgrep import RipgrepTimeout, find_ripgrep, parse_match_line
 from pocketagent.tools import ToolContext
+from pocketagent.tools.ripgrep import RipgrepTimeout, find_ripgrep, parse_match_line
 from pocketagent.tools.search import GlobTool, GrepTool
 from tests.helpers import TemporaryDirectories
 

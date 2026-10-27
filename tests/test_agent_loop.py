@@ -2,13 +2,13 @@ import asyncio
 import unittest
 from typing import Any
 
-from pocketagent.agent import INTERRUPTED_TOOL_RESULT
-from pocketagent.compaction import MERGE_SUMMARY_INSTRUCTION, SUMMARY_PREFIX
-from pocketagent.events import EventType
-from pocketagent.nodes import apply_finished_compaction, start_background_compaction
+from pocketagent.core.agent import INTERRUPTED_TOOL_RESULT
+from pocketagent.core.compaction import MERGE_SUMMARY_INSTRUCTION, SUMMARY_PREFIX
+from pocketagent.core.events import EventType
+from pocketagent.core.nodes import apply_finished_compaction, start_background_compaction
+from pocketagent.core.session import SessionStore
 from pocketagent.llm import ContextOverflowError, LLMResponse, ToolCall
-from pocketagent.permissions import ApprovalMode, DenyAllApprover
-from pocketagent.session import SessionStore
+from pocketagent.safety.permissions import ApprovalMode, DenyAllApprover
 from pocketagent.tools import Tool, ToolContext, ToolKind, ToolResult, default_tool_registry
 from tests.helpers import RoutingProvider, TemporaryDirectories, build_harness, roles, tool_call
 

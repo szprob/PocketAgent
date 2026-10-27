@@ -7,7 +7,7 @@ import json
 import unittest
 
 from pocketagent.cli import ConsoleRenderer, Style
-from pocketagent.events import Event, EventType
+from pocketagent.core.events import Event, EventType
 from pocketagent.llm import LLMResponse
 from pocketagent.tools import ToolContext
 from pocketagent.tools.base import current_tool_output

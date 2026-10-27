@@ -1,5 +1,5 @@
 // 对话视图：把后端的 snapshot / state / event / 审批 / 提问渲染成界面。
-// 事件协议见 pocketagent/web/server.py 顶部的说明；这里不依赖 web/static 的实现。
+// 事件协议见 pocketagent/server/__init__.py 的说明；这里不依赖 web/static 的实现。
 
 import { attachmentUrl, binaryDataUrl, openExternal, request, sessionFilePath } from "./api.js";
 import { button, clear, el, isImagePath, renderDiff } from "./dom.js";

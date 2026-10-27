@@ -7,8 +7,14 @@ from contextlib import redirect_stdout
 from unittest import mock
 
 from pocketagent.cli import ConsoleApprover, Style
+from pocketagent.interaction.questions import (
+    NO_ONE_TO_ASK,
+    QuestionAnswer,
+    QuestionError,
+    format_answers,
+    parse_questions,
+)
 from pocketagent.llm import LLMResponse
-from pocketagent.questions import NO_ONE_TO_ASK, QuestionAnswer, QuestionError, format_answers, parse_questions
 from pocketagent.tools import ToolContext
 from pocketagent.tools.ask import AskUserTool
 from tests.helpers import TemporaryDirectories, build_harness, tool_call

@@ -4,9 +4,9 @@ import json
 import unittest
 from pathlib import Path
 
-from pocketagent.agent import INTERRUPTED_TOOL_RESULT
+from pocketagent.core.agent import INTERRUPTED_TOOL_RESULT
+from pocketagent.core.session import Session, SessionJournal, SessionStore
 from pocketagent.llm import LLMResponse
-from pocketagent.session import Session, SessionJournal, SessionStore
 from tests.helpers import TemporaryDirectories, build_harness, roles
 
 

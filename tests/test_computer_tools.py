@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from pocketagent.attachments import AttachmentStore, tool_message_content
+from pocketagent.interaction.attachments import AttachmentStore, tool_message_content
 from pocketagent.tools import default_tool_registry
 from pocketagent.tools.base import ToolContext, ToolResult
 from pocketagent.tools.computer import (
