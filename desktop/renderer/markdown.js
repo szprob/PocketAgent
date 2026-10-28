@@ -43,6 +43,35 @@ export function renderMarkdown(text, options = {}) {
       continue;
     }
 
+    // 下面三种（引用块、表格、分隔线）的规则和 web 端 ui/markdown.js 一样
+    if (isQuoteLine(line)) {
+      const quote = el("blockquote");
+      let firstLine = true;
+      while (index < lines.length && isQuoteLine(lines[index])) {
+        if (!firstLine) {
+          quote.append(document.createElement("br"));
+        }
+        appendInline(quote, lines[index].replace(/^>\s?/, ""), options);
+        firstLine = false;
+        index += 1;
+      }
+      fragment.append(quote);
+      continue;
+    }
+
+    if (line.includes("|") && index + 1 < lines.length && isTableSeparator(lines[index + 1])) {
+      const { table, nextIndex } = buildTable(lines, index, options);
+      fragment.append(table);
+      index = nextIndex;
+      continue;
+    }
+
+    if (/^\s*(-{3,}|\*{3,})\s*$/.test(line)) {
+      fragment.append(el("hr"));
+      index += 1;
+      continue;
+    }
+
     if (isListLine(line)) {
       const ordered = isOrderedListLine(line);
       const list = el(ordered ? "ol" : "ul");
@@ -83,8 +112,56 @@ function isOrderedListLine(line) {
   return /^\s*\d+\.\s+/.test(line);
 }
 
+function isQuoteLine(line) {
+  return /^>\s?/.test(line);
+}
+
+function isTableSeparator(line) {
+  return /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$/.test(line);
+}
+
+function splitTableRow(line) {
+  return line
+    .trim()
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split("|")
+    .map((cell) => cell.trim());
+}
+
+// 表头一行 + 分隔行 + 若干数据行，遇到空行或不带 | 的行结束；外面包一层，宽表格横向滚动不撑破气泡
+function buildTable(lines, startIndex, options) {
+  const table = el("table");
+  const headRow = el("tr");
+  for (const cell of splitTableRow(lines[startIndex])) {
+    const headCell = el("th");
+    appendInline(headCell, cell, options);
+    headRow.append(headCell);
+  }
+  // 注意 DOM 的 append 不返回节点，不能链式写
+  const head = el("thead");
+  head.append(headRow);
+  table.append(head);
+  const body = el("tbody");
+  let index = startIndex + 2;
+  while (index < lines.length && lines[index].includes("|") && lines[index].trim() !== "") {
+    const row = el("tr");
+    for (const cell of splitTableRow(lines[index])) {
+      const dataCell = el("td");
+      appendInline(dataCell, cell, options);
+      row.append(dataCell);
+    }
+    body.append(row);
+    index += 1;
+  }
+  table.append(body);
+  const wrapper = el("div", "md-table-wrap");
+  wrapper.append(table);
+  return { table: wrapper, nextIndex: index };
+}
+
 function isBlockStart(line) {
-  return /^\s*```/.test(line) || /^#{1,6}\s+/.test(line) || isListLine(line);
+  return /^\s*```/.test(line) || /^#{1,6}\s+/.test(line) || isListLine(line) || isQuoteLine(line);
 }
 
 function appendInline(container, text, options) {

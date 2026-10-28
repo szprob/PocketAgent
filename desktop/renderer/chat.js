@@ -31,6 +31,24 @@ function buildCutOffBadge(stopReason) {
 }
 
 const SUBAGENT_STEPS_SHOWN = 4;
+const TYPEWRITER_FRAMES_TO_CATCH_UP = 8;
+const TYPEWRITER_MIN_CHARS_PER_FRAME = 2;
+// 工具输出里的本地服务地址：带端口的 localhost / 127.0.0.1 / 0.0.0.0 / ::1，或带协议的 localhost（和 web 端同一条）
+const LOCAL_LINK_RE =
+  /(?:https?:\/\/)?((?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|::1)):(\d{2,5})(?:\/[^\s"'`<>)\],;]*)?|(?:https?:\/\/)(localhost)(?:\/[^\s"'`<>)\],;]*)?/gi;
+
+function extractLocalLinks(text) {
+  // 都归一成 http://localhost:端口/路径，去掉句尾的标点
+  const links = [];
+  for (const match of text.matchAll(LOCAL_LINK_RE)) {
+    const host = match[1] || match[3];
+    const port = match[2] || "";
+    const afterHost = match[0].indexOf(host) + host.length + (port ? port.length + 1 : 0);
+    const path = (match[0].slice(afterHost) || "").replace(/[./]+$/, "");
+    links.push(`http://localhost${port ? `:${port}` : ""}${path}`);
+  }
+  return [...new Set(links)];
+}
 const FILE_TOOLS = new Set(["edit_file", "write_file", "bash"]);
 const TODO_STATUS_ICONS = { pending: "○", in_progress: "●", completed: "✓" };
 
@@ -228,10 +246,18 @@ export class ChatView {
       case "tool_review":
         this.setToolReview(event.call_id, { allow: event.allow, reason: event.reason });
         break;
+      case "tool_output_delta":
+        this.hideActivity();
+        this.appendToolOutput(event.call_id, event.text);
+        break;
       case "tool_result":
         this.setToolResult(event.call_id, event.content, event.is_error, event.denied, event.name);
         if (FILE_TOOLS.has(event.name) && !event.denied) {
           this.callbacks.onFilesChanged?.();
+        }
+        if (!event.denied && event.content) {
+          // 输出里有本地服务地址（dev server 之类）就交给右栏的「预览」当候选
+          this.callbacks.onLocalLinks?.(extractLocalLinks(event.content));
         }
         if (this.running && !event.denied) {
           this.showActivity("等待模型响应");
@@ -462,22 +488,51 @@ export class ChatView {
     const body = el("div", "assistant-body");
     element.append(body);
     this.insertBeforeActivity(element);
-    this.currentAssistant = { element, body, text: "" };
+    // text：收到的全部；shown：已经画出来的；pending：还在缓冲里等着按打字机节奏放出来的
+    this.currentAssistant = { element, body, text: "", shown: "", pending: "", frameScheduled: false };
     return this.currentAssistant;
   }
 
   appendAssistantText(text) {
     const block = this.ensureAssistantBlock();
     block.text += text;
-    // 流式期间先放纯文本，结束时再整体按 Markdown 渲染
-    block.body.textContent = block.text;
+    block.pending += text;
+    this.scheduleTypewriter(block);
+  }
+
+  // ---- 流式输出：打字机节奏（和 web 的 task/chat.js 一样） ----
+  // 网关常常一阵一阵地推（几十个片段同时到，然后停 100ms），直接画会一顿一顿的。
+  // 收到的字先进缓冲，每帧按积压量放出一部分：积压少就慢慢出，积压多就加快追上。
+
+  scheduleTypewriter(block) {
+    if (block.frameScheduled) {
+      return;
+    }
+    block.frameScheduled = true;
+    requestAnimationFrame(() => this.typewriterFrame(block));
+  }
+
+  typewriterFrame(block) {
+    block.frameScheduled = false;
+    if (!block.pending || block !== this.currentAssistant) {
+      return;
+    }
+    const take = Math.max(TYPEWRITER_MIN_CHARS_PER_FRAME, Math.ceil(block.pending.length / TYPEWRITER_FRAMES_TO_CATCH_UP));
+    block.shown += block.pending.slice(0, take);
+    block.pending = block.pending.slice(take);
+    // 流式期间先放纯文本，结束时再整体按 Markdown 渲染（每帧重排 Markdown 会反复读图片）
+    block.body.textContent = block.shown;
     this.scrollIfSticking();
+    if (block.pending) {
+      this.scheduleTypewriter(block);
+    }
   }
 
   finishAssistantBlock() {
     if (!this.currentAssistant) {
       return;
     }
+    this.currentAssistant.pending = "";
     this.currentAssistant.body.replaceChildren(renderMarkdown(this.currentAssistant.text, this.markdownOptions()));
     this.lastReply = this.currentAssistant.element;
     this.currentAssistant = null;
@@ -562,7 +617,16 @@ export class ChatView {
     details.append(header, body);
     this.insertBeforeActivity(details);
 
-    const card = { element: details, body, status, steps: null };
+    // liveOutput：bash 边跑边出的输出；autoOpened：是不是为了看实时输出才自动展开的（跑完要收起）
+    const card = { element: details, body, status, steps: null, liveOutput: null, autoOpened: false };
+    details.addEventListener("toggle", () => {
+      if (card.togglingByCode) {
+        card.togglingByCode = false;
+        return;
+      }
+      // 用户自己点过就听用户的：跑完不再自动收起
+      card.autoOpened = false;
+    });
     if (callId) {
       this.toolCards.set(callId, card);
     }
@@ -570,8 +634,45 @@ export class ChatView {
     return card;
   }
 
+  setCardOpen(card, open) {
+    if (card.element.open === open) {
+      return;
+    }
+    card.togglingByCode = true;
+    card.element.open = open;
+  }
+
+  appendToolOutput(callId, text) {
+    const card = this.toolCards.get(callId);
+    if (!card || !text) {
+      return;
+    }
+    if (!card.liveOutput) {
+      card.liveOutput = el("pre");
+      card.body.append(card.liveOutput);
+      // 第一次收到输出：展开卡片，不然流式输出在折叠的卡片里看不见；跑完再收起（见 setToolResult）
+      if (!card.element.open) {
+        this.setCardOpen(card, true);
+        card.autoOpened = true;
+      }
+    }
+    const output = card.liveOutput;
+    const stickToBottom = output.scrollHeight - output.scrollTop - output.clientHeight < 24;
+    output.append(document.createTextNode(text));
+    if (stickToBottom) {
+      output.scrollTop = output.scrollHeight;
+    }
+    this.scrollIfSticking();
+  }
+
   setToolResult(callId, content, isError, denied, name = "") {
     const card = this.toolCards.get(callId) || this.addToolCard(callId, name, "");
+    // 只为看实时输出才自动展开的卡片，成功跑完就收起；出错的下面会保持展开
+    if (card.autoOpened && !isError) {
+      this.setCardOpen(card, false);
+    }
+    card.autoOpened = false;
+    card.liveOutput = null;
     if (denied) {
       card.status.textContent = "被拒绝";
       card.status.className = "tool-status denied";
@@ -579,7 +680,7 @@ export class ChatView {
       card.status.textContent = "出错";
       card.status.className = "tool-status error";
       card.element.classList.add("error");
-      card.element.open = true;
+      this.setCardOpen(card, true);
     } else {
       card.status.textContent = "完成";
       card.status.className = "tool-status";
@@ -868,6 +969,8 @@ export class ChatView {
   }
 
   insertBeforeActivity(node) {
+    // 对话里有了第一条内容，「说说要做什么」这句空白提示就该消失（web 端同样处理）
+    this.inner.querySelector(".empty-chat")?.remove();
     if (this.activity) {
       this.inner.insertBefore(node, this.activity.element);
       return;

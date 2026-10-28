@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob: https:; connect-src http://127.0.0.1:* ws://127.0.0.1:*;"
+      content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob: https:; connect-src http://127.0.0.1:* ws://127.0.0.1:*; frame-src http: https:;"
     />
     <title>PocketAgent</title>
     <link rel="stylesheet" href="style.css" />
@@ -109,6 +109,20 @@
       <div class="column-resizer" id="panel-resizer" aria-hidden="true"></div>
       <aside class="right-panel" id="right-panel">
         <section class="panel-card" id="overview-card"></section>
+        <section class="panel-section">
+          <div class="panel-section-title"><span>预览</span></div>
+          <div class="preview-bar">
+            <input id="preview-url" type="text" placeholder="localhost:3000 或网址，回车打开" spellcheck="false" autocomplete="off" />
+            <button class="icon-button small" id="preview-go" type="button" title="打开"></button>
+            <button class="ghost-button small hidden" id="preview-open-window" type="button">浏览器打开</button>
+          </div>
+          <div class="preview-links hidden" id="preview-links"></div>
+          <div class="preview-frame-wrap hidden" id="preview-frame-wrap">
+            <!-- 不给 allow-top-navigation：预览的页面不能把整个应用窗口导航走 -->
+            <iframe id="preview-frame" title="预览" sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>
+          </div>
+          <div class="panel-empty" id="preview-empty">agent 起了本地服务（如 dev server）后，输出里的地址会出现在这里，点开就能看；也可以直接输入地址。</div>
+        </section>
         <section class="panel-section">
           <div class="panel-section-title">
             <span>变更</span><span class="panel-count" id="changes-count"></span>
@@ -235,6 +249,29 @@
                   <div class="field-hint">必应直接抓搜索结果页，免费、不用密钥；DeepSeek / 智谱按成功调用次数计费。</div>
                   <label class="checkbox-field"><input type="checkbox" id="web-fetch-enabled" />
                     <span>读网页（web_fetch：打开搜索结果里的链接、读文档）</span></label>
+                </fieldset>
+                <fieldset class="radio-group">
+                  <legend>图片</legend>
+                  <label class="checkbox-field"><input type="checkbox" id="image-gen-enabled" />
+                    <span>生成图片（generate_image：文生图，存到工作区并显示）</span></label>
+                  <div class="field-row">
+                    <label class="field"><span>生图服务</span>
+                      <select id="image-gen-provider">
+                        <option value="zhipu">智谱 CogView（cogview-3-flash 免费）</option>
+                        <option value="openai">OpenAI 兼容（gpt-image 等，按张计费）</option>
+                      </select></label>
+                    <label class="field"><span>模型</span>
+                      <input id="image-gen-model" type="text" placeholder="留空用默认：cogview-3-flash" /></label>
+                  </div>
+                  <label class="field"><span>接口地址</span>
+                    <input id="image-gen-base-url" type="text" placeholder="留空用智谱的地址；OpenAI 兼容的填到 /v1" />
+                    <span class="field-hint" id="image-gen-base-url-hint"></span></label>
+                  <label class="field"><span>生图 API Key</span>
+                    <input id="image-gen-key" type="password" placeholder="留空就用智谱模型的密钥" />
+                    <span class="field-hint" id="image-gen-key-hint"></span></label>
+                  <label class="checkbox-field"><input type="checkbox" id="image-search-enabled" />
+                    <span>搜图（search_images：抓必应图片结果页，免费、不用密钥）</span></label>
+                  <div class="field-hint">生成的图存到工作区 images/ 下，回复里直接显示；搜图只给链接和简介，要用哪张让 agent 用 download_image 存下来。</div>
                 </fieldset>
                 <fieldset class="radio-group">
                   <legend>操作电脑</legend>

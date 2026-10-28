@@ -95,6 +95,7 @@ const chat = new ChatView({
       emit("files-changed", state.currentTaskId);
       rightPanel.scheduleChangesRefresh();
     },
+    onLocalLinks: (links) => rightPanel.addPreviewLinks(links),
   },
 });
 
@@ -121,6 +122,15 @@ const rightPanel = new RightPanel({
   outputList: elements.outputList,
   checkpointList: elements.checkpointList,
   refreshButton: elements.refreshChanges,
+  preview: {
+    input: document.getElementById("preview-url"),
+    go: document.getElementById("preview-go"),
+    openWindow: document.getElementById("preview-open-window"),
+    links: document.getElementById("preview-links"),
+    frameWrap: document.getElementById("preview-frame-wrap"),
+    frame: document.getElementById("preview-frame"),
+    empty: document.getElementById("preview-empty"),
+  },
 });
 rightPanel.onFilesChanged = () => emit("files-changed", state.currentTaskId);
 

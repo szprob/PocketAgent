@@ -55,6 +55,14 @@ export function initSettings(handlers) {
   elements.webSearchKeyLabel = document.getElementById("web-search-key-label");
   elements.webSearchKeyHint = document.getElementById("web-search-key-hint");
   elements.webFetchEnabled = document.getElementById("web-fetch-enabled");
+  elements.imageGenEnabled = document.getElementById("image-gen-enabled");
+  elements.imageGenProvider = document.getElementById("image-gen-provider");
+  elements.imageGenModel = document.getElementById("image-gen-model");
+  elements.imageGenBaseUrl = document.getElementById("image-gen-base-url");
+  elements.imageGenBaseUrlHint = document.getElementById("image-gen-base-url-hint");
+  elements.imageGenKey = document.getElementById("image-gen-key");
+  elements.imageGenKeyHint = document.getElementById("image-gen-key-hint");
+  elements.imageSearchEnabled = document.getElementById("image-search-enabled");
   elements.computerUseEnabled = document.getElementById("computer-use-enabled");
   elements.computerUseHint = document.getElementById("computer-use-hint");
   elements.sandboxEnabled = document.getElementById("sandbox-enabled");
@@ -105,6 +113,7 @@ export function initSettings(handlers) {
     paintWebSearchFields();
     elements.webSearchKeyHint.textContent = pendingClearSearchKey ? "保存后清除" : "留空表示不修改已保存的密钥";
   });
+  elements.imageGenProvider.addEventListener("change", paintImageGenFields);
   elements.sandboxEnabled.addEventListener("change", paintSandboxFields);
 
   for (const tab of elements.tabs) {
@@ -256,6 +265,17 @@ function fillGeneral() {
   elements.webSearchKeyHint.textContent = config.web_search_key_hint || "留空表示不修改已保存的密钥";
   elements.webFetchEnabled.checked = Boolean(config.web_fetch_enabled);
 
+  elements.imageGenEnabled.checked = Boolean(config.image_gen_enabled);
+  elements.imageGenProvider.value = config.image_gen_provider || "zhipu";
+  elements.imageGenModel.value = config.image_gen_model || "";
+  elements.imageGenBaseUrl.value = config.image_gen_base_url || "";
+  elements.imageGenKey.value = "";
+  elements.imageGenKeyHint.textContent = config.image_gen_key_hint
+    ? `已单独配置 ${config.image_gen_key_hint}，留空表示不改`
+    : config.image_gen_key_source || "没有可用的密钥：填一个，或者在模型里加一个智谱模型";
+  elements.imageSearchEnabled.checked = Boolean(config.image_search_enabled);
+  paintImageGenFields();
+
   elements.computerUseEnabled.checked = Boolean(config.computer_use_enabled);
   elements.computerUseEnabled.disabled = !config.computer_use_available;
   elements.computerUseHint.textContent = config.computer_use_available
@@ -293,6 +313,15 @@ function paintWebSearchFields() {
   show(elements.webSearchKeyField, provider !== "bing");
   show(elements.webSearchEngineField, provider === "zhipu");
   elements.webSearchKeyLabel.textContent = provider === "deepseek" ? "DeepSeek 搜索 API Key" : "智谱 API Key";
+}
+
+// 智谱用官方地址；OpenAI 兼容的可以走网关，没填就用第一个 OpenAI 兼容模型的地址（和 web 端一样）
+function paintImageGenFields() {
+  const usesOpenAI = elements.imageGenProvider.value === "openai";
+  elements.imageGenModel.placeholder = usesOpenAI ? "留空用默认：gpt-image-1" : "留空用默认：cogview-3-flash";
+  elements.imageGenBaseUrlHint.textContent = usesOpenAI
+    ? "没填就用第一个 OpenAI 兼容模型的接口地址"
+    : "智谱固定用 open.bigmodel.cn/api/paas/v4，不用填";
 }
 
 function paintSandboxFields() {
@@ -683,6 +712,13 @@ async function saveConfig() {
     web_search_provider: elements.webSearchProvider.value,
     web_search_engine: elements.webSearchEngine.value,
     web_fetch_enabled: elements.webFetchEnabled.checked,
+    image_gen_enabled: elements.imageGenEnabled.checked,
+    image_gen_provider: elements.imageGenProvider.value,
+    image_gen_model: elements.imageGenModel.value,
+    image_gen_base_url: elements.imageGenBaseUrl.value,
+    // 密钥留空表示不改（服务端 config_from_form 沿用已保存的）
+    image_gen_api_key: elements.imageGenKey.value.trim(),
+    image_search_enabled: elements.imageSearchEnabled.checked,
     computer_use_enabled: elements.computerUseEnabled.checked,
     sandbox_enabled: elements.sandboxEnabled.checked,
     sandbox_network: elements.sandboxNetwork.checked,

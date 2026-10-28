@@ -972,6 +972,50 @@ body.platform-darwin .sidebar-top {
   margin: 2px 0;
 }
 
+.assistant-body blockquote {
+  margin: 0 0 10px;
+  padding-left: 12px;
+  border-left: 3px solid var(--border-strong);
+  color: var(--text-dim);
+}
+
+.assistant-body hr {
+  margin: 14px 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+
+/* 宽表格在外层横向滚动，不撑破对话区 */
+.md-table-wrap {
+  max-width: 100%;
+  margin: 0 0 10px;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.md-table-wrap table {
+  border-collapse: collapse;
+  min-width: 100%;
+  font-size: 13px;
+}
+
+.md-table-wrap th,
+.md-table-wrap td {
+  padding: 6px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+
+.md-table-wrap tr:last-child td {
+  border-bottom: 0;
+}
+
+.md-table-wrap th {
+  background: var(--panel-strong);
+  font-weight: 600;
+}
+
 .assistant-body a.md-link {
   color: var(--accent-strong);
   text-decoration: none;
@@ -2089,6 +2133,66 @@ code.md-inline-code {
   font-size: 11.5px;
   color: var(--text-faint);
   line-height: 1.5;
+}
+
+/* ---- 右栏「预览」：输入地址或点候选链接，用 iframe 打开本地服务（和 web 端一样） ---- */
+
+.preview-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.preview-bar input {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #17171c;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.preview-bar input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.preview-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.preview-link {
+  max-width: 100%;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preview-link:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.preview-frame-wrap {
+  height: 420px;
+  margin-top: 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #fff;
+  overflow: hidden;
+}
+
+.preview-frame-wrap iframe {
+  width: 100%;
+  height: 100%;
+  border: 0;
 }
 
 .change-item {
