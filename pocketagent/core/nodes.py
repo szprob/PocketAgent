@@ -384,10 +384,13 @@ class RunToolsNode(AgentNode):
     """
 
     async def prep_async(self, context: AgentContext) -> ToolBatch:
-        # 这一轮的检查点和第一次调用模型同时在拍，动工作区之前必须拍完
-        await context.wait_for_turn_checkpoint()
-        context.session.tool_calls += len(context.turn.pending_tool_calls)
-        return ToolBatch(calls=list(context.turn.pending_tool_calls), context=context)
+        batch = ToolBatch(calls=list(context.turn.pending_tool_calls), context=context)
+        context.session.tool_calls += len(batch.calls)
+        # 这一轮的检查点从轮次开头就和模型调用同时在拍。只读的批次不碰工作区，不用等；
+        # 第一个会写的批次（bash 也算写）之前必须拍完，不然撤销的基线里会混进这一轮的改动
+        if not _all_read_only(batch):
+            await context.wait_for_turn_checkpoint()
+        return batch
 
     async def exec_async(self, batch: ToolBatch) -> list[ToolCallOutcome]:
         if _all_read_only(batch):

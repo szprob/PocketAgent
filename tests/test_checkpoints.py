@@ -165,6 +165,41 @@ class SlowCheckpointTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(harness.agent.checkpoints.all_checkpoints()), 1)
         self.assertEqual([change.path for change in await harness.agent.checkpoints.changes()], ["a.txt"])
 
+    async def test_read_only_batches_do_not_wait_but_the_first_write_does(self) -> None:
+        """检查点被卡住时，只读的批次照样执行；读完才放行检查点，之后的写一定排在检查点后面。"""
+        (self.directories.workspace / "notes.txt").write_text("hi\n", encoding="utf-8")
+        responses = [
+            LLMResponse(tool_calls=[tool_call("c1", "read_file", '{"path": "notes.txt"}')]),
+            LLMResponse(tool_calls=[tool_call("c2", "write_file", '{"path": "a.txt", "content": "x"}')]),
+            LLMResponse(text="好了"),
+        ]
+        harness = build_harness(self.directories, responses)
+        order: list[str] = []
+        release_checkpoint = asyncio.Event()
+        original_create = harness.agent.checkpoints.create
+
+        async def blocked_create(label, kind):
+            await release_checkpoint.wait()
+            checkpoint = await original_create(label, kind)
+            order.append("checkpoint")
+            return checkpoint
+
+        def record_results(event):
+            if event.type != EventType.TOOL_RESULT:
+                return
+            order.append(event.data["name"])
+            if event.data["name"] == "read_file":
+                release_checkpoint.set()
+
+        harness.agent.checkpoints.create = blocked_create
+        harness.agent.context.events.subscribe(record_results)
+
+        # 要是只读批次也等检查点，这里会互相等死，靠超时报错
+        await asyncio.wait_for(harness.agent.run_turn("看看再写"), timeout=5)
+
+        self.assertEqual(order, ["read_file", "checkpoint", "write_file"])
+        self.assertEqual([change.path for change in await harness.agent.checkpoints.changes()], ["a.txt"])
+
 
 if __name__ == "__main__":
     unittest.main()
