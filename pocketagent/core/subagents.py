@@ -17,7 +17,7 @@ from pocketagent.core.context import AgentContext, TurnState
 from pocketagent.core.events import Event, EventBus, EventType
 from pocketagent.core.session import Session
 from pocketagent.interaction.questions import Question, QuestionAnswer
-from pocketagent.safety.permissions import ApprovalAnswer, ApprovalRequest, Approver, PermissionGate
+from pocketagent.safety.permissions import ApprovalAnswer, ApprovalRequest, Approver, PermissionGate, ask_approvals
 from pocketagent.tools.base import ToolKind, ToolRegistry, current_tool_call_id
 from pocketagent.tools.subagent import SubagentRequest, SubagentResult
 
@@ -34,8 +34,14 @@ class LabeledApprover:
         self.label = label
 
     async def request_approval(self, request: ApprovalRequest) -> ApprovalAnswer:
-        labeled = replace(request, summary=f"〔子 agent：{self.label}〕{request.summary}")
-        return await self.approver.request_approval(labeled)
+        return await self.approver.request_approval(self._labeled(request))
+
+    async def request_approvals(self, requests: list[ApprovalRequest]) -> list[ApprovalAnswer]:
+        # 主 agent 的通道支持合并就照样合成一张卡
+        return await ask_approvals(self.approver, [self._labeled(request) for request in requests])
+
+    def _labeled(self, request: ApprovalRequest) -> ApprovalRequest:
+        return replace(request, summary=f"〔子 agent：{self.label}〕{request.summary}")
 
     async def ask_questions(self, questions: list[Question]) -> list[QuestionAnswer] | None:
         return None

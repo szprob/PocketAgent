@@ -967,6 +967,11 @@ function showApproval(request) {
   if (chat.approvalCards.has(request.request_id)) {
     return;
   }
+  // 一批里好几项要问时合成一张卡：每项单独选，最后一起提交
+  if (Array.isArray(request.items)) {
+    showBatchApproval(request);
+    return;
+  }
   const card = el("div", "approval-card");
   const title = el("div", "approval-title");
   title.append(icon("shield"), "需要你确认：", el("code", "", request.tool_name));
@@ -1004,6 +1009,71 @@ function showApproval(request) {
   chat.approvalCards.set(request.request_id, card);
   appendToTranscript(card);
   scrollToBottom();
+}
+
+// ---- 合并的审批卡：一批调用里要问的几项放在一起，每项一个下拉框（允许 / 总是允许 / 拒绝） ----
+
+function showBatchApproval(request) {
+  const card = el("div", "approval-card approval-batch");
+  const title = el("div", "approval-title");
+  title.append(icon("shield"), `需要你确认 ${request.items.length} 项操作`);
+  card.appendChild(title);
+  const choosers = request.items.map((item) => {
+    const row = el("div", "approval-item");
+    const head = el("div", "approval-item-head");
+    const chooser = approvalChooser(item);
+    head.append(el("code", "", item.tool_name), el("span", "approval-item-summary", firstLine(item.summary)), chooser);
+    row.appendChild(head);
+    const reviewNote = item.summary.match(/（AI 审批没有放行：(.*)）$/);
+    if (reviewNote) {
+      row.appendChild(el("div", "approval-note", `AI 审批没有放行：${reviewNote[1]}`));
+    }
+    for (const note of item.notes || []) {
+      row.appendChild(el("div", "approval-note approval-warning", note));
+    }
+    // 预览（diff）默认收起，几项摊开太长
+    const preview = el("details", "approval-item-preview");
+    preview.append(el("summary", "", "看预览"), renderDiff(item.preview || item.summary || "", "approval-preview"));
+    row.appendChild(preview);
+    card.appendChild(row);
+    return chooser;
+  });
+
+  const actions = el("div", "approval-actions");
+  const submit = (answers) => {
+    sendToServer({ type: "approval", request_id: request.request_id, answers });
+    actions.querySelectorAll("button").forEach((each) => (each.disabled = true));
+    choosers.forEach((chooser) => (chooser.disabled = true));
+  };
+  const submitChosen = button("primary-button", "按上面的选择执行");
+  submitChosen.addEventListener("click", () => submit(choosers.map((chooser) => chooser.value)));
+  const allowAll = button("ghost-button", "全部允许");
+  allowAll.addEventListener("click", () => submit(choosers.map(() => "allow_once")));
+  const denyAll = button("ghost-button danger-text", "全部拒绝");
+  denyAll.addEventListener("click", () => submit(choosers.map(() => "deny")));
+  actions.append(submitChosen, allowAll, denyAll);
+  card.appendChild(actions);
+  chat.approvalCards.set(request.request_id, card);
+  appendToTranscript(card);
+  scrollToBottom();
+}
+
+function approvalChooser(item) {
+  const chooser = el("select", "approval-choice");
+  chooser.appendChild(new Option("允许", "allow_once"));
+  // 碰到密钥目录时没有「总是允许」
+  if (item.always_label) {
+    chooser.appendChild(new Option(item.always_label, "allow_always"));
+  }
+  if (item.always_parents_label) {
+    chooser.appendChild(new Option(item.always_parents_label, "allow_always_parents"));
+  }
+  chooser.appendChild(new Option("拒绝", "deny"));
+  return chooser;
+}
+
+function firstLine(text) {
+  return String(text || "").split("\n")[0];
 }
 
 function resolveApproval(requestId) {
