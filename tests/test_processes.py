@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from pocketagent.processes import bash_executable, terminate_process_tree
-from pocketagent.sandbox import BashUnavailable, wrap_command
+from pocketagent.safety.sandbox import BashUnavailable, wrap_command
 
 HAS_BASH = bash_executable() is not None
 
@@ -24,7 +24,7 @@ class BashExecutableTest(unittest.TestCase):
 
 class MissingBashTest(unittest.TestCase):
     def test_wrap_command_explains_how_to_install_bash(self) -> None:
-        with patch("pocketagent.sandbox.bash_executable", return_value=None):
+        with patch("pocketagent.safety.sandbox.bash_executable", return_value=None):
             with self.assertRaises(BashUnavailable) as raised:
                 wrap_command("echo hi", None)
 
