@@ -29,6 +29,42 @@ const TABLE_SEPARATOR_PATTERN = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
 const HORIZONTAL_RULE_PATTERN = /^\s*(-{3,}|\*{3,}|_{3,})\s*$/;
 const QUOTE_PATTERN = /^>\s?/;
 
+// 裸链接只扫普通文字；中文标点、全角符号和汉字都当 URL 的结束符，
+// 否则「见https://a.cn/x然后」会把后面的汉字也吃进链接
+const BARE_URL_PATTERN = /(?:https?:\/\/|www\.)[^\s<>"'`\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]+/g;
+const URL_TAIL_PUNCTUATION = ".,;:!?'\"";
+
+// 引用块里可以再放列表、代码块、表格，递归解析；>> 套太深就退化成普通段落
+const QUOTE_DEPTH_LIMIT = 4;
+
+function trimUrlTail(url) {
+  let end = url.length;
+  while (end > 0) {
+    const character = url[end - 1];
+    if (URL_TAIL_PUNCTUATION.includes(character)) {
+      end -= 1;
+      continue;
+    }
+    if (character === ")") {
+      const opening = (url.slice(0, end).match(/\(/g) ?? []).length;
+      const closing = (url.slice(0, end).match(/\)/g) ?? []).length;
+      if (closing > opening) {
+        end -= 1;
+        continue;
+      }
+    }
+    break;
+  }
+  return url.slice(0, end);
+}
+
+function isBareUrl(url) {
+  if (/^https?:\/\//.test(url)) {
+    return /^https?:\/\/[A-Za-z0-9\u00a1-\uffff]/.test(url);
+  }
+  return /^www\.[A-Za-z0-9\u00a1-\uffff]/.test(url);
+}
+
 function escapeHtml(text) {
   return text
     .replace(/&/g, "&amp;")
@@ -97,7 +133,7 @@ function renderImage(alt, source, options) {
   return `<a href="${escapeHtml(url)}" target="_blank" rel="noopener"><img src="${escapeHtml(url)}" alt="${escapeHtml(alt)}" loading="lazy"></a>`;
 }
 
-function renderToken(token, options, depth) {
+function renderToken(token, options, depth, allowBareLinks) {
   const kind = tokenKind(token);
   if (kind === "code") {
     return `<code class="md-inline-code">${escapeHtml(token.slice(1, -1))}</code>`;
@@ -108,9 +144,10 @@ function renderToken(token, options, depth) {
   }
   if (kind === "link") {
     const { label, url } = linkParts(token);
-    return `<a class="md-link" href="${escapeHtml(url)}" target="_blank" rel="noopener">${renderInline(label, options, depth + 1)}</a>`;
+    // 链接文字里不再自动识别裸链接，避免 a 套 a
+    return `<a class="md-link" href="${escapeHtml(url)}" target="_blank" rel="noopener">${renderInline(label, options, depth + 1, false)}</a>`;
   }
-  const content = renderInline(tokenContent(token), options, depth + 1);
+  const content = renderInline(tokenContent(token), options, depth + 1, allowBareLinks);
   if (kind === "strongEmphasis") {
     return `<strong><em>${content}</em></strong>`;
   }
@@ -123,7 +160,30 @@ function renderToken(token, options, depth) {
   return `<em>${content}</em>`;
 }
 
-function renderInline(text, options, depth = 0) {
+// 普通文字里认出裸链接；代码、已有链接的内部不会走到这里
+function renderText(text, allowBareLinks) {
+  if (!allowBareLinks || text === "") {
+    return escapeHtml(text);
+  }
+  const parts = [];
+  let lastIndex = 0;
+  for (const match of text.matchAll(BARE_URL_PATTERN)) {
+    const displayUrl = trimUrlTail(match[0]);
+    if (!isBareUrl(displayUrl)) {
+      continue;
+    }
+    const href = displayUrl.startsWith("www.") ? `https://${displayUrl}` : displayUrl;
+    parts.push(escapeHtml(text.slice(lastIndex, match.index)));
+    parts.push(
+      `<a class="md-link" href="${escapeHtml(href)}" target="_blank" rel="noopener">${escapeHtml(displayUrl)}</a>`,
+    );
+    lastIndex = match.index + displayUrl.length;
+  }
+  parts.push(escapeHtml(text.slice(lastIndex)));
+  return parts.join("");
+}
+
+function renderInline(text, options, depth = 0, allowBareLinks = true) {
   const source = String(text);
   if (depth > INLINE_DEPTH_LIMIT) {
     return escapeHtml(source);
@@ -131,11 +191,11 @@ function renderInline(text, options, depth = 0) {
   const parts = [];
   let lastIndex = 0;
   for (const match of source.matchAll(INLINE_PATTERN)) {
-    parts.push(escapeHtml(source.slice(lastIndex, match.index)));
-    parts.push(renderToken(match[0], options, depth));
+    parts.push(renderText(source.slice(lastIndex, match.index), allowBareLinks));
+    parts.push(renderToken(match[0], options, depth, allowBareLinks));
     lastIndex = match.index + match[0].length;
   }
-  parts.push(escapeHtml(source.slice(lastIndex)));
+  parts.push(renderText(source.slice(lastIndex), allowBareLinks));
   return parts.join("");
 }
 
@@ -268,14 +328,19 @@ function readCodeBlock(lines, startIndex, fence) {
   return { html: renderCodeBlock(fence.language, codeLines.join("\n")), nextIndex: index + 1 };
 }
 
-function readQuote(lines, startIndex, options) {
-  const quoteLines = [];
+function readQuote(lines, startIndex, options, depth) {
+  const quotedLines = [];
   let index = startIndex;
   while (index < lines.length && QUOTE_PATTERN.test(lines[index])) {
-    quoteLines.push(renderInline(lines[index].replace(QUOTE_PATTERN, ""), options));
+    quotedLines.push(lines[index].replace(QUOTE_PATTERN, ""));
     index += 1;
   }
-  return { html: `<blockquote>${quoteLines.join("<br>")}</blockquote>`, nextIndex: index };
+  // 去掉 > 之后按普通块再解析一遍，引用里就能放列表、代码块、表格和嵌套引用
+  const innerHtml =
+    depth >= QUOTE_DEPTH_LIMIT
+      ? `<p>${quotedLines.map((line) => renderInline(line, options)).join("<br>")}</p>`
+      : renderBlocks(quotedLines, options, depth + 1);
+  return { html: `<blockquote>${innerHtml}</blockquote>`, nextIndex: index };
 }
 
 function readTable(lines, startIndex, options) {
@@ -389,7 +454,7 @@ function readParagraph(lines, startIndex, options) {
   return { html: `<p>${paragraphLines.join("<br>")}</p>`, nextIndex: index };
 }
 
-function readBlock(lines, index, options) {
+function readBlock(lines, index, options, depth) {
   const line = lines[index];
   const fence = parseFence(line);
   if (fence) {
@@ -404,7 +469,7 @@ function readBlock(lines, index, options) {
     return { html: "<hr>", nextIndex: index + 1 };
   }
   if (QUOTE_PATTERN.test(line)) {
-    return readQuote(lines, index, options);
+    return readQuote(lines, index, options, depth);
   }
   if (isTableStart(lines, index)) {
     return readTable(lines, index, options);
@@ -436,14 +501,18 @@ document.addEventListener("click", async (event) => {
   }, 1200);
 });
 
-export function renderMarkdown(source, options = {}) {
-  const lines = String(source ?? "").replace(/\r\n/g, "\n").split("\n");
+function renderBlocks(lines, options, depth) {
   const html = [];
   let index = 0;
   while (index < lines.length) {
-    const block = readBlock(lines, index, options);
+    const block = readBlock(lines, index, options, depth);
     html.push(block.html);
     index = block.nextIndex;
   }
   return html.join("");
+}
+
+export function renderMarkdown(source, options = {}) {
+  const lines = String(source ?? "").replace(/\r\n/g, "\n").split("\n");
+  return renderBlocks(lines, options, 0);
 }

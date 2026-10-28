@@ -33,6 +33,42 @@ const TABLE_SEPARATOR_PATTERN = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
 const HORIZONTAL_RULE_PATTERN = /^\s*(-{3,}|\*{3,}|_{3,})\s*$/;
 const QUOTE_PATTERN = /^>\s?/;
 
+// 裸链接只扫普通文字；中文标点、全角符号和汉字都当 URL 的结束符，
+// 否则「见https://a.cn/x然后」会把后面的汉字也吃进链接
+const BARE_URL_PATTERN = /(?:https?:\/\/|www\.)[^\s<>"'`\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]+/g;
+const URL_TAIL_PUNCTUATION = ".,;:!?'\"";
+
+// 引用块里可以再放列表、代码块、表格，递归解析；>> 套太深就退化成普通段落
+const QUOTE_DEPTH_LIMIT = 4;
+
+function trimUrlTail(url) {
+  let end = url.length;
+  while (end > 0) {
+    const character = url[end - 1];
+    if (URL_TAIL_PUNCTUATION.includes(character)) {
+      end -= 1;
+      continue;
+    }
+    if (character === ")") {
+      const opening = (url.slice(0, end).match(/\(/g) ?? []).length;
+      const closing = (url.slice(0, end).match(/\)/g) ?? []).length;
+      if (closing > opening) {
+        end -= 1;
+        continue;
+      }
+    }
+    break;
+  }
+  return url.slice(0, end);
+}
+
+function isBareUrl(url) {
+  if (/^https?:\/\//.test(url)) {
+    return /^https?:\/\/[A-Za-z0-9\u00a1-\uffff]/.test(url);
+  }
+  return /^www\.[A-Za-z0-9\u00a1-\uffff]/.test(url);
+}
+
 function tokenKind(token) {
   if (token.startsWith("`")) {
     return "code";
@@ -383,26 +419,63 @@ function buildLink(label, url, options, depth) {
     event.preventDefault();
     openExternal(url);
   });
-  appendInline(anchor, label, options, depth + 1);
+  // 链接文字里不再自动识别裸链接，避免 a 套 a
+  appendInline(anchor, label, options, depth + 1, false);
   return anchor;
 }
 
-function appendEmphasis(container, kind, content, options, depth) {
+function buildBareLink(displayUrl) {
+  const href = displayUrl.startsWith("www.") ? `https://${displayUrl}` : displayUrl;
+  const anchor = el("a", "md-link", displayUrl);
+  anchor.href = "#";
+  anchor.addEventListener("click", (event) => {
+    event.preventDefault();
+    openExternal(href);
+  });
+  return anchor;
+}
+
+// 普通文字里认出裸链接；代码、已有链接的内部不会走到这里
+function appendText(container, text, allowBareLinks) {
+  if (!allowBareLinks || text === "") {
+    if (text !== "") {
+      container.append(document.createTextNode(text));
+    }
+    return;
+  }
+  let lastIndex = 0;
+  for (const match of text.matchAll(BARE_URL_PATTERN)) {
+    const displayUrl = trimUrlTail(match[0]);
+    if (!isBareUrl(displayUrl)) {
+      continue;
+    }
+    if (match.index > lastIndex) {
+      container.append(document.createTextNode(text.slice(lastIndex, match.index)));
+    }
+    container.append(buildBareLink(displayUrl));
+    lastIndex = match.index + displayUrl.length;
+  }
+  if (lastIndex < text.length) {
+    container.append(document.createTextNode(text.slice(lastIndex)));
+  }
+}
+
+function appendEmphasis(container, kind, content, options, depth, allowBareLinks) {
   if (kind === "strongEmphasis") {
     const strong = el("strong");
     const emphasis = el("em");
-    appendInline(emphasis, content, options, depth + 1);
+    appendInline(emphasis, content, options, depth + 1, allowBareLinks);
     strong.append(emphasis);
     container.append(strong);
     return;
   }
   const tag = kind === "strong" ? "strong" : kind === "strike" ? "del" : "em";
   const node = el(tag);
-  appendInline(node, content, options, depth + 1);
+  appendInline(node, content, options, depth + 1, allowBareLinks);
   container.append(node);
 }
 
-function appendInlineToken(container, token, options, depth) {
+function appendInlineToken(container, token, options, depth, allowBareLinks) {
   const kind = tokenKind(token);
   if (kind === "code") {
     container.append(el("code", "md-inline-code", token.slice(1, -1)));
@@ -417,10 +490,10 @@ function appendInlineToken(container, token, options, depth) {
     container.append(buildLink(label, url, options, depth));
     return;
   }
-  appendEmphasis(container, kind, tokenContent(token), options, depth);
+  appendEmphasis(container, kind, tokenContent(token), options, depth, allowBareLinks);
 }
 
-function appendInline(container, text, options, depth = 0) {
+function appendInline(container, text, options, depth = 0, allowBareLinks = true) {
   const source = String(text);
   if (depth > INLINE_DEPTH_LIMIT) {
     container.append(document.createTextNode(source));
@@ -428,28 +501,33 @@ function appendInline(container, text, options, depth = 0) {
   }
   let lastIndex = 0;
   for (const match of source.matchAll(INLINE_PATTERN)) {
-    if (match.index > lastIndex) {
-      container.append(document.createTextNode(source.slice(lastIndex, match.index)));
-    }
-    appendInlineToken(container, match[0], options, depth);
+    appendText(container, source.slice(lastIndex, match.index), allowBareLinks);
+    appendInlineToken(container, match[0], options, depth, allowBareLinks);
     lastIndex = match.index + match[0].length;
   }
-  if (lastIndex < source.length) {
-    container.append(document.createTextNode(source.slice(lastIndex)));
-  }
+  appendText(container, source.slice(lastIndex), allowBareLinks);
 }
 
-function readQuote(lines, startIndex, options) {
-  const quote = el("blockquote");
-  let firstLine = true;
+function readQuote(lines, startIndex, options, depth) {
+  const quotedLines = [];
   let index = startIndex;
   while (index < lines.length && QUOTE_PATTERN.test(lines[index])) {
-    if (!firstLine) {
-      quote.append(document.createElement("br"));
-    }
-    appendInline(quote, lines[index].replace(QUOTE_PATTERN, ""), options);
-    firstLine = false;
+    quotedLines.push(lines[index].replace(QUOTE_PATTERN, ""));
     index += 1;
+  }
+  const quote = el("blockquote");
+  if (depth >= QUOTE_DEPTH_LIMIT) {
+    const paragraph = el("p");
+    quotedLines.forEach((line, lineIndex) => {
+      if (lineIndex > 0) {
+        paragraph.append(document.createElement("br"));
+      }
+      appendInline(paragraph, line, options);
+    });
+    quote.append(paragraph);
+  } else {
+    // 去掉 > 之后按普通块再解析一遍，引用里就能放列表、代码块、表格和嵌套引用
+    quote.append(renderBlocks(quotedLines, options, depth + 1));
   }
   return { node: quote, nextIndex: index };
 }
@@ -469,9 +547,8 @@ function readParagraph(lines, startIndex, options) {
   return { node: paragraph, nextIndex: index };
 }
 
-export function renderMarkdown(text, options = {}) {
+function renderBlocks(lines, options, depth) {
   const fragment = document.createDocumentFragment();
-  const lines = String(text ?? "").replace(/\r\n/g, "\n").split("\n");
   let index = 0;
 
   while (index < lines.length) {
@@ -501,7 +578,7 @@ export function renderMarkdown(text, options = {}) {
     }
 
     if (QUOTE_PATTERN.test(line)) {
-      const block = readQuote(lines, index, options);
+      const block = readQuote(lines, index, options, depth);
       fragment.append(block.node);
       index = block.nextIndex;
       continue;
@@ -532,4 +609,9 @@ export function renderMarkdown(text, options = {}) {
   }
 
   return fragment;
+}
+
+export function renderMarkdown(text, options = {}) {
+  const lines = String(text ?? "").replace(/\r\n/g, "\n").split("\n");
+  return renderBlocks(lines, options, 0);
 }
