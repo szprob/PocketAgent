@@ -158,6 +158,13 @@ class Tool(ABC):
     @abstractmethod
     async def run(self, arguments: dict[str, Any], context: ToolContext) -> ToolResult: ...
 
+    def kind_for(self, arguments: dict[str, Any]) -> ToolKind:
+        """这次调用实际算哪一类，用来判断一批调用能不能并发跑（只读的才并发）。
+
+        大多数工具固定是 kind；子 agent 这种看参数的覆盖它。审批仍按 kind 走。
+        """
+        return self.kind
+
     def describe(self, arguments: dict[str, Any]) -> str:
         """一行摘要，显示在界面上，例如 bash 显示命令本身。"""
         text = json.dumps(arguments, ensure_ascii=False)

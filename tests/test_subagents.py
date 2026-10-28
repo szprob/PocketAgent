@@ -8,7 +8,7 @@ from pocketagent.core.events import EventType
 from pocketagent.core.subagents import subagent_tools
 from pocketagent.llm import LLMResponse
 from pocketagent.safety.permissions import ApprovalAnswer, ApprovalMode
-from pocketagent.tools import ToolContext, default_tool_registry
+from pocketagent.tools import ToolContext, ToolKind, default_tool_registry
 from pocketagent.tools.subagent import SubagentTool
 from tests.helpers import TemporaryDirectories, build_harness, tool_call
 
@@ -68,6 +68,13 @@ class RecordingApprover:
 
 
 class SubagentToolsTest(unittest.TestCase):
+    def test_kind_follows_the_type_argument(self) -> None:
+        tool = SubagentTool()
+
+        self.assertEqual(tool.kind_for({"type": "general"}), ToolKind.EDIT)
+        self.assertEqual(tool.kind_for({"type": "explore"}), ToolKind.READ)
+        self.assertEqual(tool.kind_for({}), ToolKind.READ)
+
     def test_explore_gets_read_only_tools_and_nobody_gets_ask_or_spawn(self) -> None:
         registry = default_tool_registry(sandboxed=True)
 
@@ -134,6 +141,32 @@ class SubagentRunTest(unittest.IsolatedAsyncioTestCase):
         results = [m["content"] for m in harness.agent.context.messages if m["role"] == "tool"]
         self.assertTrue(any("前端没问题" in text for text in results))
         self.assertTrue(any("后端没问题" in text for text in results))
+
+    async def test_general_subagents_in_one_step_run_one_after_another(self) -> None:
+        """general 能改文件、跑命令：一批里两个 general 不能并发，不然同时改文件、同时弹审批。"""
+        provider = TwoLevelProvider(
+            [
+                LLMResponse(tool_calls=[spawn("p1", "改前端", "改前端", kind="general"), spawn("p2", "改后端", "改后端", kind="general")]),
+                LLMResponse(text="都改完了"),
+            ],
+            {"改前端": [LLMResponse(text="前端改好了")], "改后端": [LLMResponse(text="后端改好了")]},
+        )
+        # 卡住第一个子 agent，给第二个留足启动的时间：要是并发，这期间同时在跑的就会变成 2
+        provider.gate.clear()
+        harness = build_harness(self.directories, [], provider=provider)
+
+        turn = asyncio.create_task(harness.agent.run_turn("前后端都改一下"))
+        while not provider.running_children and not turn.done():
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.2)
+        parallel_while_first_is_stuck = provider.max_parallel
+        provider.gate.set()
+        await turn
+
+        self.assertEqual(parallel_while_first_is_stuck, 1)
+        results = [m["content"] for m in harness.agent.context.messages if m["role"] == "tool"]
+        self.assertTrue(any("前端改好了" in text for text in results))
+        self.assertTrue(any("后端改好了" in text for text in results))
 
     async def test_general_subagent_edits_go_through_labeled_approval(self) -> None:
         approver = RecordingApprover()

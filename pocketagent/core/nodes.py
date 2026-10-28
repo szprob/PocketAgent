@@ -416,9 +416,10 @@ class RunToolsNode(AgentNode):
 
 
 def _all_read_only(batch: ToolBatch) -> bool:
+    """按每次调用的参数判断（kind_for），不能只看工具的静态类别：type=general 的子 agent 会改文件。"""
     for call in batch.calls:
         tool = batch.context.tools.get(call.name)
-        if tool is None or tool.kind != ToolKind.READ:
+        if tool is None or tool.kind_for(call.arguments) != ToolKind.READ:
             return False
     return True
 
