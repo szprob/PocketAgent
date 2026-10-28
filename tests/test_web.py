@@ -1076,14 +1076,33 @@ class StartupTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(explicit, "mine")
         self.assertEqual(disabled, "")
 
-    def test_start_workspace_goes_first_in_the_list(self) -> None:
+    def test_explicit_workspace_goes_first_in_the_list(self) -> None:
         other = self.directories.home_dir / "other"
         app_config = AppConfig(workspaces=[str(other), str(self.directories.workspace)])
 
-        server._put_workspace_first(app_config, self.settings)
+        server._register_launch_workspace(app_config, self.settings, explicit=True)
 
         self.assertEqual(app_config.workspaces[0], str(self.directories.workspace.resolve()))
         self.assertEqual(len(app_config.workspaces), 2)
+
+    def test_launch_directory_does_not_come_back_after_removal(self) -> None:
+        """没用 -C 指定时不动已有的列表：用户在界面里移除的启动目录，下次启动不会又被加回来。"""
+        other = str(self.directories.home_dir / "other")
+        app_config = AppConfig(workspaces=[other], default_workspace=other)
+
+        server._register_launch_workspace(app_config, self.settings, explicit=False)
+
+        self.assertEqual(app_config.workspaces, [other])
+        self.assertEqual(app_config.default_workspace, other)
+
+    def test_launch_directory_is_added_on_first_run(self) -> None:
+        app_config = AppConfig()
+
+        server._register_launch_workspace(app_config, self.settings, explicit=False)
+
+        workspace = str(self.directories.workspace.resolve())
+        self.assertEqual(app_config.workspaces, [workspace])
+        self.assertEqual(app_config.default_workspace, workspace)
 
 
 if __name__ == "__main__":

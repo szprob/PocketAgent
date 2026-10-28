@@ -486,6 +486,7 @@ def _run_web(arguments: argparse.Namespace, settings: Settings) -> None:
         token=arguments.token or os.environ.get("POCKETAGENT_WEB_TOKEN"),
         require_token=not arguments.no_token,
         open_browser=not arguments.no_browser,
+        explicit_workspace=arguments.workspace is not None,
     )
 
 
