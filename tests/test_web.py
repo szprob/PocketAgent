@@ -198,6 +198,34 @@ class WebServerTest(WebTestBase):
         # 第一次调用没报 usage，按估算记；第二次 107
         self.assertGreater(history["usage"]["total"], 107)
 
+    async def test_several_writes_come_as_one_card_with_per_item_answers(self) -> None:
+        self.responses.extend(
+            [
+                LLMResponse(
+                    tool_calls=[
+                        tool_call("call_1", "write_file", '{"path": "a.txt", "content": "A"}'),
+                        tool_call("call_2", "write_file", '{"path": "b.txt", "content": "B"}'),
+                    ]
+                ),
+            ]
+        )
+        session_id = await self._create_session()
+
+        async with self._connect(session_id) as socket_client:
+            await socket_client.receive_json()
+            await socket_client.send_json({"type": "user_message", "text": "写两个文件"})
+            approval = await self._receive_until(socket_client, is_type("approval_request"))
+            await socket_client.send_json(
+                {"type": "approval", "request_id": approval["request_id"], "answers": ["allow_once", "deny"]}
+            )
+            turn_end = await self._receive_until(socket_client, is_event("turn_end"))
+
+        self.assertEqual([item["tool_name"] for item in approval["items"]], ["write_file", "write_file"])
+        self.assertIn("新建 b.txt", approval["items"][1]["preview"])
+        self.assertEqual(turn_end["event"]["stop_reason"], "denied")
+        self.assertTrue((self.directories.workspace / "a.txt").exists())
+        self.assertFalse((self.directories.workspace / "b.txt").exists())
+
     async def test_todo_write_updates_plan_panel_and_persists(self) -> None:
         arguments = (
             '{"todos": ['

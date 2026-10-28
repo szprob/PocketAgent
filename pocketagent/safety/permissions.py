@@ -79,11 +79,28 @@ class Approver(Protocol):
     """「问人」的通道：请求批准，以及 ask_user 工具的提问。CLI 用 input()，web 推给浏览器。
 
     ask_questions 返回每个问题的回答；返回 None 表示用户跳过（或者没人能回答）。
+
+    一批调用里有好几个要问时，实现了 request_approvals(requests) -> list[ApprovalAnswer] 的通道
+    会把它们合成一张卡片（每项单独选）；没实现的就逐个 request_approval（见 ask_approvals）。
     """
 
     async def request_approval(self, request: ApprovalRequest) -> ApprovalAnswer: ...
 
     async def ask_questions(self, questions: list[Question]) -> list[QuestionAnswer] | None: ...
+
+
+ALLOWING_ANSWERS = (ApprovalAnswer.ALLOW_ONCE, ApprovalAnswer.ALLOW_ALWAYS, ApprovalAnswer.ALLOW_ALWAYS_PARENTS)
+
+
+async def ask_approvals(approver: Approver, requests: list[ApprovalRequest]) -> list[ApprovalAnswer]:
+    """一次问好几项：通道支持合并就合成一张卡，不支持就一项一项问。"""
+    request_many = getattr(approver, "request_approvals", None)
+    if request_many is not None and len(requests) > 1:
+        return list(await request_many(requests))
+    answers = []
+    for request in requests:
+        answers.append(await approver.request_approval(request))
+    return answers
 
 
 class DenyAllApprover:
@@ -229,12 +246,21 @@ class PermissionGate:
         return f"当前是 {self.mode.value} 模式，不允许调用 {tool.kind.value} 类工具 {tool.name}"
 
     async def ask(self, request: ApprovalRequest, check: PermissionCheck | None = None) -> bool:
-        answer = await self.approver.request_approval(request)
-        if answer == ApprovalAnswer.ALLOW_ALWAYS:
-            self.remember(check or PermissionCheck(Decision.ASK, remember_tool=request.tool_name))
-        elif answer == ApprovalAnswer.ALLOW_ALWAYS_PARENTS:
-            self.remember(check or PermissionCheck(Decision.ASK, remember_tool=request.tool_name), include_parents=True)
-        return answer in (ApprovalAnswer.ALLOW_ONCE, ApprovalAnswer.ALLOW_ALWAYS, ApprovalAnswer.ALLOW_ALWAYS_PARENTS)
+        answers = await self.ask_many([request], [check])
+        return answers[0]
+
+    async def ask_many(self, requests: list[ApprovalRequest], checks: list[PermissionCheck | None]) -> list[bool]:
+        """一批要问的合成一张卡（通道支持的话），每项单独记「总是允许」；返回每项放没放行。"""
+        answers = await ask_approvals(self.approver, requests)
+        approved = []
+        for request, check, answer in zip(requests, checks, answers):
+            remembered = check or PermissionCheck(Decision.ASK, remember_tool=request.tool_name)
+            if answer == ApprovalAnswer.ALLOW_ALWAYS:
+                self.remember(remembered)
+            elif answer == ApprovalAnswer.ALLOW_ALWAYS_PARENTS:
+                self.remember(remembered, include_parents=True)
+            approved.append(answer in ALLOWING_ANSWERS)
+        return approved
 
     def remember(self, check: PermissionCheck, include_parents: bool = False) -> None:
         if not check.offer_always:

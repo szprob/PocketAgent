@@ -6,12 +6,14 @@ manager.py 所有任务、工作区、配置和自动化调度（SessionManager�
 前端 → 服务（WebSocket，JSON）：
   {"type": "user_message", "text": ..., "attachment_ids": [...]}   空闲就开一轮；忙着就按设置插话或排队
   {"type": "approval", "request_id": ..., "answer": "allow_once" | "allow_always" | "allow_always_parents" | "deny"}
+  {"type": "approval", "request_id": ..., "answers": [...]}   合并的审批卡（approval_request 带 items）每项一个答复
   {"type": "question_answer", "request_id": ..., "answers": [{"selected": [...], "other": "..."}, ...] | null（跳过）}
   {"type": "interrupt"} / {"type": "compact"} / {"type": "remove_queued", "index": n}
   {"type": "set_mode", "mode": ...} / {"type": "set_model", "model_id": ...}
 服务 → 前端：
   snapshot（连上时的完整历史）、state（是否在跑、模型、审批模式、上下文占用、排队和插话）、
   event（agent 事件，见 core/events.py）、approval_request / approval_resolved、question_request / question_resolved、
+  （approval_request 一项时字段平铺；一批里有几项要问时合成一张，字段放在 items 列表里）
   returned_inputs（中断时退回的输入）、error
 
 REST（都在 /api 下）：

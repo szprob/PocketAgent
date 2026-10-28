@@ -7,6 +7,7 @@
 import asyncio
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from pocketflow import AsyncNode
@@ -377,8 +378,9 @@ class ToolBatch:
 class RunToolsNode(AgentNode):
     """执行模型这一步要求的全部工具调用。
 
-    全是只读工具时并发执行；只要有写文件或执行命令的就按顺序来，
-    其中一个被用户拒绝，后面的都不再执行，这一轮停下等用户发话（和 Claude Code 一致）。
+    全是只读工具时并发执行。有写文件或执行命令的，按「预览是否依赖前面的执行结果」切成几段（split_into_stages）：
+    每段先把要审的一起审完——AI 审批并发、要问人的合成一次问（通道支持就是一张卡片，每项可单独拒）——再按顺序执行。
+    有被拒绝的，后面的段不再执行，这一轮停下等用户发话（和 Claude Code 一致）。
     """
 
     async def prep_async(self, context: AgentContext) -> ToolBatch:
@@ -391,20 +393,24 @@ class RunToolsNode(AgentNode):
         if _all_read_only(batch):
             return list(await asyncio.gather(*(run_tool_call(call, batch.context) for call in batch.calls)))
         try:
-            await self._run_sequentially(batch)
+            await self._run_in_stages(batch)
         except asyncio.CancelledError:
             # 被中断时先把已经执行完的结果写进历史，模型下一轮才知道哪些操作真的做了
             append_tool_messages(batch.context, batch.finished)
             raise
         return batch.finished
 
-    async def _run_sequentially(self, batch: ToolBatch) -> None:
-        for call in batch.calls:
+    async def _run_in_stages(self, batch: ToolBatch) -> None:
+        for stage in split_into_stages(batch.calls, batch.context):
             if any(outcome.denied for outcome in batch.finished):
-                skipped = ToolResult("前面的调用被用户拒绝了，这个调用没有执行", is_error=True)
-                batch.finished.append(ToolCallOutcome(call=call, result=skipped, denied=True))
+                for call in stage:
+                    skipped = ToolResult("前面的调用被用户拒绝了，这个调用没有执行", is_error=True)
+                    batch.finished.append(ToolCallOutcome(call=call, result=skipped, denied=True))
                 continue
-            batch.finished.append(await run_tool_call(call, batch.context))
+            prepared = [await announce_and_check(call, batch.context) for call in stage]
+            await settle_approvals(prepared, batch.context)
+            for item in prepared:
+                batch.finished.append(await execute_prepared(item, batch.context))
 
     async def post_async(self, context: AgentContext, batch: ToolBatch, outcomes: list[ToolCallOutcome]) -> str:
         append_tool_messages(context, outcomes)
@@ -413,6 +419,45 @@ class RunToolsNode(AgentNode):
             context.turn.stop_reason = "denied"
             return "stop"
         return "next"
+
+
+def split_into_stages(calls: list[ToolCall], context: AgentContext) -> list[list[ToolCall]]:
+    """预览依赖前面调用执行结果的，另起一段，等前面的执行完再审它：
+
+    - 同一批里前面要改同一个文件：后一个 edit 的 diff 得等前一个改完才算得对
+    - 前面有 bash、general 子 agent 这类改哪里说不准的调用：后面按文件出预览的都另起一段
+    不按「工具 + 参数」记忆审批结论：同样的调用在文件变了以后结论可能不同。
+    """
+    stages: list[list[ToolCall]] = []
+    current: list[ToolCall] = []
+    written: set[Path] = set()
+    may_change_anything = False
+    for call in calls:
+        tool = context.tools.get(call.name)
+        targets = _files_written(tool, call, context)
+        depends_on_earlier = bool(targets) and (may_change_anything or any(path in written for path in targets))
+        if depends_on_earlier and current:
+            stages.append(current)
+            current = []
+            written = set()
+            may_change_anything = False
+        current.append(call)
+        written.update(targets)
+        if tool is not None and not targets and tool.kind_for(call.arguments) != ToolKind.READ:
+            may_change_anything = True
+    if current:
+        stages.append(current)
+    return stages
+
+
+def _files_written(tool: Tool | None, call: ToolCall, context: AgentContext) -> list[Path]:
+    if tool is None or call.arguments_error:
+        return []
+    try:
+        return tool.files_written(call.arguments, context.tool_context)
+    except Exception:
+        # 参数不对之类的问题留到真正检查时报
+        return []
 
 
 def _all_read_only(batch: ToolBatch) -> bool:
@@ -489,20 +534,138 @@ def append_tool_messages(context: AgentContext, outcomes: list[ToolCallOutcome])
 
 async def run_tool_call(call: ToolCall, context: AgentContext) -> ToolCallOutcome:
     """单个工具调用：发事件 → 检查 → 审批 → 执行 → 截断输出 → 发事件。错误都变成结果回给模型。"""
+    prepared = await announce_and_check(call, context)
+    await settle_approvals([prepared], context)
+    return await execute_prepared(prepared, context)
+
+
+@dataclass
+class PreparedCall:
+    """一个调用在审批前后的状态：检查完、预览算好，等着审批或者直接执行。"""
+
+    call: ToolCall
+    tool: Tool | None
+    summary: str
+    check: PermissionCheck | None = None
+    preview: str = ""
+    # 已经有结果（没这个工具、参数不对、模式不允许……）就不审批、不执行
+    outcome: ToolCallOutcome | None = None
+    approved: bool = False
+    review: ReviewResult | None = None
+
+
+async def announce_and_check(call: ToolCall, context: AgentContext) -> PreparedCall:
+    """发 TOOL_CALL 事件（界面先画出卡片），查参数和权限；要审批的顺便把预览算好。"""
     tool = context.tools.get(call.name)
     summary = tool.describe(call.arguments) if tool else call.raw_arguments
     await context.events.emit(
         EventType.TOOL_CALL, call_id=call.id, name=call.name, summary=summary, arguments=call.arguments
     )
-    emitter = _ToolOutputEmitter(context.events, call.id, call.name)
-    token = current_tool_call_id.set(call.id)
-    output_token = current_tool_output.set(emitter.push)
+    prepared = PreparedCall(call=call, tool=tool, summary=summary)
+    prepared.outcome = _argument_problem(tool, call, context)
+    if prepared.outcome is None:
+        _check_permission(prepared, context)
+    return prepared
+
+
+def _argument_problem(tool: Tool | None, call: ToolCall, context: AgentContext) -> ToolCallOutcome | None:
+    if tool is None:
+        available = "、".join(context.tools.names())
+        return _error_outcome(call, f"没有叫 {call.name} 的工具，可用的有：{available}")
+    if call.arguments_error:
+        return _error_outcome(call, call.arguments_error)
+    missing = find_missing_arguments(tool, call.arguments)
+    if missing:
+        return _error_outcome(call, f"缺少必填参数：{', '.join(missing)}")
+    return None
+
+
+def _check_permission(prepared: PreparedCall, context: AgentContext) -> None:
+    tool = prepared.tool
+    call = prepared.call
     try:
-        outcome = await _check_and_execute(tool, call, summary, context)
-    finally:
-        current_tool_output.reset(output_token)
-        current_tool_call_id.reset(token)
-    await emitter.flush()
+        access = tool.access(call.arguments, context.tool_context)
+    except Exception as error:
+        prepared.outcome = _error_outcome(call, f"{type(error).__name__}: {error}")
+        return
+    check = context.permissions.check(tool, access)
+    prepared.check = check
+    if check.decision == Decision.DENY:
+        prepared.outcome = _denied_outcome(call, context.permissions.denial_reason(tool))
+        return
+    if check.decision == Decision.ALLOW:
+        prepared.approved = True
+        return
+    try:
+        prepared.preview = tool.preview(call.arguments, context.tool_context)
+    except Exception as error:
+        prepared.outcome = _error_outcome(call, f"{type(error).__name__}: {error}")
+
+
+def _waiting_for_approval(prepared: PreparedCall) -> bool:
+    return prepared.outcome is None and not prepared.approved and prepared.check is not None
+
+
+async def settle_approvals(prepared: list[PreparedCall], context: AgentContext) -> None:
+    """要 AI 审的并发审；AI 没放行的和本来就要问人的合成一次问（通道支持就是一张卡片，每项单独选）。"""
+    to_review = [item for item in prepared if _waiting_for_approval(item) and item.check.decision == Decision.AI_REVIEW]
+    if to_review:
+        await asyncio.gather(*(_ai_review(item, context) for item in to_review))
+    to_ask = [item for item in prepared if _waiting_for_approval(item)]
+    if not to_ask:
+        return
+    requests = [_approval_request(item) for item in to_ask]
+    approved = await context.permissions.ask_many(requests, [item.check for item in to_ask])
+    for item, allowed in zip(to_ask, approved):
+        item.approved = allowed
+
+
+async def _ai_review(prepared: PreparedCall, context: AgentContext) -> None:
+    """AI 审批：判定安全直接放行；没放行的留给 settle_approvals 转给用户。"""
+    # 设置里可以给审批单独选模型和思考档位（默认最低档），不必每次都等一次主模型的深度思考
+    review_provider = context.review_provider() if context.review_provider else context.provider
+    review = await review_tool_call(
+        review_provider,
+        context.messages,
+        str(context.settings.workspace),
+        prepared.tool.name,
+        prepared.call.arguments,
+        prepared.preview,
+        notes=prepared.check.notes,
+    )
+    prepared.review = review
+    await context.events.emit(
+        EventType.TOOL_REVIEW, call_id=prepared.call.id, name=prepared.tool.name, allow=review.allow, reason=review.reason
+    )
+    if review.allow:
+        prepared.approved = True
+
+
+def _approval_request(prepared: PreparedCall) -> ApprovalRequest:
+    summary = prepared.summary
+    if prepared.review is not None and not prepared.review.allow:
+        summary = f"{summary}\n（AI 审批没有放行：{prepared.review.reason}）"
+    check = prepared.check
+    return ApprovalRequest(
+        tool_name=prepared.tool.name,
+        summary=summary,
+        preview=prepared.preview,
+        notes=check.notes,
+        always_label=check.always_label(),
+        always_parents_label=check.always_parents_label(),
+    )
+
+
+async def execute_prepared(prepared: PreparedCall, context: AgentContext) -> ToolCallOutcome:
+    """审完的调用：放行的执行，没放行的回「用户拒绝了」；结果截断后发 TOOL_RESULT 事件。"""
+    call = prepared.call
+    if prepared.outcome is not None:
+        outcome = prepared.outcome
+    elif not prepared.approved:
+        outcome = _denied_outcome(call, "用户拒绝了这次调用")
+        outcome.review = prepared.review
+    else:
+        outcome = await _run_tool(prepared, context)
     outcome.result.content = await _render_tool_result(context, call, outcome.result.content)
     await context.events.emit(
         EventType.TOOL_RESULT,
@@ -513,6 +676,22 @@ async def run_tool_call(call: ToolCall, context: AgentContext) -> ToolCallOutcom
         denied=outcome.denied,
     )
     return outcome
+
+
+async def _run_tool(prepared: PreparedCall, context: AgentContext) -> ToolCallOutcome:
+    call = prepared.call
+    emitter = _ToolOutputEmitter(context.events, call.id, call.name)
+    token = current_tool_call_id.set(call.id)
+    output_token = current_tool_output.set(emitter.push)
+    try:
+        result = await prepared.tool.run(call.arguments, context.tool_context)
+    except Exception as error:
+        result = ToolResult(f"{type(error).__name__}: {error}", is_error=True)
+    finally:
+        current_tool_output.reset(output_token)
+        current_tool_call_id.reset(token)
+    await emitter.flush()
+    return ToolCallOutcome(call=call, result=result, review=prepared.review)
 
 
 async def _render_tool_result(context: AgentContext, call: ToolCall, content: str) -> str:
@@ -531,84 +710,6 @@ async def _render_tool_result(context: AgentContext, call: ToolCall, content: st
         f"{truncated}\n\n（完整输出 {len(content)} 字符，已保存到 {path}；"
         "需要时用 grep 搜索或 read_file 带 offset 分段查看，不要整份读进上下文）"
     )
-
-
-@dataclass
-class ApprovalOutcome:
-    approved: bool
-    review: ReviewResult | None = None
-
-
-async def _check_and_execute(tool: Tool | None, call: ToolCall, summary: str, context: AgentContext) -> ToolCallOutcome:
-    if tool is None:
-        available = "、".join(context.tools.names())
-        return _error_outcome(call, f"没有叫 {call.name} 的工具，可用的有：{available}")
-    if call.arguments_error:
-        return _error_outcome(call, call.arguments_error)
-    missing = find_missing_arguments(tool, call.arguments)
-    if missing:
-        return _error_outcome(call, f"缺少必填参数：{', '.join(missing)}")
-
-    try:
-        access = tool.access(call.arguments, context.tool_context)
-    except Exception as error:
-        return _error_outcome(call, f"{type(error).__name__}: {error}")
-    check = context.permissions.check(tool, access)
-    if check.decision == Decision.DENY:
-        return _denied_outcome(call, context.permissions.denial_reason(tool))
-    if check.decision in (Decision.ASK, Decision.AI_REVIEW):
-        try:
-            preview = tool.preview(call.arguments, context.tool_context)
-        except Exception as error:
-            return _error_outcome(call, f"{type(error).__name__}: {error}")
-        approval = await _approve(check, tool, call, summary, preview, context)
-        if not approval.approved:
-            denied = _denied_outcome(call, "用户拒绝了这次调用")
-            denied.review = approval.review
-            return denied
-        review = approval.review
-    else:
-        review = None
-
-    try:
-        result = await tool.run(call.arguments, context.tool_context)
-    except Exception as error:
-        result = ToolResult(f"{type(error).__name__}: {error}", is_error=True)
-    return ToolCallOutcome(call=call, result=result, review=review)
-
-
-async def _approve(
-    check: PermissionCheck, tool: Tool, call: ToolCall, summary: str, preview: str, context: AgentContext
-) -> ApprovalOutcome:
-    """AI 审批模式先让模型判断，判定安全直接放行；否则（或本来就是询问模式）问用户。"""
-    review = None
-    if check.decision == Decision.AI_REVIEW:
-        # 设置里可以给审批单独选模型和思考档位（默认最低档），不必每次都等一次主模型的深度思考
-        review_provider = context.review_provider() if context.review_provider else context.provider
-        review = await review_tool_call(
-            review_provider,
-            context.messages,
-            str(context.settings.workspace),
-            tool.name,
-            call.arguments,
-            preview,
-            notes=check.notes,
-        )
-        await context.events.emit(
-            EventType.TOOL_REVIEW, call_id=call.id, name=tool.name, allow=review.allow, reason=review.reason
-        )
-        if review.allow:
-            return ApprovalOutcome(approved=True, review=review)
-        summary = f"{summary}\n（AI 审批没有放行：{review.reason}）"
-    request = ApprovalRequest(
-        tool_name=tool.name,
-        summary=summary,
-        preview=preview,
-        notes=check.notes,
-        always_label=check.always_label(),
-        always_parents_label=check.always_parents_label(),
-    )
-    return ApprovalOutcome(approved=await context.permissions.ask(request, check), review=review)
 
 
 def _error_outcome(call: ToolCall, message: str) -> ToolCallOutcome:

@@ -41,21 +41,38 @@ class SessionBusyError(RuntimeError):
 
 @dataclass
 class PendingApproval:
+    """等用户答复的审批：一批调用里要问的合成一张卡，一项时消息和以前一样，多项时放在 items 里。"""
+
     request_id: str
-    request: ApprovalRequest
+    requests: list[ApprovalRequest]
+    # 答复是每项一个 ApprovalAnswer 的列表
     answer: asyncio.Future
 
     def to_message(self) -> dict[str, Any]:
-        return {
-            "type": "approval_request",
-            "request_id": self.request_id,
-            "tool_name": self.request.tool_name,
-            "summary": self.request.summary,
-            "preview": self.request.preview,
-            "notes": self.request.notes,
-            "always_label": self.request.always_label,
-            "always_parents_label": self.request.always_parents_label,
-        }
+        message: dict[str, Any] = {"type": "approval_request", "request_id": self.request_id}
+        if len(self.requests) == 1:
+            message.update(_approval_item(self.requests[0]))
+        else:
+            message["items"] = [_approval_item(request) for request in self.requests]
+        return message
+
+
+def _parse_answer(name: Any) -> ApprovalAnswer:
+    try:
+        return ApprovalAnswer(str(name))
+    except ValueError:
+        return ApprovalAnswer.DENY
+
+
+def _approval_item(request: ApprovalRequest) -> dict[str, Any]:
+    return {
+        "tool_name": request.tool_name,
+        "summary": request.summary,
+        "preview": request.preview,
+        "notes": request.notes,
+        "always_label": request.always_label,
+        "always_parents_label": request.always_parents_label,
+    }
 
 
 @dataclass
@@ -81,7 +98,11 @@ class WebApprover:
         self.web_session = web_session
 
     async def request_approval(self, request: ApprovalRequest) -> ApprovalAnswer:
-        return await self.web_session.wait_for_approval(request)
+        answers = await self.web_session.wait_for_approvals([request])
+        return answers[0]
+
+    async def request_approvals(self, requests: list[ApprovalRequest]) -> list[ApprovalAnswer]:
+        return await self.web_session.wait_for_approvals(requests)
 
     async def ask_questions(self, questions: list[Question]) -> list[QuestionAnswer] | None:
         return await self.web_session.wait_for_answers(questions)
@@ -305,9 +326,10 @@ class WebSession:
 
     # ---- 审批 ----
 
-    async def wait_for_approval(self, request: ApprovalRequest) -> ApprovalAnswer:
+    async def wait_for_approvals(self, requests: list[ApprovalRequest]) -> list[ApprovalAnswer]:
+        """推一张审批卡给所有标签页，等任意一个答复；自动化任务有超时，没人答就全部拒绝。"""
         pending = PendingApproval(
-            request_id=uuid.uuid4().hex, request=request, answer=asyncio.get_running_loop().create_future()
+            request_id=uuid.uuid4().hex, requests=requests, answer=asyncio.get_running_loop().create_future()
         )
         self.pending_approvals[pending.request_id] = pending
         await self.broadcast(pending.to_message())
@@ -316,17 +338,21 @@ class WebSession:
                 return await pending.answer
             return await asyncio.wait_for(pending.answer, timeout=self.approval_timeout_seconds)
         except asyncio.TimeoutError:
-            return ApprovalAnswer.DENY
+            return [ApprovalAnswer.DENY] * len(requests)
         finally:
             # 答复了、超时了或者被中断了，都让各个标签页收起这张审批卡片
             self.pending_approvals.pop(pending.request_id, None)
             await self.broadcast({"type": "approval_resolved", "request_id": pending.request_id})
 
-    def answer_approval(self, request_id: str, answer_name: str) -> None:
+    def answer_approval(self, request_id: str, answer: str | None = None, answers: list[str] | None = None) -> None:
+        """一项的卡片回 answer，合并的卡片回 answers（每项一个）；对不上的项按拒绝算。"""
         pending = self.pending_approvals.get(request_id)
         if pending is None or pending.answer.done():
             return
-        pending.answer.set_result(ApprovalAnswer(answer_name))
+        names = answers if answers is not None else [answer or ApprovalAnswer.DENY.value]
+        parsed = [_parse_answer(name) for name in names]
+        parsed += [ApprovalAnswer.DENY] * (len(pending.requests) - len(parsed))
+        pending.answer.set_result(parsed[: len(pending.requests)])
 
     async def wait_for_answers(self, questions: list[Question]) -> list[QuestionAnswer] | None:
         """问题推给所有标签页，等任意一个提交；自动化任务有超时，没人答就当跳过。"""

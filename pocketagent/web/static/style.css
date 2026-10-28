@@ -691,6 +691,13 @@ pre code { padding: 0; background: none; font-size: inherit; }
 .approval-actions .ghost-button { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .approval-preview { max-height: 360px; background: var(--surface); }
 .approval-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+/* 合并的审批卡：每项一行，工具名 + 摘要 + 下拉框，预览默认收起 */
+.approval-item { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
+.approval-item-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.approval-item-summary { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.approval-choice { flex: 0 0 auto; max-width: 46%; }
+.approval-item-preview { margin-top: 6px; font-size: 12.5px; }
+.approval-item-preview > summary { cursor: pointer; color: var(--text-secondary); }
 
 .diff-line { display: block; }
 .diff-add { background: var(--diff-add-bg); color: var(--success); }

@@ -39,7 +39,8 @@ async def _handle_client_message(
                 user_message = web_session.build_message(text, attachment_ids)
                 await web_session.submit(user_message, manager.app_config.busy_input_mode)
         elif message_type == "approval":
-            web_session.answer_approval(message["request_id"], message["answer"])
+            # 一项的卡片回 answer，合并成一张的卡片回 answers（每项一个）
+            web_session.answer_approval(message["request_id"], message.get("answer"), message.get("answers"))
         elif message_type == "question_answer":
             web_session.answer_questions(message["request_id"], message.get("answers"))
         elif message_type == "interrupt":

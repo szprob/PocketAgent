@@ -86,6 +86,8 @@ const chat = new ChatView({
       refreshTasks().catch(() => {});
     },
     onApproval: (requestId, answer) => runtime.socket?.send({ type: "approval", request_id: requestId, answer }),
+    // 合并的审批卡：每项一个答复
+    onApprovals: (requestId, answers) => runtime.socket?.send({ type: "approval", request_id: requestId, answers }),
     onQuestionAnswer: (requestId, answers) =>
       runtime.socket?.send({ type: "question_answer", request_id: requestId, answers }),
     onReturnedInputs: (inputs) => chatComposer.restoreTexts(inputs.map((input) => input.text)),

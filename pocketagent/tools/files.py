@@ -113,6 +113,9 @@ class WriteFileTool(Tool):
     def access(self, arguments: dict[str, Any], context: ToolContext) -> ToolAccess:
         return path_argument_access(arguments, context, write=True)
 
+    def files_written(self, arguments: dict[str, Any], context: ToolContext) -> list[Path]:
+        return [context.resolve_path(arguments["path"])]
+
     def preview(self, arguments: dict[str, Any], context: ToolContext) -> str:
         path = context.resolve_path(arguments["path"])
         new_text = arguments["content"]
@@ -160,6 +163,9 @@ class EditFileTool(Tool):
 
     def access(self, arguments: dict[str, Any], context: ToolContext) -> ToolAccess:
         return path_argument_access(arguments, context, write=True)
+
+    def files_written(self, arguments: dict[str, Any], context: ToolContext) -> list[Path]:
+        return [context.resolve_path(arguments["path"])]
 
     def preview(self, arguments: dict[str, Any], context: ToolContext) -> str:
         path = context.resolve_path(arguments["path"])

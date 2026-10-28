@@ -165,6 +165,14 @@ class Tool(ABC):
         """
         return self.kind
 
+    def files_written(self, arguments: dict[str, Any], context: "ToolContext") -> list[Path]:
+        """这次调用会改哪些文件（它的预览也依赖这些文件的当前内容）。
+
+        同一批里后一个调用要改前一个改过的文件时，得等前一个执行完再审（见 core/nodes.py split_into_stages）。
+        说不准会改哪里的（bash 之类）留空，调度时按「可能改任何文件」处理。
+        """
+        return []
+
     def describe(self, arguments: dict[str, Any]) -> str:
         """一行摘要，显示在界面上，例如 bash 显示命令本身。"""
         text = json.dumps(arguments, ensure_ascii=False)
