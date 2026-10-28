@@ -43,7 +43,7 @@ from pocketagent.safety.checkpoints import TaskCheckpoints
 from pocketagent.safety.permissions import Approver, PermissionGate
 from pocketagent.safety.sandbox import SandboxPolicy, available_sandbox, default_secret_dirs
 from pocketagent.tools import default_tool_registry
-from pocketagent.tools.base import ToolContext, ToolRegistry, resolve_trusted_dirs
+from pocketagent.tools.base import ToolContext, ToolRegistry, trusted_dirs_outside_secrets
 
 INTERRUPTED_TOOL_RESULT = "用户中断了这一轮，这个调用没有执行完"
 
@@ -106,15 +106,15 @@ def build_tool_context(
     on_todos_changed: Callable[[list[dict[str, Any]]], Awaitable[None]] | None = None,
 ) -> ToolContext:
     """附件目录、技能目录不用确认就能读，项目记忆目录读写都不用确认；
-    用户配的免问目录和工作目录一样对待（读不问、改照审批模式走）；PocketAgent 自己的目录（有密钥）和 ~/.ssh 这类算密钥目录。"""
+    用户配的免问目录和工作目录一样对待（读不问、改照审批模式走，里面的密钥也不问）；
+    PocketAgent 自己的目录（有密钥）和 ~/.ssh 这类算密钥目录。"""
     tool_outputs_dir = session_directory(settings.tool_outputs_root, session.id)
     tool_outputs_dir.mkdir(parents=True, exist_ok=True)
     extra_read_dirs = [settings.attachments_dir / session.id, tool_outputs_dir] + [
         skill.directory for skill in skills
     ]
     secret_dirs = default_secret_dirs() + [settings.home_dir]
-    # 免问目录和密钥目录重叠时以密钥为准，也不把它算进沙箱的可写范围
-    trusted_dirs = resolve_trusted_dirs([Path(directory) for directory in settings.trusted_dirs], secret_dirs)
+    trusted_dirs = [Path(directory) for directory in settings.trusted_dirs]
     memory_dir = None
     # 临时任务没有项目，记项目记忆没意义（目录会跟着临时工作区一起被清掉）
     if settings.memory_enabled and not settings.ephemeral:
@@ -127,7 +127,8 @@ def build_tool_context(
             allow_network=settings.sandbox_network,
             secret_dirs=secret_dirs,
             readable_exceptions=extra_read_dirs,
-            writable_roots=trusted_dirs,
+            # 免问目录和密钥目录重叠时不进沙箱的可写范围：bash 在沙箱里照旧碰不到密钥
+            writable_roots=trusted_dirs_outside_secrets(trusted_dirs, secret_dirs),
         )
     return ToolContext(
         workspace=settings.workspace,

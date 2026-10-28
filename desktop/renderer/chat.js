@@ -80,6 +80,11 @@ export class ChatView {
     this.transcript.addEventListener("scroll", () => {
       this.stickToBottom = this.isNearBottom();
     });
+    // 输入框变高、思考块收起、图片加载完都会改高度，却不触发 scroll 事件：贴着底部时跟着滚到底，
+    // 不然刚出来的审批卡会被输入框挡住半截
+    const followBottom = new ResizeObserver(() => this.scrollIfSticking());
+    followBottom.observe(this.transcript);
+    followBottom.observe(this.inner);
   }
 
   reset(sessionId = null) {
@@ -99,7 +104,7 @@ export class ChatView {
     this.turnStartChildCount = null;
     this.turnImagePaths = new Set();
     this.sessionId = sessionId;
-    this.transcript.scrollTop = 0;
+    this.transcript.scrollTo({ top: 0, behavior: "instant" });
   }
 
   // ---- 服务端消息 ----
@@ -1044,7 +1049,8 @@ export class ChatView {
   }
 
   scrollToBottom() {
-    this.transcript.scrollTop = this.transcript.scrollHeight;
+    // 不走样式表里的平滑滚动：动画途中的 scroll 事件会把 stickToBottom 误判成不在底部，之后就不跟了
+    this.transcript.scrollTo({ top: this.transcript.scrollHeight, behavior: "instant" });
   }
 }
 

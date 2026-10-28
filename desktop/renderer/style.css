@@ -751,6 +751,11 @@ body.platform-darwin .sidebar-top {
   display: inline-flex;
 }
 
+/* 侧栏收起后，红绿灯就落在中间这栏的标题行上，展开按钮得让开 */
+body.platform-darwin .app.sidebar-hidden .view-header {
+  padding-left: 84px;
+}
+
 .view-title {
   min-width: 0;
   max-width: 42vw;

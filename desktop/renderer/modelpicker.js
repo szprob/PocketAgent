@@ -182,7 +182,7 @@ export class ModelPicker {
     if (info) {
       text = info.auto_compact
         ? `上下文超过 ${info.compact_threshold_percent}% 时在后台自动压缩，不打断对话`
-        : "自动压缩已关闭（设置 → 通用）";
+        : "自动压缩已关闭（设置 → 智能体）";
     }
     return el("div", "picker-footer", text);
   }

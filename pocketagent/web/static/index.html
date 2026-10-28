@@ -157,14 +157,17 @@
       </header>
       <div class="settings-layout">
         <nav class="settings-tabs">
-          <button class="settings-tab active" type="button" data-tab="models">模型</button>
-          <button class="settings-tab" type="button" data-tab="general">通用</button>
+          <button class="settings-tab active" type="button" data-tab="general">通用</button>
+          <button class="settings-tab" type="button" data-tab="models">模型</button>
+          <button class="settings-tab" type="button" data-tab="agent">智能体</button>
+          <button class="settings-tab" type="button" data-tab="permissions">权限与安全</button>
+          <button class="settings-tab" type="button" data-tab="tools">工具</button>
           <button class="settings-tab" type="button" data-tab="skills">技能</button>
           <button class="settings-tab" type="button" data-tab="memory">记忆</button>
           <button class="settings-tab" type="button" data-tab="usage">用量</button>
         </nav>
         <div class="settings-content">
-          <div class="settings-page" data-page="models">
+          <div class="settings-page hidden" data-page="models">
             <div class="model-layout">
               <div class="model-sidebar">
                 <div id="model-list" class="model-list"></div>
@@ -210,7 +213,7 @@
             </div>
           </div>
 
-          <div class="settings-page hidden" data-page="general">
+          <div class="settings-page" data-page="general">
             <div class="form-fields">
               <label class="field"><span>账户名称（左下角显示）</span>
                 <input id="user-name-input" type="text"></label>
@@ -231,32 +234,21 @@
               <label class="field"><span>新任务的默认工作区</span>
                 <select id="default-workspace-select"></select>
                 <span class="field-hint" id="default-workspace-hint"></span></label>
-              <div class="field-row">
-                <label class="field"><span>新任务的默认权限</span>
-                  <select id="default-mode-select"></select></label>
-                <label class="field"><span>单轮最多调用模型次数</span>
-                  <input id="max-steps-input" type="number" min="1" step="1"></label>
-              </div>
-              <div class="field-row">
-                <label class="field"><span>AI 审批用的模型</span>
-                  <select id="review-model-select"></select></label>
-                <label class="field"><span>AI 审批的思考档位</span>
-                  <select id="review-reasoning-select"></select></label>
-              </div>
-              <div class="field-hint">只影响「AI 自动审批」：每次改文件、跑命令前让模型判断一下安不安全。用不着深度思考，默认用最低档，等得少。</div>
-              <div class="field-row">
-                <label class="field"><span>子 agent 用的模型</span>
-                  <select id="subagent-model-select"></select></label>
-                <label class="field"><span>子 agent 的思考档位</span>
-                  <select id="subagent-reasoning-select"></select></label>
-              </div>
-              <div class="field-row">
-                <label class="field"><span>explore 子 agent 时长上限（分钟）</span>
-                  <input id="subagent-explore-minutes" type="number" min="1" step="1"></label>
-                <label class="field"><span>general 子 agent 时长上限（分钟）</span>
-                  <input id="subagent-general-minutes" type="number" min="1" step="1"></label>
-              </div>
-              <div class="field-hint">子 agent 默认和任务用同一个模型、同一档思考，派去调研时可以换快一点的模型或低一点的档位。到了时长上限会停下手上的事、写个总结交回来；等你审批的时间不算。</div>
+              <fieldset class="radio-group">
+                <legend>agent 正在干活时，我又发了一句话</legend>
+                <label class="radio-option"><input type="radio" name="busy-input-mode" value="interject">
+                  <span><strong>插话</strong>：马上放进对话，模型下一步就能看到（适合纠正方向、补充要求）</span></label>
+                <label class="radio-option"><input type="radio" name="busy-input-mode" value="queue">
+                  <span><strong>排队</strong>：等这一轮做完再作为新的一轮执行（适合接着布置下一件事）</span></label>
+              </fieldset>
+              <div class="field-hint" id="config-path"></div>
+            </div>
+          </div>
+
+          <div class="settings-page hidden" data-page="agent">
+            <div class="form-fields">
+              <label class="field"><span>单轮最多调用模型次数</span>
+                <input id="max-steps-input" type="number" min="1" step="1"></label>
               <fieldset class="radio-group">
                 <legend>上下文压缩</legend>
                 <label class="checkbox-field"><input type="checkbox" id="auto-compact-input">
@@ -271,6 +263,62 @@
                   </select></label>
                 <div class="field-hint">接口报「上下文超长」时，不管开没开自动压缩，都会先压缩再重试。</div>
               </fieldset>
+              <fieldset class="radio-group">
+                <legend>子 agent</legend>
+                <div class="field-row">
+                  <label class="field"><span>子 agent 用的模型</span>
+                    <select id="subagent-model-select"></select></label>
+                  <label class="field"><span>子 agent 的思考档位</span>
+                    <select id="subagent-reasoning-select"></select></label>
+                </div>
+                <div class="field-row">
+                  <label class="field"><span>explore 子 agent 时长上限（分钟）</span>
+                    <input id="subagent-explore-minutes" type="number" min="1" step="1"></label>
+                  <label class="field"><span>general 子 agent 时长上限（分钟）</span>
+                    <input id="subagent-general-minutes" type="number" min="1" step="1"></label>
+                </div>
+                <div class="field-hint">子 agent 默认和任务用同一个模型、同一档思考，派去调研时可以换快一点的模型或低一点的档位。到了时长上限会停下手上的事、写个总结交回来；等你审批的时间不算。</div>
+              </fieldset>
+            </div>
+          </div>
+
+          <div class="settings-page hidden" data-page="permissions">
+            <div class="form-fields">
+              <label class="field"><span>新任务的默认权限</span>
+                <select id="default-mode-select"></select></label>
+              <fieldset class="radio-group">
+                <legend>AI 自动审批</legend>
+                <div class="field-row">
+                  <label class="field"><span>AI 审批用的模型</span>
+                    <select id="review-model-select"></select></label>
+                  <label class="field"><span>AI 审批的思考档位</span>
+                    <select id="review-reasoning-select"></select></label>
+                </div>
+                <div class="field-hint">只影响「AI 自动审批」：每次改文件、跑命令前让模型判断一下安不安全。用不着深度思考，默认用最低档，等得少。</div>
+              </fieldset>
+              <fieldset class="radio-group">
+                <legend>工作目录以外</legend>
+                <label class="checkbox-field"><input type="checkbox" id="allow-outside-workspace">
+                  <span>读写工作目录以外的文件不再询问（密钥目录照样问；改文件仍按审批模式走）</span></label>
+                <label class="field"><span>免问目录：和工作目录一样对待（一行一个）</span>
+                  <textarea id="trusted-dirs-input" rows="3" placeholder="/Users/me/data"></textarea></label>
+                <div class="field-hint">工作目录以外、你固定会用的目录（存数据、放结果）配在这里：读文件不弹审批，改文件和工作目录一样按审批模式走，
+                  bash 沙箱里也能写。落在这里的密钥目录（~/.ssh、~/.pocketagent 等）也不再问，配了家目录就等于全都不问，风险自己掂量；
+                  bash 沙箱照旧读不到密钥。注意：检查点只管工作目录，工作目录以外的改动撤销不了。</div>
+              </fieldset>
+              <fieldset class="radio-group">
+                <legend>命令沙箱</legend>
+                <label class="checkbox-field"><input type="checkbox" id="sandbox-enabled">
+                  <span>把 bash 关进沙箱：命令只能写工作目录、临时目录和缓存目录，读不到 ~/.ssh、API Key 这类密钥</span></label>
+                <label class="checkbox-field"><input type="checkbox" id="sandbox-network">
+                  <span>沙箱里允许联网（不勾的话，要联网的命令得在沙箱外跑，每次都会问你）</span></label>
+                <div class="field-hint" id="sandbox-hint"></div>
+              </fieldset>
+            </div>
+          </div>
+
+          <div class="settings-page hidden" data-page="tools">
+            <div class="form-fields">
               <fieldset class="radio-group">
                 <legend>联网</legend>
                 <label class="checkbox-field"><input type="checkbox" id="web-search-enabled">
@@ -324,31 +372,6 @@
                   <span>允许 agent 截屏、点鼠标、敲键盘（screenshot / computer：能操作整台电脑，不在沙箱里）</span></label>
                 <div class="field-hint" id="computer-use-hint"></div>
               </fieldset>
-              <fieldset class="radio-group">
-                <legend>命令沙箱</legend>
-                <label class="checkbox-field"><input type="checkbox" id="sandbox-enabled">
-                  <span>把 bash 关进沙箱：命令只能写工作目录、临时目录和缓存目录，读不到 ~/.ssh、API Key 这类密钥</span></label>
-                <label class="checkbox-field"><input type="checkbox" id="sandbox-network">
-                  <span>沙箱里允许联网（不勾的话，要联网的命令得在沙箱外跑，每次都会问你）</span></label>
-                <div class="field-hint" id="sandbox-hint"></div>
-              </fieldset>
-              <fieldset class="radio-group">
-                <legend>工作目录以外</legend>
-                <label class="checkbox-field"><input type="checkbox" id="allow-outside-workspace">
-                  <span>读写工作目录以外的文件不再询问（密钥目录照样问；改文件仍按审批模式走）</span></label>
-                <label class="field"><span>免问目录：和工作目录一样对待（一行一个）</span>
-                  <textarea id="trusted-dirs-input" rows="3" placeholder="/Users/me/data"></textarea></label>
-                <div class="field-hint">工作目录以外、你固定会用的目录（存数据、放结果）配在这里：读文件不弹审批，改文件和工作目录一样按审批模式走，
-                  bash 沙箱里也能写。和密钥目录重叠的不会生效（比如把家目录加进来没用）。注意：检查点只管工作目录，工作目录以外的改动撤销不了。</div>
-              </fieldset>
-              <fieldset class="radio-group">
-                <legend>agent 正在干活时，我又发了一句话</legend>
-                <label class="radio-option"><input type="radio" name="busy-input-mode" value="interject">
-                  <span><strong>插话</strong>：马上放进对话，模型下一步就能看到（适合纠正方向、补充要求）</span></label>
-                <label class="radio-option"><input type="radio" name="busy-input-mode" value="queue">
-                  <span><strong>排队</strong>：等这一轮做完再作为新的一轮执行（适合接着布置下一件事）</span></label>
-              </fieldset>
-              <div class="field-hint" id="config-path"></div>
             </div>
           </div>
 

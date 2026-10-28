@@ -48,7 +48,7 @@ export function initSidebar(handlers) {
   elements.navNewTask.addEventListener("click", () => callbacks.onNewTask(null));
   elements.navAutomations.addEventListener("click", () => callbacks.onAutomations());
   document.getElementById("account-button").addEventListener("click", () => callbacks.onSettings("usage"));
-  document.getElementById("open-settings").addEventListener("click", () => callbacks.onSettings("models"));
+  document.getElementById("open-settings").addEventListener("click", () => callbacks.onSettings("general"));
   document.getElementById("add-workspace").addEventListener("click", openFolderPicker);
   initFolderPicker((addedPath) => {
     if (addedPath) {
