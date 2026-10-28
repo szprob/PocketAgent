@@ -18,7 +18,7 @@ import {
 import { closeEditor, initAutomations, isAutomationEditorOpen, showAutomations } from "./automations.js";
 import { ChatView } from "./chat.js";
 import { Composer } from "./composer.js";
-import { clear, el, show } from "./dom.js";
+import { applyAppearance, clear, el, show } from "./dom.js";
 import { closeFilePreview, citationText, initFilePreview, isFilePreviewOpen } from "./filepreview.js";
 import { closeFolderPicker, isFolderPickerOpen } from "./folderpicker.js";
 import { icon } from "./icons.js";
@@ -579,6 +579,7 @@ async function bootstrap() {
 
 async function reloadInfo() {
   state.info = await request("/api/info");
+  applyAppearance(state.info);
   emit("info-changed");
   applyInfoToComposers();
 }
