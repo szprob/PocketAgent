@@ -213,13 +213,13 @@ function sendToServer(message) {
   return true;
 }
 
-async function sendUserMessage({ text, files }) {
+async function sendUserMessage({ text, files, attachmentIds = [] }) {
   if (!chat.socket || chat.socket.readyState !== WebSocket.OPEN) {
     addNotice("还没连上服务，稍等再试", "warning");
     return false;
   }
   // 斜杠命令本地消化，不进对话（/技能名 除外，它要交给 agent）
-  if (text && files.length === 0 && looksLikeCommand(text)) {
+  if (text && files.length === 0 && attachmentIds.length === 0 && looksLikeCommand(text)) {
     const outcome = await runCommand(text, { sessionId: state.currentTaskId }).catch((error) => ({
       handled: true,
       text: `命令执行失败：${error.message}`,
@@ -237,7 +237,11 @@ async function sendUserMessage({ text, files }) {
     addNotice(`附件上传失败：${error.message}`, "error");
     return false;
   }
-  return sendToServer({ type: "user_message", text, attachment_ids: attachments.map((item) => item.id) });
+  return sendToServer({
+    type: "user_message",
+    text,
+    attachment_ids: [...attachments.map((item) => item.id), ...attachmentIds],
+  });
 }
 
 // 命令的输出画在对话里；有跳转 / 开新会话动作的接着做
@@ -374,12 +378,12 @@ function handleAgentEvent(event) {
       closeActivityFold();
       chat.turnStartChildCount = elements.transcriptInner.children.length;
       chat.lastReply = null;
-      addUserMessage(event.user_text, event.attachments);
+      addUserMessage(event.user_text, event.attachments, "", event.message_id);
       showActivity("等待模型响应");
       break;
     case "interjection_applied":
       finishStreamingBlocks();
-      addUserMessage(event.user_text, event.attachments, "插话");
+      addUserMessage(event.user_text, event.attachments, "插话", event.message_id);
       showActivity("等待模型响应");
       // 已经交给模型了，从输入框上方的「待发」里拿掉
       if (chat.status?.interjections.length) {
@@ -574,7 +578,7 @@ function renderAttachments(attachments) {
   return list;
 }
 
-function addUserMessage(text, attachments, badge) {
+function addUserMessage(text, attachments, badge, messageId) {
   closeActivityFold();
   const message = el("div", "message-user");
   if (badge) {
@@ -586,7 +590,50 @@ function addUserMessage(text, attachments, badge) {
   if (text) {
     message.appendChild(el("div", "message-text", text));
   }
+  if (messageId) {
+    message.appendChild(buildRewindButton(messageId));
+  }
   appendToTranscript(message);
+}
+
+// 用户消息上的「恢复到这里」：把这句之后的内容全删掉，原话放回输入框重新编辑
+function buildRewindButton(messageId) {
+  const rewind = button("message-rewind", "恢复到这里", "undo", "撤销这句话之后的对话，并把这句话放回输入框");
+  rewind.addEventListener("click", () => rewindTo(messageId));
+  return rewind;
+}
+
+async function rewindTo(messageId) {
+  if (chat.running) {
+    addNotice("任务还在运行，等它停下再恢复", "warning");
+    return;
+  }
+  const confirmed = window.confirm(
+    "恢复到这里？\n这句话之后的对话会全部删掉，这句话和附件放回输入框。工作区里的文件不动。"
+  );
+  if (!confirmed) {
+    return;
+  }
+  const taskId = state.currentTaskId;
+  let result;
+  try {
+    result = await sendJson(`api/sessions/${encodeURIComponent(taskId)}/rewind`, "POST", { message_id: messageId });
+  } catch (error) {
+    if (error.status === 409 && taskId === state.currentTaskId) {
+      // 对话已经变了（比如压缩过），把界面拉回服务端的样子再提示
+      const snapshot = await requestJson(`api/sessions/${encodeURIComponent(taskId)}`).catch(() => null);
+      if (snapshot && taskId === state.currentTaskId) {
+        renderSnapshot(snapshot);
+      }
+    }
+    addNotice(`恢复失败：${error.message}`, "error");
+    return;
+  }
+  if (taskId !== state.currentTaskId) {
+    return;
+  }
+  renderSnapshot(result.snapshot);
+  chat.composer.restoreMessage(result.message);
 }
 
 function addAssistantMessage(text, finish = "") {
@@ -1183,7 +1230,7 @@ function resolveQuestions(requestId) {
 
 function renderHistoryItem(item) {
   if (item.kind === "user") {
-    addUserMessage(item.text, item.attachments);
+    addUserMessage(item.text, item.attachments, "", item.message_id);
   } else if (item.kind === "assistant") {
     addAssistantMessage(item.text, item.finish);
   } else if (item.kind === "summary") {

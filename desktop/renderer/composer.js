@@ -31,6 +31,8 @@ export class Composer {
     this.onWorkspaceChange = options.onWorkspaceChange;
 
     this.pendingFiles = [];
+    // 从对话里「恢复到这里」带回来的附件：服务端已经有了，重发时只传 id
+    this.pendingAttachments = [];
     this.running = false;
     this.commands = [];
     this.skillNames = [];
@@ -294,35 +296,63 @@ export class Composer {
 
   renderChips() {
     this.chips.replaceChildren();
-    show(this.chips, this.pendingFiles.length > 0);
+    const total = this.pendingFiles.length + this.pendingAttachments.length;
+    show(this.chips, total > 0);
     this.pendingFiles.forEach((pending, index) => {
-      const chip = el("div", "chip");
-      if (pending.previewUrl) {
-        const image = el("img", "chip-thumbnail");
-        image.src = pending.previewUrl;
-        image.alt = pending.file.name;
-        chip.append(image);
-      } else {
-        chip.append(icon("file", "chip-icon"));
-      }
-      const label = el("span", "chip-label");
-      label.append(el("span", "chip-name", pending.file.name || "粘贴的图片"), el("span", "chip-size", formatBytes(pending.file.size)));
-      const remove = iconButton("close", "移除", "chip-remove");
-      remove.addEventListener("click", () => this.removeFile(index));
-      chip.append(label, remove);
-      this.chips.append(chip);
+      this.chips.append(this.fileChip(pending, index));
     });
+    this.pendingAttachments.forEach((attachment, index) => {
+      this.chips.append(this.attachmentChip(attachment, index));
+    });
+  }
+
+  fileChip(pending, index) {
+    const chip = el("div", "chip");
+    if (pending.previewUrl) {
+      const image = el("img", "chip-thumbnail");
+      image.src = pending.previewUrl;
+      image.alt = pending.file.name;
+      chip.append(image);
+    } else {
+      chip.append(icon("file", "chip-icon"));
+    }
+    const label = el("span", "chip-label");
+    label.append(el("span", "chip-name", pending.file.name || "粘贴的图片"), el("span", "chip-size", formatBytes(pending.file.size)));
+    const remove = iconButton("close", "移除", "chip-remove");
+    remove.addEventListener("click", () => this.removeFile(index));
+    chip.append(label, remove);
+    return chip;
+  }
+
+  attachmentChip(attachment, index) {
+    const chip = el("div", "chip");
+    chip.append(icon(attachment?.kind === "image" ? "image" : "file", "chip-icon"));
+    const label = el("span", "chip-label");
+    label.append(
+      el("span", "chip-name", attachment?.name || "附件"),
+      el("span", "chip-size", formatBytes(attachment?.size || 0))
+    );
+    const remove = iconButton("close", "移除", "chip-remove");
+    remove.addEventListener("click", () => this.removeAttachment(index));
+    chip.append(label, remove);
+    return chip;
+  }
+
+  removeAttachment(index) {
+    this.pendingAttachments.splice(index, 1);
+    this.renderChips();
   }
 
   // ---- 发送 ----
 
   async submit() {
     const text = this.textarea.value.trim();
-    if (!text && this.pendingFiles.length === 0) {
+    if (!text && this.pendingFiles.length === 0 && this.pendingAttachments.length === 0) {
       return;
     }
     const files = this.pendingFiles.map((pending) => pending.file);
-    const sent = await this.onSubmit({ text, files });
+    const attachmentIds = this.pendingAttachments.map((attachment) => attachment.id);
+    const sent = await this.onSubmit({ text, files, attachmentIds });
     if (sent) {
       this.clear();
     }
@@ -336,6 +366,7 @@ export class Composer {
       }
     }
     this.pendingFiles = [];
+    this.pendingAttachments = [];
     this.renderChips();
     this.resize();
   }
@@ -351,6 +382,7 @@ export class Composer {
       }
     }
     this.pendingFiles = [];
+    this.pendingAttachments = [];
     this.renderChips();
   }
 
@@ -362,6 +394,20 @@ export class Composer {
     this.textarea.value = this.textarea.value ? `${this.textarea.value}\n${restored}` : restored;
     this.resize();
     this.focus();
+  }
+
+  // 「恢复到这里」：这句话的原话和附件放回输入框，改完直接重发
+  restoreMessage(message) {
+    if (!message) {
+      return;
+    }
+    this.textarea.value = message.text || "";
+    this.pendingAttachments = (message.attachments || []).map((attachment) => ({ ...attachment }));
+    this.renderChips();
+    this.resize();
+    this.focus();
+    const end = this.textarea.value.length;
+    this.textarea.setSelectionRange(end, end);
   }
 
   focus() {

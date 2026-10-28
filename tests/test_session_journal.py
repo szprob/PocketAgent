@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from pocketagent.core.agent import INTERRUPTED_TOOL_RESULT
+from pocketagent.core.compaction import SUMMARY_PREFIX
 from pocketagent.core.session import Session, SessionJournal, SessionStore
 from pocketagent.llm import LLMResponse
 from tests.helpers import TemporaryDirectories, build_harness, roles
@@ -38,7 +39,7 @@ class SessionJournalTest(unittest.IsolatedAsyncioTestCase):
         self.session.messages = [message("system", "s"), message("user", "q"), message("assistant", "a")]
         self.store.save(self.session)
         journal = SessionJournal(self.store, self.session)
-        compacted = [message("system", "s"), message("user", "摘要")]
+        compacted = [message("system", "s"), message("user", f"{SUMMARY_PREFIX}摘要")]
 
         await journal.record(compacted, 1)
         loaded = self.store.load(self.session.id)
@@ -61,6 +62,29 @@ class SessionJournalTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(roles(loaded.messages), ["system", "user", "assistant", "tool"])
         self.assertEqual([item["content"] for item in loaded.messages].count("a"), 1)
+
+    async def test_loaded_user_messages_get_ids_and_can_be_rewound(self) -> None:
+        self.session.messages = [
+            message("system", "s"),
+            message("user", "第一问"),
+            message("assistant", "第一答"),
+            message("user", "第二问"),
+            message("assistant", "第二答"),
+        ]
+        self.session.turns = 2
+        self.store.save(self.session)
+
+        loaded = self.store.load(self.session.id)
+        user_ids = [item.get("_id") for item in loaded.messages if item.get("role") == "user"]
+        self.assertTrue(all(user_ids))
+        self.assertEqual(len(set(user_ids)), 2)
+
+        display = loaded.rewind_to_message(user_ids[1])
+        self.assertEqual(display["text"], "第二问")
+        self.assertEqual(roles(loaded.messages), ["system", "user", "assistant"])
+        self.assertEqual(loaded.turns, 1)
+        # 这句话已经被删掉，同一个 id 再恢复不了
+        self.assertIsNone(loaded.rewind_to_message(user_ids[1]))
 
     async def test_torn_last_line_is_ignored(self) -> None:
         self.session.messages = [message("system", "s"), message("user", "q")]

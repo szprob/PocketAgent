@@ -22,6 +22,7 @@ def add_routes(router: web.UrlDispatcher) -> None:
     router.add_get("/api/sessions/{session_id}", sessions.get_session)
     router.add_get("/api/sessions/{session_id}/overview", sessions.get_overview)
     router.add_patch("/api/sessions/{session_id}", sessions.update_session)
+    router.add_post("/api/sessions/{session_id}/rewind", sessions.rewind_session)
     router.add_delete("/api/sessions/{session_id}", sessions.delete_session)
     router.add_post("/api/sessions/{session_id}/attachments", sessions.upload_attachments)
     router.add_get("/api/sessions/{session_id}/attachments/{attachment_id}", sessions.get_attachment)

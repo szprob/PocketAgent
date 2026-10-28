@@ -562,6 +562,45 @@ body.resizing {
   font-weight: 600;
 }
 
+/* 用户消息上的「恢复到这里」：平时藏起来，鼠标移上去才露出来 */
+.message-rewind {
+  align-self: flex-end;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 2px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: calc(11px * var(--font-scale));
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.message-user:hover .message-rewind,
+.message-rewind:focus-visible {
+  opacity: 1;
+}
+
+.message-rewind:hover {
+  color: var(--text);
+}
+
+.message-rewind .icon svg {
+  width: 12px;
+  height: 12px;
+}
+
+/* 触屏没有 hover，一直淡淡地露着 */
+@media (hover: none) {
+  .message-rewind {
+    opacity: 0.6;
+  }
+}
+
 .message-attachments { display: flex; flex-wrap: wrap; gap: 6px; }
 
 .message-attachment {

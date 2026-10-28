@@ -91,6 +91,7 @@ const chat = new ChatView({
     onQuestionAnswer: (requestId, answers) =>
       runtime.socket?.send({ type: "question_answer", request_id: requestId, answers }),
     onReturnedInputs: (inputs) => chatComposer.restoreTexts(inputs.map((input) => input.text)),
+    onRewind: (message) => chatComposer.restoreMessage(message),
     onOpenAttachment: (attachment) => openAttachment(attachment),
     onModelResponded: () => rightPanel.handleModelResponded(),
     onFilesChanged: () => {
@@ -412,12 +413,12 @@ function renderPendingInputs(status) {
   show(elements.pendingInputs, interjections.length + queued.length > 0);
 }
 
-async function sendChatMessage({ text, files }) {
+async function sendChatMessage({ text, files, attachmentIds = [] }) {
   if (!runtime.socket) {
     chat.addNotice("还没连上服务，稍等再试", "warning");
     return false;
   }
-  if (text && files.length === 0 && looksLikeCommand(text)) {
+  if (text && files.length === 0 && attachmentIds.length === 0 && looksLikeCommand(text)) {
     const outcome = await runCommand(text, { sessionId: state.currentTaskId }).catch((error) => ({
       handled: true,
       text: `命令执行失败：${error.message}`,
@@ -439,7 +440,7 @@ async function sendChatMessage({ text, files }) {
   runtime.socket.send({
     type: "user_message",
     text,
-    attachment_ids: attachments.map((item) => item.id),
+    attachment_ids: [...attachments.map((item) => item.id), ...attachmentIds],
   });
   return true;
 }

@@ -218,7 +218,10 @@ async def _apply_interjections(context: AgentContext) -> None:
         context.messages.append(message)
         display = message_display(message)
         await context.events.emit(
-            EventType.INTERJECTION_APPLIED, user_text=display["text"], attachments=display["attachments"]
+            EventType.INTERJECTION_APPLIED,
+            message_id=message.get("_id"),
+            user_text=display["text"],
+            attachments=display["attachments"],
         )
 
 

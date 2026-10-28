@@ -42,7 +42,12 @@ def _user_item(message: dict[str, Any]) -> dict[str, Any]:
         # 摘要后面保留的技能正文不用显示给用户
         summary = display["text"][len(SUMMARY_PREFIX) :].split(PRESERVED_SKILLS_HEADER)[0]
         return {"kind": "summary", "text": summary}
-    return {"kind": "user", "text": display["text"], "attachments": display["attachments"]}
+    return {
+        "kind": "user",
+        "text": display["text"],
+        "attachments": display["attachments"],
+        "message_id": message.get("_id"),
+    }
 
 
 def _fill_tool_result(item: dict[str, Any], message: dict[str, Any]) -> None:
