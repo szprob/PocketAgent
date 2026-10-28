@@ -11,11 +11,12 @@ const INLINE_PATTERN = new RegExp(
     /`[^`\n]+`/.source, // 行内代码
     /!\[[^\]\n]*\]\(<[^>\n]+>\)/.source, // 图片：尖括号包住路径
     /!\[[^\]\n]*\]\([^)\s]+\)/.source, // 图片
-    /\[[^\]\n]+\]\(https?:\/\/[^)\s]+\)/.source, // 链接只认 http(s)，避免 javascript: 之类
+    // 链接只认 http(s)，避免 javascript: 之类；URL 里允许一层配对的括号
+    /\[[^\]\n]+\]\(https?:\/\/(?:[^()\s]|\([^()\s]*\))+\)/.source,
     /\*\*\*[^*\n]+\*\*\*/.source, // 粗斜体
-    /___[^_\n]+___/.source,
+    /(?<![A-Za-z0-9_])___[^_\n]+___(?![A-Za-z0-9_])/.source,
     /\*\*[^*\n]+\*\*/.source, // 粗体
-    /__[^_\n]+__/.source,
+    /(?<![A-Za-z0-9_])__[^_\n]+__(?![A-Za-z0-9_])/.source, // 下划线粗体不能夹在单词里
     /~~[^~\n]+~~/.source, // 删除线
     /\*(?!\s)[^*\n]*[^\s*]\*/.source, // 斜体：两侧不能是空白，2 * 3 * 4 不会被误判
     /(?<![A-Za-z0-9_])_(?!\s)[^_\n]*[^\s_](?![A-Za-z0-9_])/.source, // 斜体：别碰 snake_case
@@ -35,38 +36,38 @@ const QUOTE_PATTERN = /^>\s?/;
 
 // 裸链接只扫普通文字；中文标点、全角符号和汉字都当 URL 的结束符，
 // 否则「见https://a.cn/x然后」会把后面的汉字也吃进链接
-const BARE_URL_PATTERN = /(?:https?:\/\/|www\.)[^\s<>"'`\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]+/g;
+const BARE_URL_PATTERN = /(?:https?:\/\/|www\.)[^\s<>"'`\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]+/gi;
 const URL_TAIL_PUNCTUATION = ".,;:!?'\"";
 
-// 引用块里可以再放列表、代码块、表格，递归解析；>> 套太深就退化成普通段落
+// 引用块里可以再放列表、代码块、表格，递归解析；最多套四层，再深就退化成普通段落
 const QUOTE_DEPTH_LIMIT = 4;
 
 function trimUrlTail(url) {
   let end = url.length;
-  while (end > 0) {
-    const character = url[end - 1];
-    if (URL_TAIL_PUNCTUATION.includes(character)) {
-      end -= 1;
-      continue;
+  while (end > 0 && URL_TAIL_PUNCTUATION.includes(url[end - 1])) {
+    end -= 1;
+  }
+  let balance = 0;
+  for (let position = 0; position < end; position += 1) {
+    if (url[position] === "(") {
+      balance += 1;
+    } else if (url[position] === ")") {
+      balance -= 1;
     }
-    if (character === ")") {
-      const opening = (url.slice(0, end).match(/\(/g) ?? []).length;
-      const closing = (url.slice(0, end).match(/\)/g) ?? []).length;
-      if (closing > opening) {
-        end -= 1;
-        continue;
-      }
-    }
-    break;
+  }
+  // 只用掉结尾多出来的右括号，wiki 那种 xxx_(bar) 保持完整
+  while (end > 0 && url[end - 1] === ")" && balance < 0) {
+    end -= 1;
+    balance += 1;
   }
   return url.slice(0, end);
 }
 
 function isBareUrl(url) {
-  if (/^https?:\/\//.test(url)) {
-    return /^https?:\/\/[A-Za-z0-9\u00a1-\uffff]/.test(url);
+  if (/^https?:\/\//i.test(url)) {
+    return /^https?:\/\/[A-Za-z0-9\u00a1-\uffff]/i.test(url);
   }
-  return /^www\.[A-Za-z0-9\u00a1-\uffff]/.test(url);
+  return /^www\.[A-Za-z0-9\u00a1-\uffff]/i.test(url);
 }
 
 function tokenKind(token) {
@@ -204,8 +205,16 @@ function parseListLine(line) {
   };
 }
 
+// 分隔行的列数必须和表头一致；否则「用时 | 3 分钟」后面跟一条 --- 会被误判成表格
 function isTableStart(lines, index) {
-  return lines[index].includes("|") && index + 1 < lines.length && isTableSeparator(lines[index + 1]);
+  if (!lines[index].includes("|") || index + 1 >= lines.length) {
+    return false;
+  }
+  const separatorLine = lines[index + 1];
+  if (!isTableSeparator(separatorLine)) {
+    return false;
+  }
+  return splitTableRow(separatorLine).length === splitTableRow(lines[index]).length;
 }
 
 function isHorizontalRule(line) {
@@ -425,7 +434,7 @@ function buildLink(label, url, options, depth) {
 }
 
 function buildBareLink(displayUrl) {
-  const href = displayUrl.startsWith("www.") ? `https://${displayUrl}` : displayUrl;
+  const href = /^www\./i.test(displayUrl) ? `https://${displayUrl}` : displayUrl;
   const anchor = el("a", "md-link", displayUrl);
   anchor.href = "#";
   anchor.addEventListener("click", (event) => {
@@ -436,7 +445,7 @@ function buildBareLink(displayUrl) {
 }
 
 // 普通文字里认出裸链接；代码、已有链接的内部不会走到这里
-function appendText(container, text, allowBareLinks) {
+function appendTextSegment(container, text, allowBareLinks) {
   if (!allowBareLinks || text === "") {
     if (text !== "") {
       container.append(document.createTextNode(text));
@@ -460,6 +469,16 @@ function appendText(container, text, allowBareLinks) {
   }
 }
 
+function emphasisTag(kind) {
+  if (kind === "strong") {
+    return "strong";
+  }
+  if (kind === "strike") {
+    return "del";
+  }
+  return "em";
+}
+
 function appendEmphasis(container, kind, content, options, depth, allowBareLinks) {
   if (kind === "strongEmphasis") {
     const strong = el("strong");
@@ -469,8 +488,7 @@ function appendEmphasis(container, kind, content, options, depth, allowBareLinks
     container.append(strong);
     return;
   }
-  const tag = kind === "strong" ? "strong" : kind === "strike" ? "del" : "em";
-  const node = el(tag);
+  const node = el(emphasisTag(kind));
   appendInline(node, content, options, depth + 1, allowBareLinks);
   container.append(node);
 }
@@ -501,11 +519,11 @@ function appendInline(container, text, options, depth = 0, allowBareLinks = true
   }
   let lastIndex = 0;
   for (const match of source.matchAll(INLINE_PATTERN)) {
-    appendText(container, source.slice(lastIndex, match.index), allowBareLinks);
+    appendTextSegment(container, source.slice(lastIndex, match.index), allowBareLinks);
     appendInlineToken(container, match[0], options, depth, allowBareLinks);
     lastIndex = match.index + match[0].length;
   }
-  appendText(container, source.slice(lastIndex), allowBareLinks);
+  appendTextSegment(container, source.slice(lastIndex), allowBareLinks);
 }
 
 function readQuote(lines, startIndex, options, depth) {
@@ -516,7 +534,8 @@ function readQuote(lines, startIndex, options, depth) {
     index += 1;
   }
   const quote = el("blockquote");
-  if (depth >= QUOTE_DEPTH_LIMIT) {
+  // 当前这层算一层，所以到 QUOTE_DEPTH_LIMIT - 1 就不再往下拆
+  if (depth >= QUOTE_DEPTH_LIMIT - 1) {
     const paragraph = el("p");
     quotedLines.forEach((line, lineIndex) => {
       if (lineIndex > 0) {
