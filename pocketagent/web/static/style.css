@@ -667,6 +667,8 @@ body.resizing {
 .message-assistant .md-align-right, .markdown-view .md-align-right { text-align: right; }
 .message-assistant .md-task-list, .markdown-view .md-task-list { list-style: none; padding-left: 0.4em; }
 .message-assistant .md-task-item input, .markdown-view .md-task-item input { margin: 0 6px 0 0; vertical-align: middle; }
+.message-assistant .md-math-block, .markdown-view .md-math-block { max-width: 100%; margin: 0.75em 0; padding: 2px 0; overflow-x: auto; overflow-y: hidden; }
+.message-assistant .md-math-block .katex-display, .markdown-view .md-math-block .katex-display { margin: 0; }
 
 code { padding: 1px 5px; border-radius: 5px; background: var(--surface-sunken); font-family: var(--mono); font-size: 0.88em; }
 

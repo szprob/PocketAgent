@@ -1,3 +1,5 @@
+import katex from "../../vendor/katex/katex.mjs";
+
 // 够用的 Markdown 子集：所有文字都过 escapeHtml，标签只由这里生成，模型输出带 HTML 也不会被执行。
 
 // 行内语法一次扫完，不再做多次 replace：替换出来的标签和属性不会被后面的正则二次加工
@@ -5,6 +7,8 @@
 const INLINE_PATTERN = new RegExp(
   [
     /`[^`\n]+`/.source, // 行内代码
+    /\\\((?:\\.|[^\\])*?\\\)/.source, // 行内公式：\(...\)
+    /(?<!\\)\$(?![\s$])(?:\\.|[^\\$])*?(?<![\s$])\$(?!\d)/.source, // 行内公式：$...$，别碰金额
     /!\[[^\]\n]*\]\(<[^>\n]+>\)/.source, // 图片：尖括号包住路径
     /!\[[^\]\n]*\]\([^)\s]+\)/.source, // 图片
     // 链接只认 http(s)，避免 javascript: 之类；URL 里允许一层配对的括号
@@ -78,6 +82,9 @@ function tokenKind(token) {
   if (token.startsWith("`")) {
     return "code";
   }
+  if (token.startsWith("\\(") || token.startsWith("$")) {
+    return "math";
+  }
   if (token.startsWith("![")) {
     return "image";
   }
@@ -120,6 +127,23 @@ function linkParts(token) {
   return { label: token.slice(1, labelEnd), url: token.slice(labelEnd + 2, -1) };
 }
 
+function renderMath(source, displayMode, rawSource) {
+  try {
+    const rendered = katex.renderToString(source, { displayMode, throwOnError: true, trust: false });
+    if (displayMode) {
+      return `<div class="md-math-block">${rendered}</div>`;
+    }
+    return `<span class="md-math-inline">${rendered}</span>`;
+  } catch {
+    return escapeHtml(rawSource);
+  }
+}
+
+function renderMathToken(token) {
+  const source = token.startsWith("\\(") ? token.slice(2, -2) : token.slice(1, -1);
+  return renderMath(source, false, token);
+}
+
 // 图片地址只认 http(s)，本地路径交给调用方（聊天里换成会话取图地址）；认不出来就按原文显示
 function renderImage(alt, source, options) {
   let url = null;
@@ -138,6 +162,9 @@ function renderToken(token, options, depth, allowBareLinks) {
   const kind = tokenKind(token);
   if (kind === "code") {
     return `<code class="md-inline-code">${escapeHtml(token.slice(1, -1))}</code>`;
+  }
+  if (kind === "math") {
+    return renderMathToken(token);
   }
   if (kind === "image") {
     const { alt, source } = imageParts(token);
@@ -270,6 +297,41 @@ function parseFence(line) {
   return { marker: match[1], language: match[2].trim() };
 }
 
+function readDisplayMathSource(lines, startIndex) {
+  const openingLine = lines[startIndex].trim();
+  const marker = openingLine.startsWith("$$") ? "$$" : openingLine.startsWith("\\[") ? "\\[" : null;
+  if (!marker) {
+    return null;
+  }
+  const closingMarker = marker === "$$" ? "$$" : "\\]";
+  if (openingLine !== marker) {
+    if (!openingLine.endsWith(closingMarker)) {
+      return null;
+    }
+    const source = openingLine.slice(marker.length, -closingMarker.length).trim();
+    if (!source) {
+      return null;
+    }
+    return { source, rawSource: openingLine, nextIndex: startIndex + 1 };
+  }
+
+  const contentLines = [];
+  let index = startIndex + 1;
+  while (index < lines.length) {
+    if (lines[index].trim() === closingMarker) {
+      return {
+        source: contentLines.join("\n").trim(),
+        rawSource: lines.slice(startIndex, index + 1).join("\n"),
+        nextIndex: index + 1,
+      };
+    }
+    contentLines.push(lines[index]);
+    index += 1;
+  }
+  // 流式输出还没给结束符时保留原文，避免每一帧都闪公式报错
+  return null;
+}
+
 function isFenceClose(line, marker) {
   const trimmed = line.trim();
   if (trimmed.length < marker.length) {
@@ -314,6 +376,7 @@ function isBlockStart(lines, index) {
   const line = lines[index];
   return (
     parseFence(line) !== null ||
+    readDisplayMathSource(lines, index) !== null ||
     HEADING_PATTERN.test(line) ||
     isHorizontalRule(line) ||
     QUOTE_PATTERN.test(line) ||
@@ -474,6 +537,10 @@ function readBlock(lines, index, options, depth) {
   const fence = parseFence(line);
   if (fence) {
     return readCodeBlock(lines, index, fence);
+  }
+  const math = readDisplayMathSource(lines, index);
+  if (math) {
+    return { html: renderMath(math.source, true, math.rawSource), nextIndex: math.nextIndex };
   }
   const heading = line.match(HEADING_PATTERN);
   if (heading) {

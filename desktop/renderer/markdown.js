@@ -1,6 +1,7 @@
 // 模型回复的 Markdown 渲染。全部用 DOM 节点拼，不用 innerHTML，避免模型输出带脚本。
 // 块和行内的规则和 web 端 ui/markdown.js 一样，改一边记得改另一边。
 
+import katex from "./vendor/katex/katex.mjs";
 import { binaryDataUrl, openExternal } from "./api.js";
 import { el } from "./dom.js";
 
@@ -9,6 +10,8 @@ import { el } from "./dom.js";
 const INLINE_PATTERN = new RegExp(
   [
     /`[^`\n]+`/.source, // 行内代码
+    /\\\((?:\\.|[^\\])*?\\\)/.source, // 行内公式：\(...\)
+    /(?<!\\)\$(?![\s$])(?:\\.|[^\\$])*?(?<![\s$])\$(?!\d)/.source, // 行内公式：$...$，别碰金额
     /!\[[^\]\n]*\]\(<[^>\n]+>\)/.source, // 图片：尖括号包住路径
     /!\[[^\]\n]*\]\([^)\s]+\)/.source, // 图片
     // 链接只认 http(s)，避免 javascript: 之类；URL 里允许一层配对的括号
@@ -74,6 +77,9 @@ function tokenKind(token) {
   if (token.startsWith("`")) {
     return "code";
   }
+  if (token.startsWith("\\(") || token.startsWith("$")) {
+    return "math";
+  }
   if (token.startsWith("![")) {
     return "image";
   }
@@ -114,6 +120,21 @@ function imageParts(token) {
 function linkParts(token) {
   const labelEnd = token.indexOf("](");
   return { label: token.slice(1, labelEnd), url: token.slice(labelEnd + 2, -1) };
+}
+
+function buildMath(source, displayMode, rawSource) {
+  const node = el(displayMode ? "div" : "span", displayMode ? "md-math-block" : "md-math-inline");
+  try {
+    katex.render(source, node, { displayMode, throwOnError: true, trust: false });
+    return node;
+  } catch {
+    return document.createTextNode(rawSource);
+  }
+}
+
+function buildInlineMath(token) {
+  const source = token.startsWith("\\(") ? token.slice(2, -2) : token.slice(1, -1);
+  return buildMath(source, false, token);
 }
 
 function splitTableRow(line) {
@@ -181,6 +202,41 @@ function parseFence(line) {
   return { marker: match[1], language: match[2].trim() };
 }
 
+function readDisplayMathSource(lines, startIndex) {
+  const openingLine = lines[startIndex].trim();
+  const marker = openingLine.startsWith("$$") ? "$$" : openingLine.startsWith("\\[") ? "\\[" : null;
+  if (!marker) {
+    return null;
+  }
+  const closingMarker = marker === "$$" ? "$$" : "\\]";
+  if (openingLine !== marker) {
+    if (!openingLine.endsWith(closingMarker)) {
+      return null;
+    }
+    const source = openingLine.slice(marker.length, -closingMarker.length).trim();
+    if (!source) {
+      return null;
+    }
+    return { source, rawSource: openingLine, nextIndex: startIndex + 1 };
+  }
+
+  const contentLines = [];
+  let index = startIndex + 1;
+  while (index < lines.length) {
+    if (lines[index].trim() === closingMarker) {
+      return {
+        source: contentLines.join("\n").trim(),
+        rawSource: lines.slice(startIndex, index + 1).join("\n"),
+        nextIndex: index + 1,
+      };
+    }
+    contentLines.push(lines[index]);
+    index += 1;
+  }
+  // 流式输出还没给结束符时保留原文，避免每一帧都闪公式报错
+  return null;
+}
+
 function isFenceClose(line, marker) {
   const trimmed = line.trim();
   if (trimmed.length < marker.length) {
@@ -225,6 +281,7 @@ function isBlockStart(lines, index) {
   const line = lines[index];
   return (
     parseFence(line) !== null ||
+    readDisplayMathSource(lines, index) !== null ||
     HEADING_PATTERN.test(line) ||
     isHorizontalRule(line) ||
     QUOTE_PATTERN.test(line) ||
@@ -499,6 +556,10 @@ function appendInlineToken(container, token, options, depth, allowBareLinks) {
     container.append(el("code", "md-inline-code", token.slice(1, -1)));
     return;
   }
+  if (kind === "math") {
+    container.append(buildInlineMath(token));
+    return;
+  }
   if (kind === "image") {
     container.append(buildImage(token, options));
     return;
@@ -578,6 +639,13 @@ function renderBlocks(lines, options, depth) {
       const block = readCodeBlock(lines, index, fence);
       fragment.append(block.node);
       index = block.nextIndex;
+      continue;
+    }
+
+    const math = readDisplayMathSource(lines, index);
+    if (math) {
+      fragment.append(buildMath(math.source, true, math.rawSource));
+      index = math.nextIndex;
       continue;
     }
 
