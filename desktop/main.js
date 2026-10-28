@@ -169,13 +169,18 @@ function stopBackend() {
 const PREFERRED_WINDOW_SIZE = { width: 1320, height: 880 };
 const MINIMUM_WINDOW_SIZE = { width: 1080, height: 640 };
 
-function initialWindowSize() {
+function initialWindowBounds() {
   // 窗口不能比屏幕可用区域大：13 寸笔记本是 1280×800，按 1320×880 开、再居中，左右各有一截在屏幕外，
-  // 红绿灯和左边的字被切掉、输入框贴到右边。最小尺寸也跟着收，不然用户缩不回屏幕里
-  const workArea = screen.getPrimaryDisplay().workAreaSize;
+  // 红绿灯和左边的字被切掉、输入框贴到右边。最小尺寸也跟着收，不然用户缩不回屏幕里。
+  // 位置也自己算：放在可用区域（扣掉菜单栏和 Dock）正中间，默认的居中会让顶上一截跑到菜单栏上面
+  const workArea = screen.getPrimaryDisplay().workArea;
+  const width = Math.min(PREFERRED_WINDOW_SIZE.width, workArea.width);
+  const height = Math.min(PREFERRED_WINDOW_SIZE.height, workArea.height);
   return {
-    width: Math.min(PREFERRED_WINDOW_SIZE.width, workArea.width),
-    height: Math.min(PREFERRED_WINDOW_SIZE.height, workArea.height),
+    x: workArea.x + Math.round((workArea.width - width) / 2),
+    y: workArea.y + Math.round((workArea.height - height) / 2),
+    width,
+    height,
     minWidth: Math.min(MINIMUM_WINDOW_SIZE.width, workArea.width),
     minHeight: Math.min(MINIMUM_WINDOW_SIZE.height, workArea.height),
   };
@@ -183,7 +188,7 @@ function initialWindowSize() {
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    ...initialWindowSize(),
+    ...initialWindowBounds(),
     backgroundColor: "#101012",
     show: false,
     title: "PocketAgent",
