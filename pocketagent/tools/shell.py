@@ -28,7 +28,9 @@ READ_CHUNK_BYTES = 4096
 
 BASE_DESCRIPTION = (
     "在工作目录里用 bash 执行一条命令，返回合并后的 stdout/stderr 和退出码。"
-    "不要用它来读写文件（用 read_file / edit_file），也不要启动不会自己退出的进程。"
+    "不要用它来读写文件（用 read_file / edit_file）。"
+    "dev server、watch 这类不会自己退出的命令设 run_in_background=true，"
+    "拿到 id 后用 bash_output 看输出、用 kill_shell 结束。"
 )
 SANDBOX_DESCRIPTION = (
     "命令默认在沙箱里跑：只能写工作目录和临时目录，读不到密钥目录，不能联网。"
@@ -46,6 +48,10 @@ class BashTool(Tool):
         properties: dict[str, Any] = {
             "command": {"type": "string", "description": "要执行的命令"},
             "timeout_seconds": {"type": "integer", "description": f"超时秒数，最长 {MAX_TIMEOUT_SECONDS}"},
+            "run_in_background": {
+                "type": "boolean",
+                "description": "放到后台运行，立刻返回 id（适合 dev server / watch；后台命令不受 timeout_seconds 限制）",
+            },
         }
         if sandboxed:
             properties["outside_sandbox"] = {
@@ -56,7 +62,11 @@ class BashTool(Tool):
 
     def describe(self, arguments: dict[str, Any]) -> str:
         command = str(arguments.get("command", ""))
-        return f"{command}  ［沙箱外］" if arguments.get("outside_sandbox") else command
+        if arguments.get("outside_sandbox"):
+            command += "  ［沙箱外］"
+        if arguments.get("run_in_background"):
+            command += "  ［后台］"
+        return command
 
     def access(self, arguments: dict[str, Any], context: ToolContext) -> ToolAccess:
         # 沙箱整体关掉时本来就不隔离，跳不跳出去没区别
@@ -67,6 +77,14 @@ class BashTool(Tool):
         timeout_seconds = min(int(arguments.get("timeout_seconds", context.shell_timeout_seconds)), MAX_TIMEOUT_SECONDS)
         policy = None if arguments.get("outside_sandbox") else context.sandbox
         command_line, sandbox_note = wrap_command(arguments["command"], policy)
+        if arguments.get("run_in_background"):
+            shell = await context.background.launch(command_line, context.workspace, arguments["command"])
+            note = f"\n{sandbox_note}" if sandbox_note else ""
+            return ToolResult(
+                f"已在后台启动（{shell.id}）：{arguments['command']}\n"
+                "用 bash_output 查看输出（可带 wait_seconds 等新输出），用 kill_shell 结束。"
+                f"{note}"
+            )
         process = await asyncio.create_subprocess_exec(
             *command_line,
             cwd=context.workspace,
@@ -99,6 +117,93 @@ class BashTool(Tool):
         if sandbox_note:
             text += f"\n{sandbox_note}"
         return ToolResult(text, is_error=exit_code != 0)
+
+
+MAX_OUTPUT_WAIT_SECONDS = 30
+
+
+class BashOutputTool(Tool):
+    """读后台命令的新输出。id 不填就列出这个会话里所有后台命令。"""
+
+    name = "bash_output"
+    kind = ToolKind.READ
+    description = (
+        "查看后台命令（bash run_in_background 启动的）的输出。带 id 只看这个命令上次读取之后的新输出；"
+        "不带 id 列出所有后台命令。可以带 wait_seconds 等一会儿新输出。命令跑完了也能取最后的输出。"
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "id": {"type": "string", "description": "bash 后台启动时返回的 id，如 bash_1；不填就列出全部"},
+            "wait_seconds": {
+                "type": "integer",
+                "description": f"最多等这么多秒的新输出（0-{MAX_OUTPUT_WAIT_SECONDS}，默认 0）",
+            },
+        },
+    }
+
+    def describe(self, arguments: dict[str, Any]) -> str:
+        shell_id = str(arguments.get("id") or "")
+        return f"查看后台命令 {shell_id}" if shell_id else "列出后台命令"
+
+    async def run(self, arguments: dict[str, Any], context: ToolContext) -> ToolResult:
+        shell_id = str(arguments.get("id") or "").strip()
+        if not shell_id:
+            return _list_background_shells(context)
+        shell = context.background.get(shell_id)
+        if shell is None:
+            return _unknown_shell(shell_id, context)
+        wait_seconds = min(max(int(arguments.get("wait_seconds") or 0), 0), MAX_OUTPUT_WAIT_SECONDS)
+        if wait_seconds:
+            await shell.wait_for_update(wait_seconds)
+        output = shell.read_new()
+        text = f"{shell.status_text()}\n{output}" if output else f"{shell.status_text()}\n（这期间没有新输出）"
+        return ToolResult(text, is_error=not shell.running and shell.exit_code != 0)
+
+
+class KillShellTool(Tool):
+    """结束这个会话里的后台命令。只认后台命令表里的 id，不碰任意进程，所以算只读工具、不用审批。"""
+
+    name = "kill_shell"
+    kind = ToolKind.READ
+    description = "结束一个后台命令（bash run_in_background 启动的），连它派生的子进程一起结束。"
+    parameters = {
+        "type": "object",
+        "properties": {"id": {"type": "string", "description": "bash 后台启动时返回的 id，如 bash_1"}},
+        "required": ["id"],
+    }
+
+    def describe(self, arguments: dict[str, Any]) -> str:
+        return f"结束后台命令 {arguments.get('id', '')}"
+
+    async def run(self, arguments: dict[str, Any], context: ToolContext) -> ToolResult:
+        shell_id = str(arguments.get("id") or "").strip()
+        shell = context.background.get(shell_id)
+        if shell is None:
+            return _unknown_shell(shell_id, context)
+        was_running = shell.running
+        await shell.kill()
+        output = shell.read_new()
+        action = "已结束" if was_running else "本来就已经退出"
+        text = f"{action}（{shell.id}）：{shell.status_text()}"
+        if output:
+            text += f"\n{output}"
+        return ToolResult(text)
+
+
+def _list_background_shells(context: ToolContext) -> ToolResult:
+    shells = context.background.list_all()
+    if not shells:
+        return ToolResult("没有后台命令")
+    lines = ["后台命令："]
+    for shell in shells:
+        lines.append(f"  {shell.status_text()}  {shell.command}")
+    return ToolResult("\n".join(lines))
+
+
+def _unknown_shell(shell_id: str, context: ToolContext) -> ToolResult:
+    known = "、".join(shell.id for shell in context.background.list_all()) or "没有"
+    return ToolResult(f"没有 {shell_id} 这个后台命令（现有的：{known}）", is_error=True)
 
 
 async def _pump_output(

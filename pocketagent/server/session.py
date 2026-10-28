@@ -316,6 +316,11 @@ class WebSession:
             self.agent.context.pending_compaction.task.cancel()
             self.agent.context.pending_compaction = None
 
+    async def close(self) -> None:
+        """删任务或服务退出时：停掉压缩，结束 agent 起的后台命令和它们的子进程。"""
+        self.cancel_background_work()
+        await self.agent.close()
+
     async def interrupt(self) -> None:
         """停止这一轮。还没用上的插话和排队的消息退回给浏览器，放回输入框。"""
         returned = [message_display(message) for message in self.queued_messages]

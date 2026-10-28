@@ -3,9 +3,9 @@
 基于 [PocketFlow](https://github.com/The-Pocket/PocketFlow) 的编程 agent，目标是做成 Codex / Claude Code / WorkBuddy / Qoder 这一类：
 在本地仓库里读代码、改文件、跑命令，用户在旁边审批。
 
-已经能用的：主循环、内置工具（文件、搜索、bash、联网搜索、读网页、生图 / 搜图、技能、向用户提问、子 agent）、多档权限（含 AI 自动审批）、
+已经能用的：主循环、内置工具（文件、搜索、bash（含后台命令）、联网搜索、读网页、生图 / 搜图、技能、向用户提问、子 agent）、多档权限（含 AI 自动审批）、
 bash 沙箱、工作目录外的访问审批、影子 git 检查点（看变更、撤销、整体恢复）、技能（Agent Skills 标准）、项目记忆、
-流式事件、trace、会话续跑、后台自动压缩上下文、多模型配置（思考档位 / 上下文长度随模型走）、
+流式事件、trace、会话续跑、后台自动压缩上下文、多模型配置（OpenAI 兼容 / Anthropic 两种协议，思考档位 / 上下文长度随模型走）、
 附件（图片 / 文件）、插话和排队、token 用量和缓存命中统计、定时自动化，以及命令行和 web 两套界面。
 grep / glob 优先用 ripgrep（遵守 .gitignore），没装 rg 时回退纯 Python 实现。
 
@@ -262,6 +262,18 @@ bash 默认关在沙箱里（macOS 用系统自带的 `sandbox-exec`，Linux 用
 bash 的输出边跑边显示：网页里工具卡片会自动展开并实时追加，命令行逐行打印；模型最后拿到的仍然是完整结果，
 不是流式增量。
 
+### 后台命令
+
+dev server、watch 这类不会自己退出的命令，bash 带上 `run_in_background=true` 就放到后台跑，立刻返回
+`bash_1` 这样的 id，不占着这一轮：
+
+- `bash_output` 带 id 看上次读取之后的新输出（`wait_seconds` 可以等一会儿新输出），不带 id 列出所有后台命令；
+  跑完的也能取最后的输出
+- `kill_shell` 按 id 结束，连它派生的子进程一起结束
+- 后台命令不受 `timeout_seconds` 限制；输出攒在内存里，超过 20 万字符会丢掉最早的部分并提示模型
+- 后台命令表是会话级的，子 agent 共用；点停止只停当前这一轮，后台命令继续跑，删任务 / 服务退出 /
+  命令行换会话或退出时才一起结束
+
 ### 检查点
 
 影子 git 仓库放在 `~/.pocketagent/shadow/<工作区路径的哈希>/`，`GIT_DIR` 指向它、`GIT_WORK_TREE` 指向工作区，
@@ -431,7 +443,7 @@ cookie 在同一个主机上不分端口，桌面端或另一个 `--web` 实例�
 {
   "models": [
     {"id": "a1b2c3d4", "name": "DS 4.1 Flash", "model": "deepseek-v4.1-flash",
-     "base_url": "https://your-gateway.example.com/v1", "api_key": "sk-...",
+     "protocol": "openai", "base_url": "https://your-gateway.example.com/v1", "api_key": "sk-...",
      "reasoning_effort": "low", "context_window_tokens": 128000, "temperature": null,
      "extra_body": {}, "supports_images": true, "visible": true}
   ],
@@ -467,15 +479,27 @@ cookie 在同一个主机上不分端口，桌面端或另一个 `--web` 实例�
 }
 ```
 
+- `protocol` 是接口协议：`openai`（默认，chat/completions）或 `anthropic`（messages）。不写时按接口地址猜：
+  官方 `api.anthropic.com` 认成 anthropic，其余按 OpenAI 兼容
 - 思考档位、上下文长度、温度、额外参数、能不能看图都跟着模型走，换模型就一起换。思考档位按接口实测过能用的值来选
   （DeepSeek：关 / 低 / 高 / 最高；智谱：低 / 高 / 最高；OpenRouter：关 / 低 / 中 / 高），OpenRouter 用它自己的
   `reasoning.effort` 写法，其他用顶层 `reasoning_effort`
 - `visible: false` 的模型不出现在会话的模型列表里（已经在用它的任务不受影响）
 - 每个任务记住自己用的模型和权限，续跑时接着用
 - 优先级：命令行参数 > 配置文件 > 环境变量 > 默认值。环境变量（`POCKETAGENT_MODEL` / `POCKETAGENT_BASE_URL` /
-  `POCKETAGENT_API_KEY` 等，完整列表见 `pocketagent/config.py`）只在一个模型都没配时才用
+  `POCKETAGENT_API_KEY` / `POCKETAGENT_PROTOCOL` 等，完整列表见 `pocketagent/config.py`）只在一个模型都没配时才用
 - `-m` 可以写配置里模型的名称、id 或模型名；都对不上就用默认模型的接口、只换模型名
 - 任务记录、trace、附件、影子仓库、用量、自动化、工具输出都在 `~/.pocketagent/`（`POCKETAGENT_HOME` 可以改到别处）
+
+### 模型协议
+
+每个模型单独选协议，⚙ 设置 → 模型里的「接口协议」或配置文件里的 `protocol`：
+
+- **OpenAI 兼容**（默认）：`/v1/chat/completions`，new-api、vLLM、DeepSeek、Qwen 网关等都走这个
+- **Anthropic**：`/v1/messages`，接口地址留空就用 `https://api.anthropic.com`；网关上的 Anthropic 入口把
+  `base_url` 写到 `/v1` 或 `/messages` 都认。密钥放在 `api_key`，请求头按官方的 `x-api-key` 发
+- 工具调用、流式输出、图片、用量（含缓存命中）都会在 provider 里转成 Anthropic 的 content blocks / usage；
+  Anthropic 的 thinking 块要求原样带回历史，当前消息格式存不下，所以先不接思考档位（界面上只有「默认」）
 
 ## 主循环
 
@@ -521,7 +545,7 @@ pocketagent/
     subagents.py         子 agent：同一张图、自己的上下文和工具集，进度转成主 agent 的事件
     tool_outputs.py      工具输出落盘：超过上限的完整输出写到 ~/.pocketagent/tool_outputs
     scratch.py           临时任务的工作目录（~/.pocketagent/scratch，不指定工作区时用）
-  llm/                   模型接口：openai_compat（流式、工具调用拼接、重试）、scripted（测试用假模型）
+  llm/                   模型接口：openai_compat（流式、工具调用拼接、重试）、anthropic（Messages 接口转换）、scripted（测试用假模型）
   tools/                 工具基类 + 注册表；files / search / shell / web / image / computer / skill / ask / todo / subagent
     ripgrep.py           ripgrep 的调用和 --json 解析；rg 用不了时 search.py 回退 Python 实现
   safety/                权限和兜底
@@ -584,12 +608,12 @@ tests/                   unittest；vendor_pocketflow/ 是上游测试
 对照 Codex / Claude Code / WorkBuddy / Qoder，还缺这些，大致按优先级排：
 
 1. **MCP 客户端**：把 MCP server 的工具包装成 `Tool` 注册进来
-2. **Anthropic 等其他协议的 provider**（现在只有 OpenAI 兼容接口）
-3. **todo / plan 工具**
-4. **hooks**（工具调用前后跑用户脚本）
-5. **沙箱联网白名单**：现在只有开 / 关，可以像 Claude Code 那样走代理按域名放行；Linux bubblewrap 要在真机上验证
-6. **trace 回放和评测**：拿 JSONL trace 重放、对比不同模型或提示词
-7. **界面**：TUI、IDE 插件；web 里搜索任务
+2. **hooks**（工具调用前后跑用户脚本）
+3. **plan 模式**：todo 清单已经有了，缺「先出方案、人确认再执行」
+4. **沙箱联网白名单**：现在只有开 / 关，可以像 Claude Code 那样走代理按域名放行；Linux bubblewrap 要在真机上验证
+5. **trace 回放和评测**：拿 JSONL trace 重放、对比不同模型或提示词
+6. **界面**：TUI、IDE 插件；web 里搜索任务
+7. **更多协议**：Anthropic 已经接上，Gemini 等其他原生协议按 `LLMProvider` 再加
 
 ## 测试
 

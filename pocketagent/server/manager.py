@@ -191,7 +191,7 @@ class SessionManager:
             raise SessionBusyError("任务还在运行，先停止再删除")
         web_session = live or (self.get(session_id) if self.store.exists(session_id) else None)
         if web_session is not None:
-            web_session.cancel_background_work()
+            await web_session.close()
             await web_session.checkpoints.forget()
         self.sessions.pop(session_id, None)
         self.store.delete(session_id)
@@ -439,6 +439,6 @@ class SessionManager:
     async def shutdown(self) -> None:
         for web_session in self.sessions.values():
             await web_session.interrupt()
-            web_session.cancel_background_work()
+            await web_session.close()
             for client in list(web_session.clients):
                 await client.close()

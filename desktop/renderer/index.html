@@ -176,8 +176,13 @@
                       <input name="name" type="text" placeholder="界面上显示的名字，如 DS 4.1 Flash" /></label>
                     <label class="field"><span>模型名 *</span>
                       <input name="model" type="text" placeholder="发给接口的 model 参数" /></label>
+                    <label class="field"><span>接口协议</span>
+                      <select name="protocol">
+                        <option value="openai">OpenAI 兼容（chat/completions）</option>
+                        <option value="anthropic">Anthropic（messages）</option>
+                      </select></label>
                     <label class="field"><span>接口地址</span>
-                      <input name="base_url" type="text" placeholder="OpenAI 兼容接口，如 https://gateway.example.com/v1" /></label>
+                      <input name="base_url" type="text" placeholder="如 https://gateway.example.com/v1；Anthropic 留空用 api.anthropic.com" /></label>
                     <label class="field"><span>API Key</span>
                       <input name="api_key" type="password" placeholder="sk-..." />
                       <span class="field-hint" id="api-key-hint"></span></label>

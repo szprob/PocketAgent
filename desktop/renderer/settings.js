@@ -117,6 +117,7 @@ export function initSettings(handlers) {
 
   elements.addModel.addEventListener("click", addModel);
   elements.modelForm.addEventListener("submit", (event) => event.preventDefault());
+  elements.modelForm.elements.protocol.addEventListener("change", paintModelReasoningOptions);
   document.getElementById("test-model").addEventListener("click", testModel);
   document.getElementById("make-default").addEventListener("click", makeDefault);
   document.getElementById("delete-model").addEventListener("click", deleteModel);
@@ -393,6 +394,25 @@ function paintSandboxFields() {
 
 // ---- 模型表单 ----
 
+function paintModelReasoningOptions() {
+  const form = elements.modelForm;
+  const model = selectedModel();
+  // Anthropic 的思考块要原样带回历史，后端暂不提供思考档位
+  const choices = form.elements.protocol.value === "anthropic" ? [] : model?.reasoning_choices || [];
+  const select = form.elements.reasoning_effort;
+  select.replaceChildren();
+  const defaultOption = el("option", "", "默认（不传）");
+  defaultOption.value = "";
+  select.append(defaultOption);
+  for (const choice of choices) {
+    const option = el("option", "", REASONING_LABELS[choice] || choice);
+    option.value = choice;
+    select.append(option);
+  }
+  const selected = model?.reasoning_effort || "";
+  select.value = choices.includes(selected) ? selected : "";
+}
+
 function renderModelForm() {
   const model = selectedModel();
   formModelId = model?.id || null;
@@ -402,21 +422,13 @@ function renderModelForm() {
   const form = elements.modelForm;
   form.elements.name.value = model.name || "";
   form.elements.model.value = model.model || "";
+  form.elements.protocol.value = model.protocol || "openai";
   form.elements.base_url.value = model.base_url || "";
   form.elements.api_key.value = "";
   form.elements.api_key.placeholder = model.api_key_hint ? `已保存：${model.api_key_hint}` : "sk-...";
   elements.apiKeyHint.textContent = model.api_key_hint ? `已保存的密钥：${model.api_key_hint}（留空表示不改）` : "还没保存密钥";
 
-  form.elements.reasoning_effort.replaceChildren();
-  const defaultOption = el("option", "", "默认（不传）");
-  defaultOption.value = "";
-  form.elements.reasoning_effort.append(defaultOption);
-  for (const choice of model.reasoning_choices || []) {
-    const option = el("option", "", REASONING_LABELS[choice] || choice);
-    option.value = choice;
-    form.elements.reasoning_effort.append(option);
-  }
-  form.elements.reasoning_effort.value = model.reasoning_effort || "";
+  paintModelReasoningOptions();
 
   form.elements.context_window_tokens.value = model.context_window_tokens || DEFAULT_CONTEXT_WINDOW;
   form.elements.temperature.value = model.temperature === null || model.temperature === undefined ? "" : model.temperature;
@@ -459,6 +471,7 @@ function readModelForm(strict) {
     ...model,
     name: form.elements.name.value.trim() || form.elements.model.value.trim(),
     model: form.elements.model.value.trim(),
+    protocol: form.elements.protocol.value || "openai",
     base_url: form.elements.base_url.value.trim() || null,
     reasoning_effort: form.elements.reasoning_effort.value || null,
     context_window_tokens: Number(form.elements.context_window_tokens.value) || model.context_window_tokens,
@@ -496,6 +509,7 @@ function addModel() {
     id: `local-${Date.now().toString(36)}`,
     name: "新模型",
     model: "",
+    protocol: "openai",
     base_url: "",
     reasoning_effort: null,
     temperature: null,
