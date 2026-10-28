@@ -6,6 +6,7 @@ SDK 自带的重试关掉了，免得两层叠加。
 """
 
 import asyncio
+import copy
 import email.utils
 import json
 import random
@@ -185,6 +186,12 @@ class OpenAICompatibleProvider:
         self.client = AsyncOpenAI(
             base_url=base_url, api_key=api_key or "EMPTY", timeout=timeout_seconds, max_retries=0
         )
+
+    def with_reasoning_effort(self, reasoning_effort: str | None) -> "OpenAICompatibleProvider":
+        """同一个模型、同一个客户端，只换思考档位：AI 审批这类辅助调用用更低的档位。None 表示不传。"""
+        derived = copy.copy(self)
+        derived.reasoning_effort = reasoning_effort
+        return derived
 
     def _build_request(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
         request: dict[str, Any] = {

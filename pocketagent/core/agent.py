@@ -11,13 +11,14 @@
 """
 
 import asyncio
+import copy
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from pocketflow import AsyncFlow
 
 from pocketagent.account.usage import UsageLog, UsageMetadata, UsageRecordingProvider
-from pocketagent.config import Settings
+from pocketagent.config import ModelProfile, Settings, resolve_reasoning
 from pocketagent.core.context import AgentContext, TurnState
 from pocketagent.core.events import EventBus, EventType
 from pocketagent.core.nodes import (
@@ -367,6 +368,46 @@ def _with_usage_recording(
     return UsageRecordingProvider(provider, usage_log, metadata)
 
 
+ProviderBuilder = Callable[[Settings], LLMProvider]
+
+
+def attach_review_provider(context: AgentContext, usage_log: UsageLog | None, provider_builder: ProviderBuilder) -> None:
+    """AI 自动审批用的 provider：设置里选了别的模型就另建一个（按模型缓存），思考档位按 review_reasoning 换。
+
+    每次审批现取，换了模型、改了设置下一次审批就生效。
+    """
+    built_for_profile: dict[tuple, LLMProvider] = {}
+
+    def provider_for_profile(profile: ModelProfile) -> LLMProvider:
+        # 改了这个模型的地址 / 密钥要重建，所以都放进键里
+        key = (profile.id, profile.model, profile.base_url, profile.api_key, profile.temperature)
+        if key not in built_for_profile:
+            review_settings = copy.copy(context.settings)
+            review_settings.use_profile(profile)
+            built = provider_builder(review_settings)
+            built_for_profile[key] = _with_usage_recording(built, usage_log, review_settings, context.session)
+        return built_for_profile[key]
+
+    def review_provider() -> LLMProvider:
+        settings = context.settings
+        profile = settings.review_profile
+        if profile is None:
+            # 跟任务的模型一样：用任务正在用的 provider，只按需换思考档位
+            base = context.provider
+            current_effort = settings.reasoning_effort
+            effort = resolve_reasoning(settings.review_reasoning, settings.reasoning_choices, current_effort)
+        else:
+            base = provider_for_profile(profile)
+            current_effort = profile.reasoning_effort
+            effort = resolve_reasoning(settings.review_reasoning, profile.available_reasoning_choices(), current_effort)
+        derive = getattr(base, "with_reasoning_effort", None)
+        if effort == current_effort or derive is None:
+            return base
+        return derive(effort)
+
+    context.review_provider = review_provider
+
+
 def create_agent(
     settings: Settings,
     approver: Approver,
@@ -375,6 +416,7 @@ def create_agent(
     session: Session | None = None,
     enable_trace: bool = True,
     record_usage: bool = True,
+    provider_builder: ProviderBuilder | None = None,
 ) -> Agent:
     """组装一个 Agent。provider / tools 留空就用默认的（OpenAI 兼容接口 + 内置工具）。
 
@@ -410,6 +452,8 @@ def create_agent(
         journal=journal,
     )
     attach_subagent_runner(context)
+    # 审批用别的模型时按同样的方式造 provider（web 端传 SessionManager.build_provider，测试里能换成假模型）
+    attach_review_provider(context, usage_log, provider_builder or create_provider)
     return Agent(context, session_store, usage_log, skills=skills)
 
 

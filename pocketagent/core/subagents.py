@@ -132,6 +132,8 @@ async def run_subagent(parent: AgentContext, request: SubagentRequest, call_id: 
         events=events,
         session=session,
         attachments_root=parent.attachments_root,
+        # 子 agent 里的调用也按设置里的审批模型 / 档位做 AI 审批
+        review_provider=parent.review_provider,
     )
     context.turn = TurnState()
     started = time.monotonic()
