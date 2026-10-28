@@ -2,7 +2,7 @@
 // 后端是共享的那套（python -m pocketagent --web），桌面端前端在 renderer/ 里独立实现，
 // 只通过 REST + WebSocket 和后端说话，不 import 任何 pocketagent 的 Python 或 web/static 代码。
 
-const { app, BrowserWindow, Menu, ipcMain, net, protocol, shell } = require("electron");
+const { app, BrowserWindow, Menu, ipcMain, net, protocol, screen, shell } = require("electron");
 const { execFileSync, spawn } = require("node:child_process");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
@@ -61,6 +61,12 @@ function resolveWorkspace() {
   return process.env.POCKETAGENT_WORKSPACE || os.homedir();
 }
 
+function workspaceArguments() {
+  // 只有用户用 POCKETAGENT_WORKSPACE 明确指定时才传 -C（后端会把它加进工作区列表）；
+  // 默认的家目录只是进程的 cwd，不传 -C，免得用户在界面里移除的工作区每次启动又被加回来
+  return process.env.POCKETAGENT_WORKSPACE ? ["-C", process.env.POCKETAGENT_WORKSPACE] : [];
+}
+
 function sendToWindow(channel, payload) {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send(channel, payload);
@@ -91,7 +97,18 @@ function startBackend() {
 
   const child = spawn(
     python.command,
-    [...python.arguments, "-m", "pocketagent", "--web", "--no-browser", "--host", "127.0.0.1", "--token", token],
+    [
+      ...python.arguments,
+      "-m",
+      "pocketagent",
+      "--web",
+      "--no-browser",
+      "--host",
+      "127.0.0.1",
+      "--token",
+      token,
+      ...workspaceArguments(),
+    ],
     { cwd: workspace, env: process.env },
   );
   backendProcess = child;
@@ -149,12 +166,24 @@ function stopBackend() {
   child.kill("SIGTERM");
 }
 
+const PREFERRED_WINDOW_SIZE = { width: 1320, height: 880 };
+const MINIMUM_WINDOW_SIZE = { width: 1080, height: 640 };
+
+function initialWindowSize() {
+  // 窗口不能比屏幕可用区域大：13 寸笔记本是 1280×800，按 1320×880 开、再居中，左右各有一截在屏幕外，
+  // 红绿灯和左边的字被切掉、输入框贴到右边。最小尺寸也跟着收，不然用户缩不回屏幕里
+  const workArea = screen.getPrimaryDisplay().workAreaSize;
+  return {
+    width: Math.min(PREFERRED_WINDOW_SIZE.width, workArea.width),
+    height: Math.min(PREFERRED_WINDOW_SIZE.height, workArea.height),
+    minWidth: Math.min(MINIMUM_WINDOW_SIZE.width, workArea.width),
+    minHeight: Math.min(MINIMUM_WINDOW_SIZE.height, workArea.height),
+  };
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 1320,
-    height: 880,
-    minWidth: 1080,
-    minHeight: 640,
+    ...initialWindowSize(),
     backgroundColor: "#101012",
     show: false,
     title: "PocketAgent",

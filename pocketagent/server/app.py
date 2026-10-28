@@ -190,12 +190,13 @@ def run_web(
     token: str | None,
     require_token: bool = True,
     open_browser: bool = True,
+    explicit_workspace: bool = False,
 ) -> None:
-    """settings.workspace（-C 或当前目录）会加进工作区列表；没配默认工作区时，就用它当默认。"""
+    """explicit_workspace：用户用 -C 指定了工作区，就把它加进工作区列表并排第一（见 _register_launch_workspace）。"""
     if not require_token and not _is_loopback(host):
         raise SystemExit("监听非本机地址时必须带 token：这个服务能在你的机器上执行任意命令")
     app_config = AppConfig.load(settings.config_path)
-    _put_workspace_first(app_config, settings)
+    _register_launch_workspace(app_config, settings, explicit_workspace)
     resolved_token = _resolve_token(settings, app_config, token, require_token)
     app = create_app(settings, resolved_token, app_config=app_config, run_scheduler=True)
     try:
@@ -204,8 +205,14 @@ def run_web(
         print("\n已停止", flush=True)
 
 
-def _put_workspace_first(app_config: AppConfig, settings: Settings) -> None:
-    """启动目录排在最前面；配置里已经指定了默认工作区就尊重配置，不覆盖。"""
+def _register_launch_workspace(app_config: AppConfig, settings: Settings, explicit: bool) -> None:
+    """-C 指定的目录排在工作区列表最前面；没指定时只在列表为空（第一次用）时把启动目录加进去。
+
+    以前不管有没有 -C 都把启动目录加回来：桌面端总在家目录启动后端，用户在界面里移除的工作区
+    每次打开又冒出来。配置里已经指定了默认工作区就尊重配置，不覆盖。
+    """
+    if not explicit and app_config.workspaces:
+        return
     workspace = str(settings.workspace.resolve())
     workspaces = [path for path in app_config.workspaces if path != workspace]
     app_config.workspaces = [workspace] + workspaces
