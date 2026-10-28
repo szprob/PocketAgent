@@ -11,6 +11,7 @@ import { renderUsage } from "./usage.js";
 const MODEL_FORM_FIELDS = [
   "name",
   "model",
+  "protocol",
   "base_url",
   "api_key",
   "reasoning_effort",
@@ -231,6 +232,7 @@ function toDraftModel(model) {
     id: model.id,
     name: textOrEmpty(model.name),
     model: textOrEmpty(model.model),
+    protocol: model.protocol || "openai",
     base_url: textOrEmpty(model.base_url),
     api_key: "",
     api_key_hint: model.api_key_hint || "",
@@ -267,6 +269,10 @@ function providerOf(baseUrl) {
 }
 
 function reasoningChoicesFor(model) {
+  // Anthropic 的思考块要原样带回历史，后端暂不提供思考档位
+  if (model.protocol === "anthropic") {
+    return [];
+  }
   return model.custom_reasoning_choices || draft.reasoningPresets[providerOf(model.base_url)] || [];
 }
 
@@ -614,7 +620,7 @@ function onModelFieldInput(event) {
   if (event.target.name === "name" || event.target.name === "model") {
     renderModelList();
   }
-  if (event.target.name === "base_url") {
+  if (event.target.name === "base_url" || event.target.name === "protocol") {
     renderReasoningOptions(model);
   }
 }

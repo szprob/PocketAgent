@@ -19,7 +19,7 @@ from pocketagent.tools.image import (
     SearchImagesTool,
 )
 from pocketagent.tools.search import GlobTool, GrepTool
-from pocketagent.tools.shell import BashTool
+from pocketagent.tools.shell import BashOutputTool, BashTool, KillShellTool
 from pocketagent.tools.skill import ActivateSkillTool
 from pocketagent.tools.subagent import SubagentTool
 from pocketagent.tools.todo import TodoWriteTool
@@ -47,6 +47,8 @@ def default_tool_registry(
         EditFileTool(),
         WriteFileTool(),
         BashTool(sandboxed=sandboxed),
+        BashOutputTool(),
+        KillShellTool(),
         AskUserTool(),
         TodoWriteTool(),
         SubagentTool(),

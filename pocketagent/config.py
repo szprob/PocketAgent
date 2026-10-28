@@ -108,6 +108,17 @@ def provider_kind(base_url: str | None) -> str:
     return "openai"
 
 
+# 模型接口协议：OpenAI 兼容的 chat/completions，或者 Anthropic 的 messages。
+# 同一家网关两种都开的情况很常见（new-api 就同时提供），所以按模型单独选，不只按接口地址猜。
+PROTOCOLS = ("openai", "anthropic")
+
+
+def infer_protocol(base_url: str | None) -> str:
+    """没写 protocol 时按接口地址猜：官方 Anthropic 走 messages，其余按 OpenAI 兼容。"""
+    host = urlparse(base_url or "").hostname or ""
+    return "anthropic" if "anthropic.com" in host else "openai"
+
+
 class ConfigError(ValueError):
     pass
 
@@ -312,6 +323,8 @@ class ModelProfile:
     model: str
     base_url: str | None = None
     api_key: str | None = None
+    # openai = chat/completions；anthropic = messages。空着按接口地址猜（见 infer_protocol）
+    protocol: str = "openai"
     reasoning_effort: str | None = None
     temperature: float | None = None
     context_window_tokens: int = DEFAULT_CONTEXT_WINDOW_TOKENS
@@ -327,20 +340,26 @@ class ModelProfile:
 
     @property
     def provider(self) -> str:
-        return provider_kind(self.base_url)
+        # 协议是 anthropic 的模型不再按接口地址猜厂商：它不吃 OpenAI 那套思考档位
+        return "anthropic" if self.protocol == "anthropic" else provider_kind(self.base_url)
 
     def available_reasoning_choices(self) -> list[str]:
+        # Anthropic 的思考块要原样带回历史里，当前消息格式存不下，所以先不提供思考档位
+        if self.protocol == "anthropic":
+            return []
         return self.reasoning_choices or REASONING_CHOICES_BY_PROVIDER[self.provider]
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ModelProfile":
         model = _required_text(data, "model", "模型名")
+        base_url = _optional_text(data, "base_url")
         profile = cls(
             id=_optional_text(data, "id") or new_model_id(),
             name=_optional_text(data, "name") or model,
             model=model,
-            base_url=_optional_text(data, "base_url"),
+            base_url=base_url,
             api_key=_optional_text(data, "api_key"),
+            protocol=_one_of(data.get("protocol"), PROTOCOLS, infer_protocol(base_url), "接口协议"),
             reasoning_effort=_optional_text(data, "reasoning_effort"),
             temperature=_optional_float(data, "temperature", "温度"),
             context_window_tokens=_positive_int(
@@ -757,6 +776,8 @@ class Settings:
     model: str = DEFAULT_MODEL
     base_url: str | None = None
     api_key: str | None = None
+    # openai / anthropic，决定用哪个 provider（见 core/agent.py 的 create_provider）
+    protocol: str = "openai"
     temperature: float | None = None
     reasoning_effort: str | None = None
     extra_body: dict[str, Any] = field(default_factory=dict)
@@ -853,6 +874,7 @@ class Settings:
         self.model = profile.model
         self.base_url = profile.base_url
         self.api_key = profile.api_key
+        self.protocol = profile.protocol
         self.reasoning_effort = profile.reasoning_effort
         self.temperature = profile.temperature
         self.context_window_tokens = profile.context_window_tokens
@@ -898,6 +920,13 @@ class Settings:
         self.model = environment.get("POCKETAGENT_MODEL", self.model)
         self.base_url = environment.get("POCKETAGENT_BASE_URL") or environment.get("OPENAI_BASE_URL")
         self.api_key = environment.get("POCKETAGENT_API_KEY") or environment.get("OPENAI_API_KEY")
+        # 只有完全用环境变量配模型时才走到这里；已配置的模型会覆盖它
+        self.protocol = _one_of(
+            environment.get("POCKETAGENT_PROTOCOL") or self.protocol,
+            PROTOCOLS,
+            self.protocol,
+            "POCKETAGENT_PROTOCOL",
+        )
         self.reasoning_effort = environment.get("POCKETAGENT_REASONING_EFFORT") or None
         self.extra_body = _json_object(environment, "POCKETAGENT_EXTRA_BODY", "POCKETAGENT_EXTRA_BODY")
         self.context_window_tokens = _positive_int(

@@ -231,6 +231,17 @@ class SettingsLoadTest(unittest.TestCase):
         self.assertEqual(settings.context_window_tokens, 32000)
         self.assertIsNone(settings.model_profile_id)
 
+    def test_protocol_environment_variable(self) -> None:
+        self.environment.update({"POCKETAGENT_MODEL": "claude-x", "POCKETAGENT_PROTOCOL": "anthropic"})
+
+        settings = self.load()
+
+        self.assertEqual(settings.protocol, "anthropic")
+
+        self.environment["POCKETAGENT_PROTOCOL"] = "grpc"
+        with self.assertRaises(ConfigError):
+            self.load()
+
     def test_configured_default_model_wins_over_environment(self) -> None:
         self.write_config({"models": [DS_PROFILE, QWEN_PROFILE], "default_model": "ds", "approval_mode": "auto_edit"})
         self.environment.update({"POCKETAGENT_MODEL": "env-model", "POCKETAGENT_API_KEY": "sk-env"})
@@ -303,6 +314,39 @@ class ModelProfileTest(unittest.TestCase):
         settings.extra_body["changed"] = True
 
         self.assertEqual(profile.extra_body, {"top_k": 20})
+
+    def test_protocol_defaults_detects_anthropic_and_round_trips(self) -> None:
+        default = ModelProfile.from_dict({"model": "deepseek-v4.1-flash"})
+        detected = ModelProfile.from_dict({"model": "claude", "base_url": "https://api.anthropic.com"})
+        explicit = ModelProfile.from_dict(
+            {"id": "claude", "model": "claude", "base_url": "https://gateway.example/v1", "protocol": "anthropic"}
+        )
+
+        self.assertEqual(default.protocol, "openai")
+        self.assertEqual(detected.protocol, "anthropic")
+        self.assertEqual(explicit.protocol, "anthropic")
+        self.assertEqual(ModelProfile.from_dict(explicit.to_dict()).protocol, "anthropic")
+        self.assertEqual(explicit.public_dict()["protocol"], "anthropic")
+        with self.assertRaises(ConfigError):
+            ModelProfile.from_dict({"model": "x", "protocol": "grpc"})
+
+    def test_anthropic_has_no_reasoning_choices(self) -> None:
+        profile = ModelProfile.from_dict({"model": "claude", "base_url": "https://api.anthropic.com"})
+
+        self.assertEqual(profile.available_reasoning_choices(), [])
+        # 思考块要原样带回历史，当前消息格式存不下，所以不接受思考档位
+        with self.assertRaises(ConfigError):
+            ModelProfile.from_dict(
+                {"model": "claude", "base_url": "https://api.anthropic.com", "reasoning_effort": "high"}
+            )
+
+    def test_use_profile_copies_protocol_to_settings(self) -> None:
+        profile = ModelProfile.from_dict({"model": "claude", "protocol": "anthropic"})
+        settings = Settings(workspace=Path("."))
+
+        settings.use_profile(profile)
+
+        self.assertEqual(settings.protocol, "anthropic")
 
 
 if __name__ == "__main__":

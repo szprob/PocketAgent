@@ -22,6 +22,7 @@ async def get_info(request: web.Request) -> web.Response:
             "name": profile.name,
             "model": profile.model,
             "provider": profile.provider,
+            "protocol": profile.protocol,
             "supports_images": profile.supports_images,
             "reasoning_effort": profile.reasoning_effort,
             "reasoning_choices": profile.available_reasoning_choices(),

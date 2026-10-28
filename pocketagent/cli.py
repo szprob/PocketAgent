@@ -274,10 +274,16 @@ class Repl:
             self._close_loop()
 
     def _close_loop(self) -> None:
-        """和 asyncio.run 收尾一样：先回收没跑完的 async generator（如 HTTP 流），再关事件循环。"""
+        """和 asyncio.run 收尾一样：先结束后台命令、回收没跑完的 async generator（如 HTTP 流），再关事件循环。"""
+        self._stop_background_work()
         self.loop.run_until_complete(self.loop.shutdown_asyncgens())
         self.loop.run_until_complete(self.loop.shutdown_default_executor())
         self.loop.close()
+
+    def _stop_background_work(self) -> None:
+        """退出或换会话时，把 agent 起的后台命令（dev server 之类）连子进程一起结束。"""
+        with suppress(Exception):
+            self.loop.run_until_complete(self.agent.close())
 
     def _print_banner(self) -> None:
         settings = self.settings
@@ -365,6 +371,8 @@ class Repl:
         return True
 
     def _start_new_session(self) -> None:
+        # 旧会话的后台命令没人管了，换之前先结束掉
+        self._stop_background_work()
         if self.settings.ephemeral:
             # 临时任务里 /new 就是一个新任务：也给它一个干净的新目录
             self.settings.workspace = create_scratch_workspace(self.settings.home_dir)
@@ -385,6 +393,8 @@ class Repl:
 
     def _open_session(self, session_id: str) -> None:
         session = SessionStore(self.settings.sessions_dir).load(session_id)
+        # 换会话之前先结束当前会话的后台命令
+        self._stop_background_work()
         self.settings.workspace = Path(session.workspace)
         self.settings.ephemeral = session.ephemeral
         self.agent = self._create_agent(session=session)
@@ -412,8 +422,16 @@ def run_once(settings: Settings, session: Session | None, prompt: str, show_reas
                 settings.use_profile(profile)
                 agent.replace_provider(create_provider(settings))
         return 0
-    asyncio.run(agent.run_turn(prompt))
+    asyncio.run(_run_turn_and_close(agent, prompt))
     return 1 if agent.context.turn.stop_reason == "error" else 0
+
+
+async def _run_turn_and_close(agent: Agent, prompt: str) -> None:
+    """单次执行：跑完这一轮就在同一个事件循环里结束后台命令（换一个 asyncio.run 已经拿不到那些进程了）。"""
+    try:
+        await agent.run_turn(prompt)
+    finally:
+        await agent.close()
 
 
 def _parse_arguments(argv: list[str] | None) -> argparse.Namespace:
