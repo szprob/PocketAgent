@@ -5,7 +5,7 @@ from typing import Any
 from aiohttp import web
 
 from pocketagent.account.billing import query_all_balances
-from pocketagent.config import ConfigError
+from pocketagent.config import FONT_SCALES, ConfigError
 from pocketagent.interaction.commands import command_specs_for
 from pocketagent.safety.permissions import WEB_APPROVAL_MODES
 from pocketagent.server.common import json_response, session_manager
@@ -42,6 +42,9 @@ async def get_info(request: web.Request) -> web.Response:
             "default_mode": app_config.approval_mode.value,
             "modes": [mode.value for mode in WEB_APPROVAL_MODES],
             "busy_input_mode": app_config.busy_input_mode,
+            # 外观和字号：前端一启动就要套上，所以放在 info 里
+            "appearance": app_config.appearance,
+            "font_scale": FONT_SCALES[app_config.font_size],
             "auto_compact": app_config.auto_compact,
             "compact_threshold_percent": app_config.compact_threshold_percent,
             "web_search_enabled": app_config.web_search_settings() is not None,

@@ -158,3 +158,15 @@ export function renderDiff(diffText, className) {
   }
   return pre;
 }
+
+// 外观和字号：设置里选的存在 config.json（web 和桌面端共用），/api/info 里带着；启动和每次改完设置都套一次
+export function applyAppearance(info) {
+  const root = document.documentElement;
+  if (info?.appearance === "light" || info?.appearance === "dark") {
+    root.dataset.theme = info.appearance;
+  } else {
+    // 跟随系统：交给样式表里的 prefers-color-scheme
+    delete root.dataset.theme;
+  }
+  root.style.setProperty("--font-scale", String(info?.font_scale || 1));
+}

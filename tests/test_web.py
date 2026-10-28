@@ -161,6 +161,8 @@ class WebServerTest(WebTestBase):
         self.assertEqual([model["id"] for model in info["models"]], ["ds", "qwen"])
         self.assertTrue(info["models"][0]["supports_images"])
         self.assertEqual(info["busy_input_mode"], "interject")
+        # 外观和字号前端一启动就要套上
+        self.assertEqual((info["appearance"], info["font_scale"]), ("system", 1.0))
         self.assertEqual(missing.status, 404)
 
     # ---- 一轮对话和审批 ----

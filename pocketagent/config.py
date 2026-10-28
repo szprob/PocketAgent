@@ -80,6 +80,11 @@ REASONING_INHERIT = "inherit"
 DEFAULT_SUBAGENT_EXPLORE_MINUTES = 10
 DEFAULT_SUBAGENT_GENERAL_MINUTES = 40
 
+# 外观：跟随系统 / 浅色 / 深色（web 和桌面端共用，前端在 html 上设 data-theme）
+APPEARANCES = ("system", "light", "dark")
+# 字号：乘在界面所有字号上的系数
+FONT_SCALES = {"small": 0.92, "medium": 1.0, "large": 1.12}
+
 
 def resolve_reasoning(choice: str, available_choices: list[str], current: str | None) -> str | None:
     """把 lowest / inherit / 具体档位换成真正要发给接口的值；None 表示不传，用接口默认。"""
@@ -236,6 +241,13 @@ def _approval_mode(value: Any) -> ApprovalMode:
         raise ConfigError(f"审批模式只能是 {choices}：{value}")
 
 
+def _one_of(value: Any, choices: tuple[str, ...], default: str, label: str) -> str:
+    text = str(value or default).strip()
+    if text not in choices:
+        raise ConfigError(f"{label}只能是 {' / '.join(choices)}：{value}")
+    return text
+
+
 def _auxiliary_reasoning(value: Any, label: str) -> str:
     """审批、子 agent 的思考档位：lowest / inherit，或者某家接口认的具体档位。"""
     text = str(value or REASONING_LOWEST).strip()
@@ -383,6 +395,9 @@ class AppConfig:
     subagent_general_minutes: int = DEFAULT_SUBAGENT_GENERAL_MINUTES
     busy_input_mode: str = BUSY_INPUT_INTERJECT
     max_steps: int = DEFAULT_MAX_STEPS
+    # 外观和字号，见 APPEARANCES / FONT_SCALES
+    appearance: str = "system"
+    font_size: str = "medium"
     # 上下文占用超过窗口的这个百分比就自动压缩
     auto_compact: bool = True
     compact_threshold_percent: int = DEFAULT_COMPACT_THRESHOLD_PERCENT
@@ -459,6 +474,8 @@ class AppConfig:
             ),
             busy_input_mode=_busy_input_mode(data.get("busy_input_mode")),
             max_steps=_positive_int(data, "max_steps", DEFAULT_MAX_STEPS, "单轮最多调用模型次数"),
+            appearance=_one_of(data.get("appearance"), APPEARANCES, "system", "外观"),
+            font_size=_one_of(data.get("font_size"), tuple(FONT_SCALES), "medium", "字号"),
             auto_compact=_boolean_with_default(data, "auto_compact", True),
             compact_threshold_percent=_compact_threshold_percent(data),
             web_search_enabled=_boolean_with_default(data, "web_search_enabled", True),
@@ -512,6 +529,8 @@ class AppConfig:
             "subagent_general_minutes": self.subagent_general_minutes,
             "busy_input_mode": self.busy_input_mode,
             "max_steps": self.max_steps,
+            "appearance": self.appearance,
+            "font_size": self.font_size,
             "auto_compact": self.auto_compact,
             "compact_threshold_percent": self.compact_threshold_percent,
             "web_search_enabled": self.web_search_enabled,
@@ -554,6 +573,9 @@ class AppConfig:
             "subagent_general_minutes": self.subagent_general_minutes,
             "busy_input_mode": self.busy_input_mode,
             "max_steps": self.max_steps,
+            "appearance": self.appearance,
+            "font_size": self.font_size,
+            "font_scale": FONT_SCALES[self.font_size],
             "auto_compact": self.auto_compact,
             "compact_threshold_percent": self.compact_threshold_percent,
             "web_search_enabled": self.web_search_enabled,

@@ -54,6 +54,8 @@ export function initSettings() {
     testButton: byId("test-model"),
     makeDefaultButton: byId("make-default"),
     userName: byId("user-name-input"),
+    appearance: byId("appearance-select"),
+    fontSize: byId("font-size-select"),
     defaultWorkspace: byId("default-workspace-select"),
     defaultWorkspaceHint: byId("default-workspace-hint"),
     defaultMode: byId("default-mode-select"),
@@ -336,6 +338,8 @@ export async function openSettings(tabName) {
   renderDefaultWorkspaceOptions(config);
   elements.maxSteps.value = config.max_steps;
   elements.userName.value = config.user_name;
+  elements.appearance.value = config.appearance || "system";
+  elements.fontSize.value = config.font_size || "medium";
   for (const input of elements.busyModeInputs) {
     input.checked = input.value === config.busy_input_mode;
   }
@@ -687,6 +691,8 @@ async function saveSettings() {
     busy_input_mode: busyInput ? busyInput.value : "interject",
     max_steps: elements.maxSteps.value,
     user_name: elements.userName.value,
+    appearance: elements.appearance.value,
+    font_size: elements.fontSize.value,
     auto_compact: elements.autoCompact.checked,
     compact_threshold_percent: elements.compactThreshold.value,
     web_search_enabled: elements.webSearchEnabled.checked,

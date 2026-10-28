@@ -5,7 +5,7 @@ import { closeEditor, initAutomations, isAutomationEditorOpen, showAutomations }
 import { chatComposer, initChat, interrupt, isChatRunning, leaveTask, openTask, updateChatOptions } from "./task/chat.js";
 import { looksLikeCommand, loadSkillNames, runCommand } from "./core/commands.js";
 import { Composer, SCRATCH_WORKSPACE } from "./task/composer.js";
-import { el, icon, show } from "./ui/dom.js";
+import { applyAppearance, el, icon, show } from "./ui/dom.js";
 import { citationText, closeFilePreview, initFilePreview, isFilePreviewOpen } from "./sidebar/filepreview.js";
 import { closeFolderPicker, isFolderPickerOpen } from "./sidebar/folderpicker.js";
 import { initResizers } from "./ui/resizers.js";
@@ -248,6 +248,7 @@ function fillStaticIcons() {
 }
 
 function onInfoChanged(info) {
+  applyAppearance(info);
   updateChatOptions(info);
   if (parseRoute().view === "new") {
     const choice = newTaskComposer.getWorkspaceChoice();
@@ -314,6 +315,7 @@ async function init() {
   initResizers();
 
   await reloadInfo();
+  applyAppearance(state.info);
   lastDefaultWorkspace = state.info.default_workspace;
   if (state.expandedWorkspaces.size === 0 && state.info.workspaces.length > 0) {
     state.expandedWorkspaces.add(state.info.default_workspace || state.info.workspaces[0].path);

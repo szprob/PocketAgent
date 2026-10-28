@@ -72,6 +72,20 @@ class AppConfigTest(unittest.TestCase):
         self.assertTrue(enabled.public_dict()["allow_outside_workspace"])
         self.assertIn("computer_use_available", enabled.public_dict())
 
+    def test_appearance_and_font_size(self) -> None:
+        default = AppConfig.from_dict({})
+        chosen = AppConfig.from_dict({"appearance": "dark", "font_size": "large"})
+
+        self.assertEqual((default.appearance, default.font_size), ("system", "medium"))
+        self.assertEqual(default.public_dict()["font_scale"], 1.0)
+        reloaded = AppConfig.from_dict(chosen.to_dict())
+        self.assertEqual((reloaded.appearance, reloaded.font_size), ("dark", "large"))
+        self.assertGreater(chosen.public_dict()["font_scale"], 1.0)
+        with self.assertRaises(ConfigError):
+            AppConfig.from_dict({"appearance": "sepia"})
+        with self.assertRaises(ConfigError):
+            AppConfig.from_dict({"font_size": "huge"})
+
     def test_ripgrep_path_round_trips(self) -> None:
         config = AppConfig.from_dict({"ripgrep_path": "/opt/homebrew/bin/rg"})
 
