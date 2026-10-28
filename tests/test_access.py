@@ -27,6 +27,7 @@ from pocketagent.safety.sandbox import (
     wrap_command,
 )
 from pocketagent.tools import ToolAccess, ToolContext
+from pocketagent.tools.base import trusted_dirs_outside_secrets
 from pocketagent.tools.files import EditFileTool, ReadFileTool
 from pocketagent.tools.search import GlobTool, GrepTool
 from pocketagent.tools.shell import BashTool
@@ -386,14 +387,24 @@ class PathAccessTest(unittest.IsolatedAsyncioTestCase):
         gate = PermissionGate(mode=ApprovalMode.FULL_AUTO, approver=DenyAllApprover())
         self.assertEqual(gate.decide(ReadFileTool(), guarded), Decision.ASK)
 
-    def test_trusted_dirs_overlapping_secrets_are_dropped(self) -> None:
-        """把家目录这种包含密钥目录的路径加进免问目录，等于把 ~/.ssh 也免了，所以整条忽略。"""
-        context = ToolContext(workspace=self.workspace, trusted_dirs=[self.secret, self.root], secret_dirs=[self.secret])
+    def test_secrets_inside_trusted_dirs_are_not_asked(self) -> None:
+        """用户把包含密钥目录的家目录配成免问目录：明确知道风险，审批上就不再问（完全访问模式下直接放行）。"""
+        context = ToolContext(workspace=self.workspace, trusted_dirs=[self.root], secret_dirs=[self.secret])
+        secret = self.secret / "config.json"
 
-        self.assertEqual(context.trusted_dirs, [])
-        access = context.path_access([self.secret / "config.json"], write=True)
+        access = context.path_access([secret], write=False)
 
-        self.assertEqual(access.secret_paths, [self.secret / "config.json"])
+        self.assertEqual((access.outside_paths, access.secret_paths), ([], []))
+        gate = PermissionGate(mode=ApprovalMode.FULL_AUTO, approver=DenyAllApprover())
+        self.assertEqual(gate.decide(ReadFileTool(), access), Decision.ALLOW)
+
+    def test_trusted_dirs_overlapping_secrets_stay_out_of_the_sandbox(self) -> None:
+        """审批上免了，bash 沙箱照旧：和密钥目录有父子关系的免问目录不进可写范围。"""
+        elsewhere = self.root / "elsewhere"
+
+        writable = trusted_dirs_outside_secrets([self.secret, self.root, elsewhere, elsewhere], [self.secret])
+
+        self.assertEqual(writable, [elsewhere.resolve()])
 
     def test_attachments_inside_a_secret_dir_are_free_to_read_but_not_to_write(self) -> None:
         image = self.attachments / "a.png"

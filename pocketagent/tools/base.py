@@ -54,20 +54,28 @@ class ToolAccess:
     memory_only: bool = False
 
 
-def resolve_trusted_dirs(directories: list[Path], secret_dirs: list[Path]) -> list[Path]:
-    """免问目录先过一道密钥：和密钥目录有父子关系的整个丢掉。
-
-    不然把家目录加进来，~/.ssh、~/.pocketagent 也跟着免问了。
-    """
-    secrets = [directory.resolve() for directory in secret_dirs]
+def resolve_trusted_dirs(directories: list[Path]) -> list[Path]:
+    """免问目录展开 ~、转成真实路径、去重。"""
     trusted: list[Path] = []
     for directory in directories:
         resolved = Path(directory).expanduser().resolve()
-        if any(is_within(resolved, secret) or is_within(secret, resolved) for secret in secrets):
-            continue
         if resolved not in trusted:
             trusted.append(resolved)
     return trusted
+
+
+def trusted_dirs_outside_secrets(directories: list[Path], secret_dirs: list[Path]) -> list[Path]:
+    """放进 bash 沙箱可写范围的免问目录：和密钥目录有父子关系的不放。
+
+    审批上用户配了就算数（家目录也行，见 ToolContext.path_access），但沙箱照旧挡住密钥：
+    把家目录整个放开写，~/.ssh 也就能被改了。
+    """
+    secrets = [directory.resolve() for directory in secret_dirs]
+    return [
+        directory
+        for directory in resolve_trusted_dirs(directories)
+        if not any(is_within(directory, secret) or is_within(secret, directory) for secret in secrets)
+    ]
 
 
 @dataclass
@@ -76,7 +84,7 @@ class ToolContext:
     shell_timeout_seconds: int = 120
     # 不用确认就能读的目录：这个会话的附件目录、技能目录
     extra_read_dirs: list[Path] = field(default_factory=list)
-    # 用户配的免问目录：和工作目录一样对待，读不问、改照审批模式走（和密钥目录重叠的会被过滤掉）
+    # 用户配的免问目录：和工作目录一样对待，读不问、改照审批模式走；里面的密钥目录也不再问（用户自己配的，风险自知）
     trusted_dirs: list[Path] = field(default_factory=list)
     # 设置里勾了「工作目录外不再询问」：除了密钥目录，所有路径都和工作目录一样对待
     allow_outside_workspace: bool = False
@@ -102,7 +110,7 @@ class ToolContext:
     on_todos_changed: Callable[[list[dict[str, Any]]], Awaitable[None]] | None = None
 
     def __post_init__(self) -> None:
-        self.trusted_dirs = resolve_trusted_dirs(self.trusted_dirs, self.secret_dirs)
+        self.trusted_dirs = resolve_trusted_dirs(self.trusted_dirs)
 
     def resolve_path(self, raw_path: str) -> Path:
         """相对路径按工作目录解析。工作目录外的路径也能用，要不要确认由权限审批决定（见 path_access）。"""
@@ -114,8 +122,8 @@ class ToolContext:
     def path_access(self, paths: list[Path], write: bool) -> ToolAccess:
         """哪些路径在工作目录外、哪些是密钥目录。
 
-        免问目录和工作目录一样（不算工作目录外，改文件仍按审批模式走）；记忆目录读写都放行；
-        附件、技能目录只对读放行；勾了「工作目录外不再询问」时，只有密钥目录还算。
+        免问目录和工作目录一样（不算工作目录外，改文件仍按审批模式走），落在免问目录里的密钥也不再问；
+        记忆目录读写都放行；附件、技能目录只对读放行；勾了「工作目录外不再询问」时，只有密钥目录还算。
         """
         free_roots = [self.workspace.resolve()] + self.trusted_dirs
         if not write:

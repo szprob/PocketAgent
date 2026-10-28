@@ -858,6 +858,8 @@ class WebAccessTest(WebTestBase):
         without_workspace = await self._get_json("/api/skills")
         tools_before = web_session.agent.context.tools.names()
         trusted = self.directories.workspace.parent / "pocket-data"
+        # PocketAgent 自己的目录是密钥目录：配进免问目录后审批不问，但不进沙箱的可写范围
+        secret_home = self.directories.home_dir.resolve()
         await self._send_json(
             "PUT",
             "/api/config",
@@ -865,7 +867,7 @@ class WebAccessTest(WebTestBase):
                 "disabled_skills": ["deploy"],
                 "skill_dirs": ["~/my-skills"],
                 "sandbox_network": True,
-                "trusted_dirs": [str(trusted)],
+                "trusted_dirs": [str(trusted), str(secret_home)],
             },
         )
         after = await (await self.client.get("/api/skills", params={**AUTH, "workspace": workspace})).json()
@@ -878,11 +880,12 @@ class WebAccessTest(WebTestBase):
         self.assertNotIn("activate_skill", web_session.agent.context.tools.names())
         self.assertEqual(config["disabled_skills"], ["deploy"])
         self.assertEqual(config["skill_dirs"], [str(Path("~/my-skills").expanduser().resolve())])
-        self.assertEqual(config["trusted_dirs"], [str(trusted.resolve())])
-        self.assertEqual(web_session.agent.context.tool_context.trusted_dirs, [trusted.resolve()])
+        self.assertEqual(config["trusted_dirs"], [str(trusted.resolve()), str(secret_home)])
+        self.assertEqual(web_session.agent.context.tool_context.trusted_dirs, [trusted.resolve(), secret_home])
         self.assertTrue(config["sandbox_network"])
         if web_session.agent.context.tool_context.sandbox is not None:
             self.assertTrue(web_session.agent.context.tool_context.sandbox.allow_network)
+            self.assertEqual(web_session.agent.context.tool_context.sandbox.writable_roots, [trusted.resolve()])
             self.assertIn(trusted.resolve(), web_session.agent.context.tool_context.sandbox.writable_roots)
 
 

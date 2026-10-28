@@ -15,12 +15,15 @@ let callbacks = {};
 let config = null;
 let draft = null;
 let selectedModelId = null;
+// 表单里现在填的是哪个模型：和 selectedModelId 对不上时（还没画、或换了模型）不能把表单写回去，
+// 不然空表单 / 上一个模型的值会把当前模型的名字和模型名冲掉
+let formModelId = null;
 let disabledSkills = new Set();
 let skillContentCache = new Map();
 let memoryContentCache = new Map();
 let memoryWorkspace = null;
 let pendingClearSearchKey = false;
-let currentTab = "models";
+let currentTab = "general";
 
 export function initSettings(handlers) {
   callbacks = handlers;
@@ -141,7 +144,7 @@ export function isSettingsOpen() {
   return elements.modal && !elements.modal.classList.contains("hidden");
 }
 
-export async function openSettings(tab = "models") {
+export async function openSettings(tab = "general") {
   if (!elements.modal) {
     return;
   }
@@ -154,7 +157,8 @@ export async function openSettings(tab = "models") {
     setMessage(`读取配置失败：${error.message}`, "error");
     return;
   }
-  switchTab(tab);
+  // 一个模型都还没配时直接停在「模型」页，第一次打开就是来加模型的
+  switchTab(tab === "general" && draft.models.length === 0 ? "models" : tab);
 }
 
 export function closeSettings() {
@@ -201,6 +205,7 @@ async function loadConfig() {
   pendingClearSearchKey = false;
 
   fillModels();
+  renderModelForm();
   fillGeneral();
 
   if (currentTab === "skills") {
@@ -388,6 +393,7 @@ function paintSandboxFields() {
 
 function renderModelForm() {
   const model = selectedModel();
+  formModelId = model?.id || null;
   if (!model) {
     return;
   }
@@ -435,7 +441,7 @@ function parseExtraBody(text) {
 
 function readModelForm(strict) {
   const model = selectedModel();
-  if (!model) {
+  if (!model || model.id !== formModelId) {
     return null;
   }
   const form = elements.modelForm;
@@ -470,10 +476,10 @@ function readModelForm(strict) {
 
 function syncModelForm(strict) {
   const model = selectedModel();
-  if (!model) {
+  const data = readModelForm(strict);
+  if (!data) {
     return;
   }
-  const data = readModelForm(strict);
   const index = draft.models.findIndex((each) => each.id === model.id);
   if (index >= 0) {
     draft.models[index] = data;

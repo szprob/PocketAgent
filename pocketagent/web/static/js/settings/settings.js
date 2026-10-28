@@ -384,7 +384,9 @@ export async function openSettings(tabName) {
   renderModelList();
   renderModelForm();
   show(elements.modal, true);
-  selectTab(tabName || "models");
+  // 一个模型都还没配时直接停在「模型」页，第一次打开就是来加模型的
+  const wantsGeneral = !tabName || tabName === "general";
+  selectTab(wantsGeneral && draft.models.length === 0 ? "models" : tabName || "general");
 }
 
 function sandboxHint(kind) {

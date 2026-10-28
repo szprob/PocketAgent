@@ -1123,6 +1123,8 @@ function renderHistoryItem(item) {
 
 function renderSnapshot(snapshot) {
   clearTranscript();
+  // 先记下状态再画历史：回复里的本地图片要靠 status.workspace 换成取图地址，切任务 / 刷新时它是空的
+  applyStatus(snapshot);
   snapshot.items.forEach(renderHistoryItem);
   if (snapshot.items.length === 0) {
     elements.transcriptInner.appendChild(el("div", "empty-chat", "说说要做什么，agent 会在这个工作区里读代码、改文件、跑命令。"));
@@ -1131,7 +1133,6 @@ function renderSnapshot(snapshot) {
   (snapshot.pending_questions || []).forEach(showQuestions);
   // 刷新 / 切回来时从会话上恢复计划面板（面板出现在历史后面，反映当前进度）
   renderTodoPanel(snapshot.todos);
-  applyStatus(snapshot);
   if (snapshot.running && snapshot.pending_approvals.length === 0 && !(snapshot.pending_questions || []).length) {
     // 中途连上来的：前面流式的那段没了，给个提示，后面的照常显示
     showActivity("运行中");
