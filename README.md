@@ -496,6 +496,7 @@ pocketagent/
     reviewer.py          AI 自动审批：让模型判断一次工具调用能不能放行
     sandbox.py           bash 沙箱：macOS Seatbelt 规则、Linux bubblewrap 参数
     checkpoints.py       影子 git 检查点：拍快照、列变更、diff、撤销、整体恢复；嵌套仓库各一个影子仓库
+    processes.py         跨平台子进程：找 bash（Windows 用 Git Bash）、结束整棵进程树（POSIX 杀进程组，Windows 用 taskkill）
   knowledge/             技能和记忆
     skills.py            技能：找技能、校验、<available_skills> 清单、<skill_content> 正文、/技能名、压缩时保留
     memory.py            项目记忆：目录位置、系统提示里的说明和索引、列出 / 删除

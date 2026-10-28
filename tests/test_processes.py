@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from pocketagent.processes import bash_executable, terminate_process_tree
+from pocketagent.safety.processes import bash_executable, terminate_process_tree
 from pocketagent.safety.sandbox import BashUnavailable, wrap_command
 
 HAS_BASH = bash_executable() is not None

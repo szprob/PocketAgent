@@ -16,7 +16,7 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from pocketagent.processes import bash_executable
+from pocketagent.safety.processes import bash_executable
 
 # 不管怎样都不让命令读的地方：密钥、凭据
 SECRET_PATHS = [
