@@ -222,6 +222,19 @@
                     <select id="review-reasoning-select"></select></label>
                 </div>
                 <div class="field-hint">只影响「AI 自动审批」：每次改文件、跑命令前让模型判断一下安不安全。用不着深度思考，默认用最低档，等得少。</div>
+                <div class="field-row">
+                  <label class="field"><span>子 agent 用的模型</span>
+                    <select id="subagent-model-select"></select></label>
+                  <label class="field"><span>子 agent 的思考档位</span>
+                    <select id="subagent-reasoning-select"></select></label>
+                </div>
+                <div class="field-row">
+                  <label class="field"><span>explore 子 agent 时长上限（分钟）</span>
+                    <input id="subagent-explore-minutes" type="number" min="1" step="1" /></label>
+                  <label class="field"><span>general 子 agent 时长上限（分钟）</span>
+                    <input id="subagent-general-minutes" type="number" min="1" step="1" /></label>
+                </div>
+                <div class="field-hint">子 agent 默认和任务用同一个模型、同一档思考，派去调研时可以换快一点的模型或低一点的档位。到了时长上限会停下手上的事、写个总结交回来；等你审批的时间不算。</div>
                 <fieldset class="radio-group">
                   <legend>上下文压缩</legend>
                   <label class="checkbox-field"><input type="checkbox" id="auto-compact-input" />

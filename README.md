@@ -356,7 +356,10 @@ agent 可以用 `subagent` 工具派子 agent 去独立干一件事。子 agent 
 
 - `type=explore`：只读（读文件、搜索、查资料），互不相关的几件事可以在一次回复里同时派几个，并行跑
 - `type=general`：能改文件、跑命令，每一步照常按权限审批，审批卡片上标着是哪个子 agent
-- 子 agent 不能问用户，也不能再派子 agent；模型、用量、沙箱、「本任务总是允许」和主 agent 共用
+- 子 agent 不能问用户，也不能再派子 agent；用量、沙箱、「本任务总是允许」和主 agent 共用
+- 模型默认和任务的一样，⚙ 设置 → 通用里可以单独选模型和思考档位（`subagent_model` / `subagent_reasoning`）
+- 有时长上限：explore 默认 10 分钟、general 默认 40 分钟（`subagent_explore_minutes` / `subagent_general_minutes`），等你审批的时间不算。到点不会直接丢掉：停下正在跑的命令（连进程树一起杀）、补齐没结果的工具调用，再让它不带工具写一次总结交回来
+- 一批里有 general 子 agent 时按顺序跑，不会和别的改动同时进行
 - 子 agent 每调一个工具，它那张工具卡片下面就实时多一行；点停止时子 agent 一起停
 
 ### agent 干活时又发了一句话

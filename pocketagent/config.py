@@ -77,6 +77,9 @@ REASONING_CHOICES_BY_PROVIDER = {
 REASONING_LOWEST = "lowest"
 REASONING_INHERIT = "inherit"
 
+DEFAULT_SUBAGENT_EXPLORE_MINUTES = 10
+DEFAULT_SUBAGENT_GENERAL_MINUTES = 40
+
 
 def resolve_reasoning(choice: str, available_choices: list[str], current: str | None) -> str | None:
     """把 lowest / inherit / 具体档位换成真正要发给接口的值；None 表示不传，用接口默认。"""
@@ -372,6 +375,12 @@ class AppConfig:
     # AI 自动审批用哪个模型（模型 id，空 = 跟任务的模型一样）、什么思考档位（默认最低：判断一次调用安不安全用不着深想）
     review_model: str | None = None
     review_reasoning: str = REASONING_LOWEST
+    # 子 agent 用哪个模型（空 = 跟任务的一样）、什么思考档位（默认跟模型配置一样，可以调低省时间）
+    subagent_model: str | None = None
+    subagent_reasoning: str = REASONING_INHERIT
+    # 子 agent 的时长上限（分钟，等用户审批的时间不算）：explore 只读调研，短一点；general 要跑测试 / 编译，长一点
+    subagent_explore_minutes: int = DEFAULT_SUBAGENT_EXPLORE_MINUTES
+    subagent_general_minutes: int = DEFAULT_SUBAGENT_GENERAL_MINUTES
     busy_input_mode: str = BUSY_INPUT_INTERJECT
     max_steps: int = DEFAULT_MAX_STEPS
     # 上下文占用超过窗口的这个百分比就自动压缩
@@ -438,6 +447,16 @@ class AppConfig:
             approval_mode=_approval_mode(data.get("approval_mode")),
             review_model=_optional_text(data, "review_model"),
             review_reasoning=_auxiliary_reasoning(data.get("review_reasoning"), "审批的思考档位"),
+            subagent_model=_optional_text(data, "subagent_model"),
+            subagent_reasoning=_auxiliary_reasoning(
+                data.get("subagent_reasoning") or REASONING_INHERIT, "子 agent 的思考档位"
+            ),
+            subagent_explore_minutes=_positive_int(
+                data, "subagent_explore_minutes", DEFAULT_SUBAGENT_EXPLORE_MINUTES, "explore 子 agent 的时长上限"
+            ),
+            subagent_general_minutes=_positive_int(
+                data, "subagent_general_minutes", DEFAULT_SUBAGENT_GENERAL_MINUTES, "general 子 agent 的时长上限"
+            ),
             busy_input_mode=_busy_input_mode(data.get("busy_input_mode")),
             max_steps=_positive_int(data, "max_steps", DEFAULT_MAX_STEPS, "单轮最多调用模型次数"),
             auto_compact=_boolean_with_default(data, "auto_compact", True),
@@ -473,6 +492,8 @@ class AppConfig:
         # 审批用的模型被删了就回到「跟任务的模型一样」
         if config.review_model and config.find_model(config.review_model) is None:
             config.review_model = None
+        if config.subagent_model and config.find_model(config.subagent_model) is None:
+            config.subagent_model = None
         # 默认工作区得在列表里；配的那个目录被移除了就当没配
         if config.default_workspace not in config.workspaces:
             config.default_workspace = None
@@ -485,6 +506,10 @@ class AppConfig:
             "approval_mode": self.approval_mode.value,
             "review_model": self.review_model,
             "review_reasoning": self.review_reasoning,
+            "subagent_model": self.subagent_model,
+            "subagent_reasoning": self.subagent_reasoning,
+            "subagent_explore_minutes": self.subagent_explore_minutes,
+            "subagent_general_minutes": self.subagent_general_minutes,
             "busy_input_mode": self.busy_input_mode,
             "max_steps": self.max_steps,
             "auto_compact": self.auto_compact,
@@ -523,6 +548,10 @@ class AppConfig:
             "approval_mode": self.approval_mode.value,
             "review_model": self.review_model,
             "review_reasoning": self.review_reasoning,
+            "subagent_model": self.subagent_model,
+            "subagent_reasoning": self.subagent_reasoning,
+            "subagent_explore_minutes": self.subagent_explore_minutes,
+            "subagent_general_minutes": self.subagent_general_minutes,
             "busy_input_mode": self.busy_input_mode,
             "max_steps": self.max_steps,
             "auto_compact": self.auto_compact,
@@ -712,6 +741,11 @@ class Settings:
     # AI 审批用的模型（None = 跟任务的模型一样）和思考档位（lowest / inherit / 具体档位）
     review_profile: ModelProfile | None = None
     review_reasoning: str = REASONING_LOWEST
+    # 子 agent 用的模型（None = 跟任务的一样）、思考档位、时长上限（分钟）
+    subagent_profile: ModelProfile | None = None
+    subagent_reasoning: str = REASONING_INHERIT
+    subagent_explore_minutes: int = DEFAULT_SUBAGENT_EXPLORE_MINUTES
+    subagent_general_minutes: int = DEFAULT_SUBAGENT_GENERAL_MINUTES
     max_output_tokens: int | None = None
     # 联网工具：web_search 为 None 表示没开（或没有密钥）
     web_search: WebSearchSettings | None = None
@@ -827,6 +861,10 @@ class Settings:
         self.memory_enabled = app_config.memory_enabled
         self.review_profile = app_config.find_model(app_config.review_model) if app_config.review_model else None
         self.review_reasoning = app_config.review_reasoning
+        self.subagent_profile = app_config.find_model(app_config.subagent_model) if app_config.subagent_model else None
+        self.subagent_reasoning = app_config.subagent_reasoning
+        self.subagent_explore_minutes = app_config.subagent_explore_minutes
+        self.subagent_general_minutes = app_config.subagent_general_minutes
 
     def apply_environment(self) -> None:
         environment = os.environ

@@ -61,6 +61,31 @@ class ReviewConfigTest(unittest.TestCase):
 
         self.assertIsNone(config.review_model)
 
+    def test_subagent_settings_default_and_round_trip(self) -> None:
+        models = [{"id": "ds", "model": "deepseek"}, {"id": "glm", "model": "glm-flash"}]
+        default = AppConfig.from_dict({"models": models})
+        chosen = AppConfig.from_dict(
+            {
+                "models": models,
+                "subagent_model": "glm",
+                "subagent_reasoning": "lowest",
+                "subagent_explore_minutes": 5,
+                "subagent_general_minutes": 60,
+            }
+        )
+        gone = AppConfig.from_dict({"models": models, "subagent_model": "removed"})
+
+        self.assertIsNone(default.subagent_model)
+        self.assertEqual(default.subagent_reasoning, REASONING_INHERIT)
+        self.assertEqual((default.subagent_explore_minutes, default.subagent_general_minutes), (10, 40))
+        reloaded = AppConfig.from_dict(chosen.to_dict())
+        self.assertEqual(reloaded.subagent_model, "glm")
+        self.assertEqual(reloaded.subagent_reasoning, REASONING_LOWEST)
+        self.assertEqual((reloaded.subagent_explore_minutes, reloaded.subagent_general_minutes), (5, 60))
+        self.assertIsNone(gone.subagent_model)
+        with self.assertRaises(ConfigError):
+            AppConfig.from_dict({"subagent_general_minutes": 0})
+
     def test_unknown_reasoning_is_rejected(self) -> None:
         with self.assertRaises(ConfigError):
             AppConfig.from_dict({"review_reasoning": "turbo"})

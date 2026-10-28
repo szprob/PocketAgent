@@ -71,6 +71,8 @@ class AgentContext:
     journal: SessionJournal | None = None
     # AI 自动审批用的 provider（按设置里的审批模型和思考档位现取）；None 表示就用 provider
     review_provider: Callable[[], LLMProvider] | None = None
+    # 子 agent 用的 provider（按设置里的子 agent 模型和思考档位现取）；None 表示就用 provider
+    subagent_provider: Callable[[], LLMProvider] | None = None
 
     async def wait_for_turn_checkpoint(self) -> None:
         """工具要动工作区了，等这一轮的检查点拍完（被中断也让它拍完，git 拍到一半被杀会留下锁文件）。"""
