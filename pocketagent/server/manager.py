@@ -345,6 +345,7 @@ class SessionManager:
         return {
             "usage": self.usage_log.session_total(session_id),
             "turns": web_session.agent.session.turns,
+            "tool_calls": web_session.agent.session.tool_calls,
             "latest_reply": latest_reply,
             "updated_at": web_session.session.updated_at,
             **web_session.status_fields(),

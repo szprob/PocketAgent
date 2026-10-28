@@ -192,8 +192,13 @@ function dataTable(headers, rows, emptyText) {
   for (const row of rows) {
     const tableRow = el("tr");
     row.forEach((cell, index) => {
-      const text = typeof cell === "number" ? formatNumber(cell) : String(cell);
-      tableRow.appendChild(el("td", index > 0 ? "number" : "", text));
+      // 数字缩成 k / m / b，悬停看精确值
+      const text = typeof cell === "number" ? formatTokens(cell) : String(cell);
+      const tableCell = el("td", index > 0 ? "number" : "", text);
+      if (typeof cell === "number") {
+        tableCell.title = formatNumber(cell);
+      }
+      tableRow.appendChild(tableCell);
     });
     body.appendChild(tableRow);
   }

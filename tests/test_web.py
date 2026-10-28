@@ -693,6 +693,7 @@ class WebRound3Test(WebTestBase):
 
         self.assertEqual(overview["latest_reply"], "最新的回复")
         self.assertEqual(overview["turns"], 1)
+        self.assertEqual(overview["tool_calls"], 0)
         self.assertEqual(overview["usage"]["cached"], 60)
         self.assertEqual(overview["usage"]["cache_hit_rate"], 0.6)
 

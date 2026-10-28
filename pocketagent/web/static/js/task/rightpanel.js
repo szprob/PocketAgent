@@ -86,6 +86,7 @@ export function showTaskInPanel(taskId) {
   panel.status = null;
   panel.usage = null;
   panel.turns = 0;
+  panel.toolCalls = 0;
   panel.latestReply = "";
   panel.updatedAt = null;
   panel.changes = [];
@@ -113,6 +114,7 @@ async function refreshTask() {
     }
     panel.usage = overview.usage;
     panel.turns = overview.turns ?? 0;
+    panel.toolCalls = overview.tool_calls ?? 0;
     panel.latestReply = overview.latest_reply || panel.latestReply;
     panel.updatedAt = overview.updated_at || panel.updatedAt;
   } catch (error) {
@@ -206,11 +208,17 @@ function renderOverview() {
     rows.appendChild(
       overviewRow(
         "本任务用量",
-        `输入 ${formatNumber(usage.prompt)} + 输出 ${formatNumber(usage.completion)}`,
-        `输入 ${usage.prompt} + 输出 ${usage.completion}，共 ${usage.total} tokens，${usage.calls} 次调用，思考 ${usage.reasoning}${usage.estimated_calls ? `（其中 ${usage.estimated_calls} 次是估算）` : ""}`
+        `输入 ${formatTokens(usage.prompt)} + 输出 ${formatTokens(usage.completion)}`,
+        `输入 ${formatNumber(usage.prompt)} + 输出 ${formatNumber(usage.completion)}，共 ${formatNumber(usage.total)} tokens，${usage.calls} 次调用模型，思考 ${formatNumber(usage.reasoning)}${usage.estimated_calls ? `（其中 ${usage.estimated_calls} 次是估算）` : ""}`
       )
     );
-    rows.appendChild(overviewRow("总轮次", String(panel.turns), "用户说一句话到 agent 停下来算一轮；干活时的插话不算"));
+    rows.appendChild(
+      overviewRow(
+        "总轮次",
+        `${panel.turns} 轮 · 工具调用 ${panel.toolCalls} 次`,
+        "用户说一句话到 agent 停下来算一轮（干活时的插话不算）；工具调用是这个任务里模型调工具的总次数，被拒绝的也算，子 agent 内部的不算"
+      )
+    );
     rows.appendChild(overviewRow("缓存命中", cacheHitText(usage), "输入里命中缓存的比例；有的接口不缓存或不报，就是 0"));
     if (usage.cost > 0) {
       rows.appendChild(overviewRow("费用", `$${usage.cost.toFixed(4)}`, "接口直接报的费用（OpenRouter 会报）"));

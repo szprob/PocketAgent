@@ -20,6 +20,7 @@ export class RightPanel {
     this.status = null;
     this.usage = null;
     this.turns = 0;
+    this.toolCalls = 0;
     this.latestReply = "";
     this.updatedAt = null;
     this.changes = [];
@@ -41,6 +42,7 @@ export class RightPanel {
     this.status = null;
     this.usage = null;
     this.turns = 0;
+    this.toolCalls = 0;
     this.latestReply = "";
     this.updatedAt = null;
     this.changes = [];
@@ -58,6 +60,7 @@ export class RightPanel {
     this.status = null;
     this.usage = null;
     this.turns = 0;
+    this.toolCalls = 0;
     this.latestReply = "";
     this.updatedAt = null;
     this.changes = [];
@@ -99,6 +102,7 @@ export class RightPanel {
       }
       this.usage = overview.usage;
       this.turns = overview.turns ?? 0;
+      this.toolCalls = overview.tool_calls ?? 0;
       this.latestReply = overview.latest_reply || this.latestReply;
       this.updatedAt = overview.updated_at || this.updatedAt;
       this.status = { ...(this.status || {}), ...overview };
@@ -177,11 +181,17 @@ export class RightPanel {
       rows.append(
         this.overviewRow(
           "本任务用量",
-          `输入 ${formatNumber(usage.prompt)} + 输出 ${formatNumber(usage.completion)}`,
-          `输入 ${usage.prompt} + 输出 ${usage.completion}，共 ${usage.total} tokens，${usage.calls} 次调用，思考 ${usage.reasoning}`,
+          `输入 ${formatTokens(usage.prompt)} + 输出 ${formatTokens(usage.completion)}`,
+          `输入 ${formatNumber(usage.prompt)} + 输出 ${formatNumber(usage.completion)}，共 ${formatNumber(usage.total)} tokens，${usage.calls} 次调用模型，思考 ${formatNumber(usage.reasoning)}`,
         ),
       );
-      rows.append(this.overviewRow("总轮次", String(this.turns), "用户说一句话到 agent 停下来算一轮；干活时的插话不算"));
+      rows.append(
+        this.overviewRow(
+          "总轮次",
+          `${this.turns} 轮 · 工具调用 ${this.toolCalls} 次`,
+          "用户说一句话到 agent 停下来算一轮（干活时的插话不算）；工具调用是这个任务里模型调工具的总次数，被拒绝的也算，子 agent 内部的不算",
+        ),
+      );
       rows.append(this.overviewRow("缓存命中", cacheHitText(usage), "输入里命中缓存的比例；接口不报就是 0"));
       if (usage.cost > 0) {
         rows.append(this.overviewRow("费用", `$${Number(usage.cost).toFixed(4)}`, "接口直接报的费用"));

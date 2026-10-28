@@ -42,6 +42,8 @@ class Session:
     checkpoints: list[dict[str, Any]] = field(default_factory=list)
     # 跑了多少轮：用户说一句话到 agent 停下算一轮；老会话没有这个字段，读的时候按消息估一个
     turns: int = 0
+    # 模型一共调了多少次工具（被拒绝的也算，子 agent 内部的不算）；老会话没有这个字段，读的时候按消息估一个
+    tool_calls: int = 0
     # 任务计划（todo_write 维护的步骤清单），跟着会话落盘，界面重开时照着恢复面板
     todos: list[dict[str, Any]] = field(default_factory=list)
     messages: list[dict[str, Any]] = field(default_factory=list)
@@ -113,6 +115,8 @@ class SessionStore:
             self._replay_journal(session)
         if "turns" not in data:
             session.turns = _count_turns(session.messages)
+        if "tool_calls" not in data:
+            session.tool_calls = _count_tool_calls(session.messages)
         return session
 
     def _replay_journal(self, session: Session) -> None:
@@ -196,6 +200,15 @@ def _count_turns(messages: list[dict[str, Any]]) -> int:
             continue
         if not message_display(message)["text"].startswith(SUMMARY_PREFIX):
             count += 1
+    return count
+
+
+def _count_tool_calls(messages: list[dict[str, Any]]) -> int:
+    """老会话没有 tool_calls 字段，按 assistant 消息里的 tool_calls 数；压缩掉的那部分数不到，会偏少。"""
+    count = 0
+    for message in messages:
+        if message.get("role") == "assistant":
+            count += len(message.get("tool_calls") or [])
     return count
 
 

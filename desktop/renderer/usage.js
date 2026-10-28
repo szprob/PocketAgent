@@ -24,7 +24,7 @@ export async function renderUsage(container) {
       el(
         "div",
         "usage-stat-detail",
-        `${period.calls} 次 · 输入 ${formatNumber(period.prompt)} / 输出 ${formatNumber(period.completion)}`,
+        `${period.calls} 次 · 输入 ${formatTokens(period.prompt)} / 输出 ${formatTokens(period.completion)}`,
       ),
     );
     if (period.cost > 0) {
@@ -60,9 +60,9 @@ export async function renderUsage(container) {
       const row = el("tr");
       row.append(el("td", "", model.model));
       row.append(el("td", "number", String(model.calls)));
-      row.append(el("td", "number", formatNumber(model.prompt)));
-      row.append(el("td", "number", formatNumber(model.completion)));
-      row.append(el("td", "number", formatNumber(model.cached)));
+      row.append(numberCell(model.prompt));
+      row.append(numberCell(model.completion));
+      row.append(numberCell(model.cached));
       row.append(el("td", "number", `$${Number(model.cost).toFixed(4)}`));
       table.append(row);
     }
@@ -86,4 +86,12 @@ export async function renderUsage(container) {
     }
     container.append(item);
   }
+}
+
+
+function numberCell(count) {
+  // 表格里的 token 数缩成 k / m / b，悬停看精确值
+  const cell = el("td", "number", formatTokens(count));
+  cell.title = formatNumber(count);
+  return cell;
 }
