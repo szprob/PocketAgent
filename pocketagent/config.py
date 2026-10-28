@@ -72,6 +72,21 @@ REASONING_CHOICES_BY_PROVIDER = {
     "openai": ["none", "low", "medium", "high", "max"],
 }
 
+# 审批、子 agent 这类辅助调用的思考档位，除了具体档位还能写这两个：
+# lowest = 这个模型能选的最低档（DeepSeek / new-api 是 none 关掉思考，智谱是 low）；inherit = 跟模型配置的一样
+REASONING_LOWEST = "lowest"
+REASONING_INHERIT = "inherit"
+
+
+def resolve_reasoning(choice: str, available_choices: list[str], current: str | None) -> str | None:
+    """把 lowest / inherit / 具体档位换成真正要发给接口的值；None 表示不传，用接口默认。"""
+    if choice == REASONING_INHERIT:
+        return current
+    if choice == REASONING_LOWEST:
+        # 不知道这个模型能选哪些档（比如用环境变量配的模型）就不传，免得传错被 400
+        return available_choices[0] if available_choices else None
+    return choice
+
 
 def provider_kind(base_url: str | None) -> str:
     """按接口地址认是哪家，决定思考档位怎么传、能选哪些。"""
@@ -218,6 +233,15 @@ def _approval_mode(value: Any) -> ApprovalMode:
         raise ConfigError(f"审批模式只能是 {choices}：{value}")
 
 
+def _auxiliary_reasoning(value: Any, label: str) -> str:
+    """审批、子 agent 的思考档位：lowest / inherit，或者某家接口认的具体档位。"""
+    text = str(value or REASONING_LOWEST).strip()
+    known_efforts = {effort for choices in REASONING_CHOICES_BY_PROVIDER.values() for effort in choices}
+    if text in (REASONING_LOWEST, REASONING_INHERIT) or text in known_efforts:
+        return text
+    raise ConfigError(f"{label}只能是 {REASONING_LOWEST} / {REASONING_INHERIT} / {' / '.join(sorted(known_efforts))}：{value}")
+
+
 def _key_hint(key: str | None) -> str:
     """给界面看的密钥提示，只露头尾。"""
     if not key:
@@ -345,6 +369,9 @@ class AppConfig:
     models: list[ModelProfile] = field(default_factory=list)
     default_model: str | None = None
     approval_mode: ApprovalMode = ApprovalMode.ASK
+    # AI 自动审批用哪个模型（模型 id，空 = 跟任务的模型一样）、什么思考档位（默认最低：判断一次调用安不安全用不着深想）
+    review_model: str | None = None
+    review_reasoning: str = REASONING_LOWEST
     busy_input_mode: str = BUSY_INPUT_INTERJECT
     max_steps: int = DEFAULT_MAX_STEPS
     # 上下文占用超过窗口的这个百分比就自动压缩
@@ -409,6 +436,8 @@ class AppConfig:
             models=models,
             default_model=_optional_text(data, "default_model"),
             approval_mode=_approval_mode(data.get("approval_mode")),
+            review_model=_optional_text(data, "review_model"),
+            review_reasoning=_auxiliary_reasoning(data.get("review_reasoning"), "审批的思考档位"),
             busy_input_mode=_busy_input_mode(data.get("busy_input_mode")),
             max_steps=_positive_int(data, "max_steps", DEFAULT_MAX_STEPS, "单轮最多调用模型次数"),
             auto_compact=_boolean_with_default(data, "auto_compact", True),
@@ -441,6 +470,9 @@ class AppConfig:
         )
         if config.default_model and config.find_model(config.default_model) is None:
             config.default_model = models[0].id if models else None
+        # 审批用的模型被删了就回到「跟任务的模型一样」
+        if config.review_model and config.find_model(config.review_model) is None:
+            config.review_model = None
         # 默认工作区得在列表里；配的那个目录被移除了就当没配
         if config.default_workspace not in config.workspaces:
             config.default_workspace = None
@@ -451,6 +483,8 @@ class AppConfig:
             "models": [profile.to_dict() for profile in self.models],
             "default_model": self.default_model,
             "approval_mode": self.approval_mode.value,
+            "review_model": self.review_model,
+            "review_reasoning": self.review_reasoning,
             "busy_input_mode": self.busy_input_mode,
             "max_steps": self.max_steps,
             "auto_compact": self.auto_compact,
@@ -487,6 +521,8 @@ class AppConfig:
             "models": [profile.public_dict() for profile in self.models],
             "default_model": self.default_profile().id if self.models else None,
             "approval_mode": self.approval_mode.value,
+            "review_model": self.review_model,
+            "review_reasoning": self.review_reasoning,
             "busy_input_mode": self.busy_input_mode,
             "max_steps": self.max_steps,
             "auto_compact": self.auto_compact,
@@ -671,6 +707,11 @@ class Settings:
     supports_images: bool = False
     # 思考档位怎么传：openrouter 用 reasoning.effort，其他用顶层 reasoning_effort
     reasoning_style: str = "top"
+    # 当前模型能选的思考档位（审批、子 agent 选「最低」时从这里取）；环境变量配的模型不知道，空着
+    reasoning_choices: list[str] = field(default_factory=list)
+    # AI 审批用的模型（None = 跟任务的模型一样）和思考档位（lowest / inherit / 具体档位）
+    review_profile: ModelProfile | None = None
+    review_reasoning: str = REASONING_LOWEST
     max_output_tokens: int | None = None
     # 联网工具：web_search 为 None 表示没开（或没有密钥）
     web_search: WebSearchSettings | None = None
@@ -760,6 +801,7 @@ class Settings:
         self.max_output_tokens = profile.max_output_tokens
         self.model_profile_id = profile.id
         self.model_profile_name = profile.name
+        self.reasoning_choices = profile.available_reasoning_choices()
 
     def apply_compaction(self, app_config: "AppConfig") -> None:
         self.auto_compact = app_config.auto_compact
@@ -783,6 +825,8 @@ class Settings:
         self.trusted_dirs = list(app_config.trusted_dirs)
         self.ripgrep_path = app_config.ripgrep_path
         self.memory_enabled = app_config.memory_enabled
+        self.review_profile = app_config.find_model(app_config.review_model) if app_config.review_model else None
+        self.review_reasoning = app_config.review_reasoning
 
     def apply_environment(self) -> None:
         environment = os.environ

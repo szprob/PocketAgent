@@ -215,6 +215,13 @@
                   <label class="field"><span>单轮最多调用模型次数</span>
                     <input id="max-steps-input" type="number" min="1" step="1" /></label>
                 </div>
+                <div class="field-row">
+                  <label class="field"><span>AI 审批用的模型</span>
+                    <select id="review-model-select"></select></label>
+                  <label class="field"><span>AI 审批的思考档位</span>
+                    <select id="review-reasoning-select"></select></label>
+                </div>
+                <div class="field-hint">只影响「AI 自动审批」：每次改文件、跑命令前让模型判断一下安不安全。用不着深度思考，默认用最低档，等得少。</div>
                 <fieldset class="radio-group">
                   <legend>上下文压缩</legend>
                   <label class="checkbox-field"><input type="checkbox" id="auto-compact-input" />

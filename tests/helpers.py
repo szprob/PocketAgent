@@ -88,6 +88,7 @@ def build_harness(
     tools: ToolRegistry | None = None,
     session: Session | None = None,
     provider=None,
+    provider_builder=None,
     **setting_overrides,
 ) -> AgentHarness:
     # 默认不去读本机 ~/.claude/skills，测试结果不受机器上装了什么技能影响
@@ -100,7 +101,13 @@ def build_harness(
     )
     provider = provider or ScriptedProvider(responses)
     agent = create_agent(
-        settings, approver=approver or AllowAllApprover(), provider=provider, tools=tools, session=session
+        settings,
+        approver=approver or AllowAllApprover(),
+        provider=provider,
+        tools=tools,
+        session=session,
+        # 审批单独选了模型时拿它造 provider；不给就用真的 OpenAI 兼容接口（测试里别走到这一步）
+        provider_builder=provider_builder,
     )
     recorder = EventRecorder()
     agent.context.events.subscribe(recorder)

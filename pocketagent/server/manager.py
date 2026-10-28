@@ -74,7 +74,9 @@ class SessionManager:
         return settings
 
     def _register(self, settings: Settings, session: Session | None) -> WebSession:
-        web_session = WebSession(settings, session=session, provider=self.build_provider(settings))
+        web_session = WebSession(
+            settings, session=session, provider=self.build_provider(settings), provider_builder=self.build_provider
+        )
         self.sessions[web_session.id] = web_session
         return web_session
 

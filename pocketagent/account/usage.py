@@ -188,6 +188,13 @@ class UsageRecordingProvider:
         self.usage_log = usage_log
         self.metadata = metadata
 
+    def with_reasoning_effort(self, reasoning_effort: str | None) -> "UsageRecordingProvider":
+        """换思考档位后照样记用量；里面的 provider 不支持换档位（比如测试用的假模型）就原样用。"""
+        derive = getattr(self.inner, "with_reasoning_effort", None)
+        if derive is None:
+            return self
+        return UsageRecordingProvider(derive(reasoning_effort), self.usage_log, self.metadata)
+
     async def complete(
         self,
         messages: list[dict[str, Any]],

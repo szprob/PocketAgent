@@ -583,8 +583,10 @@ async def _approve(
     """AI 审批模式先让模型判断，判定安全直接放行；否则（或本来就是询问模式）问用户。"""
     review = None
     if check.decision == Decision.AI_REVIEW:
+        # 设置里可以给审批单独选模型和思考档位（默认最低档），不必每次都等一次主模型的深度思考
+        review_provider = context.review_provider() if context.review_provider else context.provider
         review = await review_tool_call(
-            context.provider,
+            review_provider,
             context.messages,
             str(context.settings.workspace),
             tool.name,

@@ -30,6 +30,8 @@ const draft = {
   reasoningPresets: {},
   // 技能页里关掉的技能名
   disabledSkills: new Set(),
+  // 服务端给的模型列表（带各自能选的思考档位），AI 审批的下拉框用
+  savedModels: [],
 };
 
 export function initSettings() {
@@ -55,6 +57,8 @@ export function initSettings() {
     defaultWorkspace: byId("default-workspace-select"),
     defaultWorkspaceHint: byId("default-workspace-hint"),
     defaultMode: byId("default-mode-select"),
+    reviewModel: byId("review-model-select"),
+    reviewReasoning: byId("review-reasoning-select"),
     maxSteps: byId("max-steps-input"),
     busyModeInputs: [...document.querySelectorAll('input[name="busy-input-mode"]')],
     autoCompact: byId("auto-compact-input"),
@@ -114,6 +118,7 @@ export function initSettings() {
   elements.testButton.addEventListener("click", testSelectedModel);
   elements.webSearchProvider.addEventListener("change", () => updateWebSearchFields());
   elements.imageGenProvider.addEventListener("change", () => updateImageGenFields());
+  elements.reviewModel.addEventListener("change", () => renderReviewReasoningOptions(elements.reviewReasoning.value));
 }
 
 // 智谱的档位只在选智谱时才有意义；必应不用密钥，DeepSeek / 智谱要
@@ -128,6 +133,35 @@ function updateWebSearchFields() {
 }
 
 // 智谱用官方地址；OpenAI 兼容的可以走网关，没填就用第一个 OpenAI 兼容模型的地址
+// ---- AI 审批用的模型和思考档位 ----
+// 「最低」= 这个模型能选的最低档（能关思考就关），「跟模型一样」= 用模型配置里的档位；
+// 选了具体模型时还能挑它支持的具体档位。和桌面端 settings.js 同一套
+const REVIEW_REASONING_FIXED = [
+  { value: "lowest", label: "最低（默认，能关思考就关）" },
+  { value: "inherit", label: "跟模型配置一样" },
+];
+
+function renderReviewOptions(selectedModel, selectedReasoning) {
+  elements.reviewModel.replaceChildren(new Option("跟任务的模型一样", ""));
+  for (const model of draft.savedModels) {
+    elements.reviewModel.appendChild(new Option(model.name, model.id));
+  }
+  elements.reviewModel.value = selectedModel || "";
+  renderReviewReasoningOptions(selectedReasoning);
+}
+
+function renderReviewReasoningOptions(selectedReasoning) {
+  const model = draft.savedModels.find((each) => each.id === elements.reviewModel.value);
+  const options = [...REVIEW_REASONING_FIXED];
+  for (const choice of model?.reasoning_choices || []) {
+    options.push({ value: choice, label: `${reasoningLabel(choice)}（${choice}）` });
+  }
+  elements.reviewReasoning.replaceChildren(...options.map((option) => new Option(option.label, option.value)));
+  // 原来选的档位新模型不支持，就回到「最低」
+  const stillAvailable = options.some((option) => option.value === selectedReasoning);
+  elements.reviewReasoning.value = stillAvailable ? selectedReasoning : "lowest";
+}
+
 function updateImageGenFields() {
   const provider = elements.imageGenProvider.value;
   const usesOpenAI = provider === "openai";
@@ -277,6 +311,8 @@ export async function openSettings(tabName) {
     elements.defaultMode.appendChild(option);
   }
   elements.defaultMode.value = config.approval_mode;
+  draft.savedModels = config.models;
+  renderReviewOptions(config.review_model, config.review_reasoning);
   renderDefaultWorkspaceOptions(config);
   elements.maxSteps.value = config.max_steps;
   elements.userName.value = config.user_name;
@@ -621,6 +657,8 @@ async function saveSettings() {
     models: draft.models.map(toPayloadModel),
     default_model: draft.defaultModel,
     approval_mode: elements.defaultMode.value,
+    review_model: elements.reviewModel.value || null,
+    review_reasoning: elements.reviewReasoning.value,
     default_workspace: elements.defaultWorkspace.value || null,
     busy_input_mode: busyInput ? busyInput.value : "interject",
     max_steps: elements.maxSteps.value,

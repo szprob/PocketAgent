@@ -88,8 +88,17 @@ class WebApprover:
 
 
 class WebSession:
-    def __init__(self, settings: Settings, session: Session | None, provider: LLMProvider) -> None:
-        self.agent: Agent = create_agent(settings, approver=WebApprover(self), provider=provider, session=session)
+    def __init__(
+        self,
+        settings: Settings,
+        session: Session | None,
+        provider: LLMProvider,
+        provider_builder: ProviderFactory | None = None,
+    ) -> None:
+        # provider_builder：审批单独用别的模型时拿它造 provider（和任务的 provider 同一个来源）
+        self.agent: Agent = create_agent(
+            settings, approver=WebApprover(self), provider=provider, session=session, provider_builder=provider_builder
+        )
         self.agent.context.events.subscribe(self._forward_event)
         self.clients: set[web.WebSocketResponse] = set()
         self.pending_approvals: dict[str, PendingApproval] = {}

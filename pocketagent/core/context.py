@@ -7,7 +7,7 @@ PocketFlow 只要求 shared 是个对象、原样传给每个节点；这里用 
 import asyncio
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from pocketagent.config import Settings
 from pocketagent.core.compaction import PendingCompaction
@@ -69,6 +69,8 @@ class AgentContext:
     pending_checkpoint: "asyncio.Task[None] | None" = None
     # 一轮进行中的消息日志；子 agent 不落盘，所以是 None
     journal: SessionJournal | None = None
+    # AI 自动审批用的 provider（按设置里的审批模型和思考档位现取）；None 表示就用 provider
+    review_provider: Callable[[], LLMProvider] | None = None
 
     async def wait_for_turn_checkpoint(self) -> None:
         """工具要动工作区了，等这一轮的检查点拍完（被中断也让它拍完，git 拍到一半被杀会留下锁文件）。"""
