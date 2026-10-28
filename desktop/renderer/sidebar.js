@@ -186,7 +186,8 @@ function renderWorkspace(workspace) {
   const remove = iconButton("close", "从列表里移除（目录和任务记录都不动）", "row-action");
   remove.addEventListener("click", () => removeWorkspace(workspace));
 
-  header.append(toggle, makeDefault, newTask, refresh, remove);
+  // 星标放最后：平时只有默认工作区的星亮着，要贴在行尾，不能停在一排隐藏按钮的最前面（行中间）
+  header.append(toggle, newTask, refresh, remove, makeDefault);
   group.append(header);
   if (expanded && workspace.exists) {
     group.append(renderDirectory(workspace.path, "", 1));
