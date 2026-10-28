@@ -86,6 +86,17 @@ class AppConfigTest(unittest.TestCase):
         with self.assertRaises(ConfigError):
             AppConfig.from_dict({"font_size": "huge"})
 
+    def test_fold_tool_calls_defaults_on_and_round_trips(self) -> None:
+        """工具调用收进折叠：默认开，关得掉，存得下来。"""
+        default = AppConfig.from_dict({})
+        folded_off = AppConfig.from_dict({"fold_tool_calls": False})
+
+        self.assertTrue(default.fold_tool_calls)
+        self.assertTrue(default.public_dict()["fold_tool_calls"])
+        self.assertFalse(folded_off.fold_tool_calls)
+        self.assertFalse(AppConfig.from_dict(folded_off.to_dict()).fold_tool_calls)
+        self.assertFalse(folded_off.public_dict()["fold_tool_calls"])
+
     def test_ripgrep_path_round_trips(self) -> None:
         config = AppConfig.from_dict({"ripgrep_path": "/opt/homebrew/bin/rg"})
 

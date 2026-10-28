@@ -45,6 +45,7 @@ export function initSettings(handlers) {
   elements.userName = document.getElementById("user-name-input");
   elements.appearance = document.getElementById("appearance-select");
   elements.fontSize = document.getElementById("font-size-select");
+  elements.foldToolCalls = document.getElementById("fold-tool-calls-input");
   elements.defaultWorkspace = document.getElementById("default-workspace-select");
   elements.defaultWorkspaceHint = document.getElementById("default-workspace-hint");
   elements.defaultMode = document.getElementById("default-mode-select");
@@ -255,6 +256,7 @@ function fillGeneral() {
   elements.userName.value = config.user_name || "";
   elements.appearance.value = config.appearance || "system";
   elements.fontSize.value = config.font_size || "medium";
+  elements.foldToolCalls.checked = config.fold_tool_calls !== false;
   elements.defaultWorkspace.replaceChildren();
   for (const workspace of state.info?.workspaces || []) {
     const option = el("option", "", workspace.name);
@@ -800,6 +802,7 @@ async function saveConfig() {
     user_name: elements.userName.value.trim() || null,
     appearance: elements.appearance.value,
     font_size: elements.fontSize.value,
+    fold_tool_calls: elements.foldToolCalls.checked,
   };
   const searchKey = elements.webSearchKey.value.trim();
   if (searchKey) {

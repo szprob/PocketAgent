@@ -2,6 +2,7 @@
 // 事件协议见 pocketagent/server/__init__.py 的说明；这里不依赖 web/static 的实现。
 
 import { attachmentUrl, binaryDataUrl, openExternal, request, sessionFilePath } from "./api.js";
+import { ActivityFold, dissolveFolds } from "./activity-fold.js";
 import { button, clear, el, isImagePath, renderDiff } from "./dom.js";
 import { icon } from "./icons.js";
 import { openFilePreview } from "./filepreview.js";
@@ -62,6 +63,11 @@ export class ChatView {
     this.currentAssistant = null;
     this.currentReasoning = null;
     this.activity = null;
+    // 当前这一块折叠：一轮里的工具调用和思考都收进去，AI 一说话就收尾、另起一块
+    this.fold = null;
+    this.foldEnabled = true;
+    // 每次工具调用落在哪一块折叠里，结果回来时要把数字记到那一块上
+    this.callFolds = new Map();
     // 本轮最后一条收尾的回复块，turn_end 判断要不要挂「被掐断」角标用
     this.lastReply = null;
     this.toolCards = new Map();
@@ -97,6 +103,8 @@ export class ChatView {
     this.todoPanel = null;
     this.currentAssistant = null;
     this.currentReasoning = null;
+    this.fold = null;
+    this.callFolds.clear();
     this.running = false;
     this.stickToBottom = true;
     this.workspace = null;
@@ -165,6 +173,7 @@ export class ChatView {
     }
     // 刷新 / 切回来时从会话上恢复计划面板（面板出现在历史后面，反映当前进度）
     this.renderTodoPanel(snapshot.todos);
+    this.closeActivityFold();
     this.callbacks.onSnapshot?.(snapshot);
     if (snapshot.running && (snapshot.pending_approvals || []).length === 0 && (snapshot.pending_questions || []).length === 0) {
       this.showActivity("运行中");
@@ -207,6 +216,7 @@ export class ChatView {
     switch (event.type) {
       case "turn_start":
         this.finishStreamingBlocks();
+        this.closeActivityFold();
         this.lastReply = null;
         this.turnStartChildCount = this.inner.children.length;
         this.turnImagePaths = new Set();
@@ -291,6 +301,7 @@ export class ChatView {
         break;
       case "turn_end": {
         this.finishStreamingBlocks();
+        this.closeActivityFold();
         this.hideActivity();
         this.markCutOffReply(event.stop_reason);
         const notice = TURN_END_NOTICES[event.stop_reason];
@@ -309,6 +320,7 @@ export class ChatView {
   // ---- 对话条目 ----
 
   addUserMessage(text, attachments = [], badge = "") {
+    this.closeActivityFold();
     const wrapper = el("div", "message user");
     if (attachments.length > 0) {
       wrapper.append(this.buildAttachments(attachments));
@@ -357,6 +369,7 @@ export class ChatView {
   }
 
   appendStaticAssistant(text, finish = "") {
+    this.closeActivityFold();
     const element = el("div", "message assistant");
     const body = el("div", "assistant-body");
     body.append(renderMarkdown(text, this.markdownOptions()));
@@ -489,6 +502,8 @@ export class ChatView {
     if (this.currentAssistant) {
       return this.currentAssistant;
     }
+    // 模型开口说话：前面那一块工具调用收尾，这段话落在折叠外面，后面再开新的一块
+    this.closeActivityFold();
     const element = el("div", "message assistant");
     const body = el("div", "assistant-body");
     element.append(body);
@@ -556,13 +571,15 @@ export class ChatView {
       const bodyText = document.createTextNode("");
       body.append(bodyText);
       details.append(summary, body);
-      this.insertBeforeActivity(details);
+      // 思考也收进折叠：折叠头上实时显示「思考中 3.2s」和最新一句
+      const fold = this.appendFolded(details);
 
       const block = {
         element: details,
         label,
         preview,
         bodyText,
+        fold,
         length: 0,
         tail: "",
         startedAt: performance.now(),
@@ -570,11 +587,13 @@ export class ChatView {
       };
       block.timer = setInterval(() => this.updateReasoningLabel(block), 100);
       this.currentReasoning = block;
+      fold?.startThinking();
     }
     const block = this.currentReasoning;
     block.bodyText.appendData(text);
     block.length += text.length;
     block.tail = (block.tail + text).slice(-96);
+    block.fold?.updateThinking(text);
     this.scrollIfSticking();
   }
 
@@ -591,6 +610,7 @@ export class ChatView {
     this.currentReasoning.label.textContent = `思考了 ${elapsedSeconds(this.currentReasoning.startedAt)}s（${this.currentReasoning.length} 字）`;
     this.currentReasoning.preview.textContent = "";
     this.currentReasoning.element.open = false;
+    this.currentReasoning.fold?.finishThinking();
     this.currentReasoning = null;
   }
 
@@ -607,6 +627,11 @@ export class ChatView {
     }
     this.currentAssistant?.element.remove();
     this.currentAssistant = null;
+    // 半截回复丢了以后折叠可能空了，别留一个空壳
+    if (this.fold && this.fold.isEmpty()) {
+      this.fold.element.remove();
+      this.fold = null;
+    }
   }
 
   addToolCard(callId, name, summary) {
@@ -620,7 +645,7 @@ export class ChatView {
     header.append(status);
     const body = el("div", "tool-body");
     details.append(header, body);
-    this.insertBeforeActivity(details);
+    const fold = this.appendFolded(details);
 
     // liveOutput：bash 边跑边出的输出；autoOpened：是不是为了看实时输出才自动展开的（跑完要收起）
     const card = { element: details, body, status, steps: null, liveOutput: null, autoOpened: false };
@@ -634,6 +659,10 @@ export class ChatView {
     });
     if (callId) {
       this.toolCards.set(callId, card);
+      if (fold) {
+        fold.recordCall(callId, name, summary);
+        this.callFolds.set(callId, fold);
+      }
     }
     this.scrollIfSticking();
     return card;
@@ -672,6 +701,10 @@ export class ChatView {
 
   setToolResult(callId, content, isError, denied, name = "") {
     const card = this.toolCards.get(callId) || this.addToolCard(callId, name, "");
+    // 折叠头上的数字按结果记：出错 / 被拒的不算进「读了几个、改了几个」
+    const fold = this.callFolds.get(callId);
+    this.callFolds.delete(callId);
+    fold?.recordResult(callId, { name, content, isError, denied });
     // 只为看实时输出才自动展开的卡片，成功跑完就收起；出错的下面会保持展开
     if (card.autoOpened && !isError) {
       this.setCardOpen(card, false);
@@ -724,6 +757,8 @@ export class ChatView {
       header.append(icon("listCheck", "todo-icon"), el("span", "todo-title"), el("span", "todo-progress"));
       panel.append(header, el("div", "todo-items"));
       this.todoPanel = panel;
+      // 计划面板一直露在外面，不跟着工具调用收进折叠
+      this.closeActivityFold();
       this.appendNode(panel);
     }
     const done = todos.filter((item) => item.status === "completed").length;
@@ -768,6 +803,7 @@ export class ChatView {
   }
 
   addNotice(text, kind = "info") {
+    this.closeActivityFold();
     const node = el("div", `notice ${kind}`, text);
     this.appendNode(node);
     return node;
@@ -777,11 +813,13 @@ export class ChatView {
     if (!text) {
       return;
     }
+    this.closeActivityFold();
     const node = el("div", `notice command-output ${kind}`, text);
     this.appendNode(node);
   }
 
   addSummary(text) {
+    this.closeActivityFold();
     const details = el("details", "notice");
     const summary = el("summary", "", "之前的对话已压缩，点开看摘要");
     const pre = el("pre");
@@ -796,6 +834,8 @@ export class ChatView {
     if (!request?.request_id || this.approvalCards.has(request.request_id)) {
       return;
     }
+    // 审批卡要露在外面，前面那一块折叠先收尾
+    this.closeActivityFold();
     // 一批里好几项要问时合成一张卡：每项单独选，最后一起提交（和 web 端一样）
     if (Array.isArray(request.items)) {
       this.showBatchApproval(request);
@@ -912,6 +952,7 @@ export class ChatView {
       return;
     }
     this.hideActivity();
+    this.closeActivityFold();
     const card = el("div", "card question");
     const header = el("div", "card-header");
     header.append(el("span", "card-badge", "需要回答"), el("span", "card-title", "agent 想确认几件事"));
@@ -1036,6 +1077,45 @@ export class ChatView {
       return;
     }
     this.inner.append(node);
+  }
+
+  // ---- 折叠：一轮里的工具调用和思考收进一块，AI 说的话永远在外面 ----
+
+  setFoldEnabled(enabled) {
+    const next = enabled !== false;
+    if (next === this.foldEnabled) {
+      return;
+    }
+    this.foldEnabled = next;
+    this.closeActivityFold();
+    if (!next) {
+      // 关掉这个选项：已经画出来的折叠就地摊平，和以前的平铺一模一样
+      dissolveFolds(this.inner);
+    }
+  }
+
+  // 工具卡片 / 思考块放哪：折叠开着就塞进当前这一块，关掉就平铺进对话
+  appendFolded(node) {
+    if (!this.foldEnabled) {
+      this.appendNode(node);
+      return null;
+    }
+    if (!this.fold || !this.fold.element.isConnected) {
+      this.fold = new ActivityFold();
+      this.insertBeforeActivity(this.fold.element);
+    }
+    this.fold.append(node);
+    this.scrollIfSticking();
+    return this.fold;
+  }
+
+  // AI 说话了，或者来了要露在外面的东西（提示、审批卡、计划面板）：这一块收尾，后面再开新的一块
+  closeActivityFold() {
+    if (!this.fold) {
+      return;
+    }
+    this.fold.finish();
+    this.fold = null;
   }
 
   isNearBottom() {

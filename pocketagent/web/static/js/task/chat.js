@@ -5,6 +5,7 @@ import { looksLikeCommand, loadSkillNames, runCommand } from "../core/commands.j
 import { Composer } from "./composer.js";
 import { button, el, icon, isImagePath, renderDiff, show } from "../ui/dom.js";
 import { renderMarkdown } from "../ui/markdown.js";
+import { ActivityFold, dissolveFolds } from "./activity-fold.js";
 import { renderQuestionCard } from "./questions.js";
 import { emit, reloadTasks, state } from "../core/state.js";
 
@@ -19,6 +20,11 @@ const chat = {
   // 正在流式输出的回复块和思考块
   currentAssistant: null,
   currentReasoning: null,
+  // 当前这一块折叠：一轮里的工具调用和思考都收进去，AI 一说话就收尾、另起一块
+  fold: null,
+  foldEnabled: true,
+  // 每次工具调用落在哪一块折叠里，结果回来时要把数字记到那一块上
+  callFolds: new Map(),
   toolCards: new Map(),
   approvalCards: new Map(),
   questionCards: new Map(),
@@ -119,8 +125,21 @@ export function updateChatOptions(info) {
   chat.composer.setModes(info.modes);
   chat.composer.setModels(info.models, info.fallback_model);
   chat.composer.setCommands(info.commands || []);
+  setFoldEnabled(info.fold_tool_calls !== false);
   if (chat.status) {
     applyStatus(chat.status);
+  }
+}
+
+// 设置里关掉「工具调用收进折叠」：已经画出来的折叠就地摊平，之后平铺；重新打开时只影响后面
+function setFoldEnabled(enabled) {
+  if (enabled === chat.foldEnabled) {
+    return;
+  }
+  chat.foldEnabled = enabled;
+  closeActivityFold();
+  if (!enabled) {
+    dissolveFolds(elements.transcriptInner);
   }
 }
 
@@ -352,6 +371,7 @@ function handleAgentEvent(event) {
   switch (event.type) {
     case "turn_start":
       finishStreamingBlocks();
+      closeActivityFold();
       chat.turnStartChildCount = elements.transcriptInner.children.length;
       chat.lastReply = null;
       addUserMessage(event.user_text, event.attachments);
@@ -408,7 +428,7 @@ function handleAgentEvent(event) {
       setToolReview(event.call_id, { allow: event.allow, reason: event.reason });
       break;
     case "tool_result":
-      setToolResult(event.call_id, event.content, event.is_error, event.denied);
+      setToolResult(event.call_id, event.content, event.is_error, event.denied, event.name);
       if (chat.running && !event.denied) {
         showActivity("等待模型响应");
       }
@@ -446,6 +466,7 @@ function handleAgentEvent(event) {
       break;
     case "turn_end": {
       finishStreamingBlocks();
+      closeActivityFold();
       hideActivity();
       markCutOffReply(event.stop_reason);
       const notice = TURN_END_NOTICES[event.stop_reason];
@@ -484,6 +505,33 @@ function appendToTranscript(element) {
   return element;
 }
 
+// 工具卡片 / 思考块放哪：折叠开着就塞进当前这一块，关掉就平铺进对话
+function appendFolded(element) {
+  if (!chat.foldEnabled) {
+    appendToTranscript(element);
+    return null;
+  }
+  if (!chat.fold || !chat.fold.element.isConnected) {
+    chat.fold = new ActivityFold();
+    appendToTranscript(chat.fold.element);
+  }
+  const shouldScroll = isNearBottom();
+  chat.fold.append(element);
+  if (shouldScroll) {
+    scrollToBottom();
+  }
+  return chat.fold;
+}
+
+// AI 说话了，或者来了要露在外面的东西（提示、审批卡、计划面板）：这一块收尾，后面再开新的一块
+function closeActivityFold() {
+  if (!chat.fold) {
+    return;
+  }
+  chat.fold.finish();
+  chat.fold = null;
+}
+
 function clearTranscript() {
   hideActivity();
   if (chat.currentReasoning) {
@@ -492,6 +540,8 @@ function clearTranscript() {
   elements.transcriptInner.replaceChildren();
   chat.currentAssistant = null;
   chat.currentReasoning = null;
+  chat.fold = null;
+  chat.callFolds.clear();
   chat.turnStartChildCount = null;
   chat.lastReply = null;
   chat.toolCards.clear();
@@ -525,6 +575,7 @@ function renderAttachments(attachments) {
 }
 
 function addUserMessage(text, attachments, badge) {
+  closeActivityFold();
   const message = el("div", "message-user");
   if (badge) {
     message.appendChild(el("span", "message-badge", badge));
@@ -539,6 +590,7 @@ function addUserMessage(text, attachments, badge) {
 }
 
 function addAssistantMessage(text, finish = "") {
+  closeActivityFold();
   const element = el("div", "message-assistant");
   element.innerHTML = renderMarkdown(text, { imageUrl: chatImageUrl });
   const badge = buildCutOffBadge(finish);
@@ -550,6 +602,7 @@ function addAssistantMessage(text, finish = "") {
 }
 
 function addSummaryCard(text) {
+  closeActivityFold();
   const details = el("details", "summary-card");
   details.appendChild(el("summary", "", "之前的对话已压缩，点开看摘要"));
   const body = el("div", "message-assistant");
@@ -650,6 +703,7 @@ function renderTurnImages(taskId, paths) {
 }
 
 function addNotice(text, kind) {
+  closeActivityFold();
   appendToTranscript(el("div", `notice ${kind || ""}`, text));
 }
 
@@ -664,6 +718,8 @@ const REASONING_PREVIEW_CHARS = 48;
 function appendAssistantText(delta) {
   hideActivity();
   if (!chat.currentAssistant) {
+    // 模型开口说话：前面那一块工具调用收尾，这段话落在折叠外面，后面再开新的一块
+    closeActivityFold();
     const element = appendToTranscript(el("div", "message-assistant streaming"));
     chat.currentAssistant = { element, shown: "", pending: "", frameScheduled: false };
   }
@@ -726,8 +782,10 @@ function appendReasoning(delta) {
     const bodyText = document.createTextNode("");
     body.appendChild(bodyText);
     details.append(summary, body);
-    appendToTranscript(details);
-    const block = { details, label, preview, bodyText, length: 0, tail: "", startedAt: performance.now() };
+    // 思考也收进折叠：折叠头上实时显示「思考中 3.2s」和最新一句
+    const fold = appendFolded(details);
+    fold?.startThinking();
+    const block = { details, label, preview, bodyText, fold, length: 0, tail: "", startedAt: performance.now() };
     // 计时和最新一句每 0.1 秒刷新一次，思考很长时也不卡
     block.timer = setInterval(() => updateReasoningLabel(block), 100);
     chat.currentReasoning = block;
@@ -736,6 +794,7 @@ function appendReasoning(delta) {
   block.bodyText.appendData(delta);
   block.length += delta.length;
   block.tail = (block.tail + delta).slice(-REASONING_PREVIEW_CHARS * 2);
+  block.fold?.updateThinking(delta);
 }
 
 function updateReasoningLabel(block) {
@@ -748,6 +807,7 @@ function finishReasoningBlock(block) {
   block.details.classList.remove("live");
   block.label.textContent = `思考了 ${elapsedSeconds(block.startedAt)}s（${block.length} 字）`;
   block.preview.textContent = "";
+  block.fold?.finishThinking();
 }
 
 function finishStreamingBlocks() {
@@ -770,6 +830,11 @@ function discardPartialAssistant() {
   chat.currentAssistant?.element.remove();
   chat.currentAssistant = null;
   chat.currentReasoning = null;
+  // 半截回复丢了以后折叠可能空了，别留一个空壳
+  if (chat.fold && chat.fold.isEmpty()) {
+    chat.fold.element.remove();
+    chat.fold = null;
+  }
 }
 
 // ---- 「等待中」提示：等第一个字、工具跑完等模型、等后台压缩时，让人知道没卡住 ----
@@ -832,7 +897,11 @@ function addToolCard(callId, name, summary) {
   card.append(header, body);
   setToolStatus(card, "running");
   chat.toolCards.set(callId, card);
-  appendToTranscript(card);
+  const fold = appendFolded(card);
+  if (fold) {
+    fold.recordCall(callId, name, summary);
+    chat.callFolds.set(callId, fold);
+  }
   return card;
 }
 
@@ -907,7 +976,11 @@ function appendToolOutput(callId, text) {
   }
 }
 
-function setToolResult(callId, content, isError, denied) {
+function setToolResult(callId, content, isError, denied, name) {
+  // 折叠头上的数字按结果记：出错 / 被拒的不算进「读了几个、改了几个」
+  const fold = chat.callFolds.get(callId);
+  chat.callFolds.delete(callId);
+  fold?.recordResult(callId, { name, content, isError, denied });
   const card = chat.toolCards.get(callId);
   if (!card) {
     return;
@@ -945,6 +1018,8 @@ function renderTodoPanel(todos) {
     header.append(icon("listCheck", "todo-icon"), el("span", "todo-title"), el("span", "todo-progress"));
     panel.append(header, el("div", "todo-items"));
     chat.todoPanel = panel;
+    // 计划面板一直露在外面，不跟着工具调用收进折叠
+    closeActivityFold();
     appendToTranscript(panel);
   }
   const done = todos.filter((item) => item.status === "completed").length;
@@ -967,6 +1042,8 @@ function showApproval(request) {
   if (chat.approvalCards.has(request.request_id)) {
     return;
   }
+  // 审批卡要露在外面，前面那一块折叠先收尾
+  closeActivityFold();
   // 一批里好几项要问时合成一张卡：每项单独选，最后一起提交
   if (Array.isArray(request.items)) {
     showBatchApproval(request);
@@ -1086,6 +1163,7 @@ function showQuestions(request) {
     return;
   }
   hideActivity();
+  closeActivityFold();
   const card = renderQuestionCard(request, (answers) => {
     sendToServer({ type: "question_answer", request_id: request.request_id, answers });
   });
@@ -1116,7 +1194,7 @@ function renderHistoryItem(item) {
     addToolCard(item.call_id, item.name, item.summary);
     setToolReview(item.call_id, item.review);
     if (item.result !== null) {
-      setToolResult(item.call_id, item.result, item.is_error, item.denied);
+      setToolResult(item.call_id, item.result, item.is_error, item.denied, item.name);
     }
   }
 }
@@ -1133,6 +1211,7 @@ function renderSnapshot(snapshot) {
   (snapshot.pending_questions || []).forEach(showQuestions);
   // 刷新 / 切回来时从会话上恢复计划面板（面板出现在历史后面，反映当前进度）
   renderTodoPanel(snapshot.todos);
+  closeActivityFold();
   if (snapshot.running && snapshot.pending_approvals.length === 0 && !(snapshot.pending_questions || []).length) {
     // 中途连上来的：前面流式的那段没了，给个提示，后面的照常显示
     showActivity("运行中");

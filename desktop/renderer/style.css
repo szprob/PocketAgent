@@ -1262,6 +1262,97 @@ code.md-inline-code {
 
 /* 工具卡片 */
 
+/* 一轮里的工具调用和思考收进一块折叠：AI 说的话永远在外面，说了话就另起一块 */
+
+.activity-fold {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--shade-3);
+  overflow: hidden;
+}
+
+.fold-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  list-style: none;
+  font-size: calc(12px * var(--font-scale));
+  color: var(--text-faint);
+}
+
+.fold-header::-webkit-details-marker {
+  display: none;
+}
+
+.fold-header:hover {
+  background: var(--shade-6);
+}
+
+.fold-mark {
+  flex: 0 0 auto;
+  width: 12px;
+  text-align: center;
+}
+
+.activity-fold[data-state="running"] .fold-mark {
+  color: var(--accent);
+  animation: pulse 1s ease-in-out infinite;
+}
+
+.activity-fold[data-state="done"] .fold-mark {
+  color: var(--green);
+}
+
+.activity-fold[data-state="error"] .fold-mark {
+  color: var(--red);
+}
+
+.fold-title {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-dim);
+}
+
+.fold-live {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: calc(11px * var(--font-scale));
+  color: var(--text-faint);
+}
+
+.fold-note {
+  flex: 0 0 auto;
+  color: var(--amber);
+  font-size: calc(11px * var(--font-scale));
+}
+
+.fold-chevron {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+  transition: transform 0.12s ease;
+}
+
+.activity-fold[open] .fold-chevron {
+  transform: rotate(90deg);
+}
+
+.fold-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px 12px;
+  border-top: 1px solid var(--border);
+}
+
 .tool-card {
   border: 1px solid var(--border);
   border-radius: 10px;

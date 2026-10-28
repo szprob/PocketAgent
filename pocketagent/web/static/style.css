@@ -684,6 +684,33 @@ pre code { padding: 0; background: none; font-size: inherit; }
 .reasoning summary { cursor: pointer; user-select: none; }
 .reasoning-body { margin: 6px 0 0; padding-left: 12px; border-left: 2px solid var(--border); white-space: pre-wrap; }
 
+/* 一轮里的工具调用和思考收进一块折叠：AI 说的话永远在外面，说了话就另起一块 */
+.activity-fold { border: 1px solid var(--border); border-radius: 12px; background: var(--surface); overflow: hidden; }
+
+.fold-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  cursor: pointer;
+  list-style: none;
+  color: var(--text-muted);
+  font-size: calc(12.5px * var(--font-scale));
+}
+
+.fold-header::-webkit-details-marker { display: none; }
+.fold-header:hover { background: var(--surface-muted); }
+.fold-mark { flex: none; width: 12px; text-align: center; }
+.activity-fold[data-state="running"] .fold-mark { color: var(--info); animation: pulse 1s ease-in-out infinite; }
+.activity-fold[data-state="done"] .fold-mark { color: var(--success); }
+.activity-fold[data-state="error"] .fold-mark { color: var(--warning); }
+.fold-title { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); }
+.fold-live { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: calc(11.5px * var(--font-scale)); opacity: 0.85; }
+.fold-note { flex: none; color: var(--warning); font-size: calc(11.5px * var(--font-scale)); }
+.fold-chevron { flex: none; color: var(--text-muted); transition: transform 0.15s; }
+.activity-fold[open] .fold-chevron { transform: rotate(90deg); }
+.fold-body { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px 12px; border-top: 1px solid var(--border); }
+
 .tool-card { border: 1px solid var(--border); border-radius: 12px; background: var(--surface); overflow: hidden; }
 
 .tool-header {

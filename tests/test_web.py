@@ -163,6 +163,8 @@ class WebServerTest(WebTestBase):
         self.assertEqual(info["busy_input_mode"], "interject")
         # 外观和字号前端一启动就要套上
         self.assertEqual((info["appearance"], info["font_scale"]), ("system", 1.0))
+        # 工具调用默认收进折叠
+        self.assertTrue(info["fold_tool_calls"])
         self.assertEqual(missing.status, 404)
 
     # ---- 一轮对话和审批 ----
