@@ -56,6 +56,7 @@ export function initSettings() {
     userName: byId("user-name-input"),
     appearance: byId("appearance-select"),
     fontSize: byId("font-size-select"),
+    foldToolCalls: byId("fold-tool-calls-input"),
     defaultWorkspace: byId("default-workspace-select"),
     defaultWorkspaceHint: byId("default-workspace-hint"),
     defaultMode: byId("default-mode-select"),
@@ -340,6 +341,7 @@ export async function openSettings(tabName) {
   elements.userName.value = config.user_name;
   elements.appearance.value = config.appearance || "system";
   elements.fontSize.value = config.font_size || "medium";
+  elements.foldToolCalls.checked = config.fold_tool_calls !== false;
   for (const input of elements.busyModeInputs) {
     input.checked = input.value === config.busy_input_mode;
   }
@@ -695,6 +697,7 @@ async function saveSettings() {
     user_name: elements.userName.value,
     appearance: elements.appearance.value,
     font_size: elements.fontSize.value,
+    fold_tool_calls: elements.foldToolCalls.checked,
     auto_compact: elements.autoCompact.checked,
     compact_threshold_percent: elements.compactThreshold.value,
     web_search_enabled: elements.webSearchEnabled.checked,

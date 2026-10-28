@@ -594,6 +594,8 @@ function applyInfoToComposers() {
     composer.setModels(info.models, info.fallback_model);
     composer.setCommands(info.commands || []);
   }
+  // 对话里把工具调用收进折叠（设置里可以关掉，关掉就回到平铺）
+  chat.setFoldEnabled(info.fold_tool_calls);
   if (runtime.lastChatStatus) {
     applyChatStatus(runtime.lastChatStatus);
   }

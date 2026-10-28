@@ -398,6 +398,8 @@ class AppConfig:
     # 外观和字号，见 APPEARANCES / FONT_SCALES
     appearance: str = "system"
     font_size: str = "medium"
+    # 一轮里的工具调用和思考收进一个折叠块，AI 说的话照常显示在外面；关掉就和以前一样平铺
+    fold_tool_calls: bool = True
     # 上下文占用超过窗口的这个百分比就自动压缩
     auto_compact: bool = True
     compact_threshold_percent: int = DEFAULT_COMPACT_THRESHOLD_PERCENT
@@ -476,6 +478,7 @@ class AppConfig:
             max_steps=_positive_int(data, "max_steps", DEFAULT_MAX_STEPS, "单轮最多调用模型次数"),
             appearance=_one_of(data.get("appearance"), APPEARANCES, "system", "外观"),
             font_size=_one_of(data.get("font_size"), tuple(FONT_SCALES), "medium", "字号"),
+            fold_tool_calls=_boolean_with_default(data, "fold_tool_calls", True),
             auto_compact=_boolean_with_default(data, "auto_compact", True),
             compact_threshold_percent=_compact_threshold_percent(data),
             web_search_enabled=_boolean_with_default(data, "web_search_enabled", True),
@@ -531,6 +534,7 @@ class AppConfig:
             "max_steps": self.max_steps,
             "appearance": self.appearance,
             "font_size": self.font_size,
+            "fold_tool_calls": self.fold_tool_calls,
             "auto_compact": self.auto_compact,
             "compact_threshold_percent": self.compact_threshold_percent,
             "web_search_enabled": self.web_search_enabled,
@@ -576,6 +580,7 @@ class AppConfig:
             "appearance": self.appearance,
             "font_size": self.font_size,
             "font_scale": FONT_SCALES[self.font_size],
+            "fold_tool_calls": self.fold_tool_calls,
             "auto_compact": self.auto_compact,
             "compact_threshold_percent": self.compact_threshold_percent,
             "web_search_enabled": self.web_search_enabled,

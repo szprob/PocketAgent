@@ -45,6 +45,8 @@ async def get_info(request: web.Request) -> web.Response:
             # 外观和字号：前端一启动就要套上，所以放在 info 里
             "appearance": app_config.appearance,
             "font_scale": FONT_SCALES[app_config.font_size],
+            # 对话里把工具调用收进折叠（默认开）；关掉就平铺
+            "fold_tool_calls": app_config.fold_tool_calls,
             "auto_compact": app_config.auto_compact,
             "compact_threshold_percent": app_config.compact_threshold_percent,
             "web_search_enabled": app_config.web_search_settings() is not None,
