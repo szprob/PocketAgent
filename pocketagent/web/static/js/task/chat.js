@@ -822,7 +822,11 @@ function addToolCard(callId, name, summary) {
     el("span", "tool-review hidden"),
     icon("chevronRight", "tool-chevron")
   );
-  header.addEventListener("click", () => card.classList.toggle("expanded"));
+  header.addEventListener("click", () => {
+    card.classList.toggle("expanded");
+    // 用户自己点过就听用户的：跑完不再自动收起
+    delete card.dataset.autoExpanded;
+  });
   const body = el("div", "tool-body");
   body.appendChild(el("pre", "", "运行中…"));
   card.append(header, body);
@@ -885,10 +889,13 @@ function appendToolOutput(callId, text) {
     return;
   }
   if (output.dataset.streaming !== "1") {
-    // 第一次收到输出：清掉「运行中…」，展开卡片，不然流式输出来在折叠的面板里看不见
+    // 第一次收到输出：清掉「运行中…」，展开卡片，不然流式输出来在折叠的面板里看不见；跑完再收起（见 setToolResult）
     output.textContent = "";
     output.dataset.streaming = "1";
-    card.classList.add("expanded");
+    if (!card.classList.contains("expanded")) {
+      card.classList.add("expanded");
+      card.dataset.autoExpanded = "1";
+    }
   }
   const stickToBottom = output.scrollHeight - output.scrollTop - output.clientHeight < 24;
   output.append(document.createTextNode(text));
@@ -916,6 +923,11 @@ function setToolResult(callId, content, isError, denied) {
     status = "error";
   }
   setToolStatus(card, status);
+  // 只为看实时输出才自动展开的卡片，跑完默认收起；出错的留着展开，方便直接看到原因
+  if (card.dataset.autoExpanded && status !== "error") {
+    card.classList.remove("expanded");
+  }
+  delete card.dataset.autoExpanded;
 }
 
 // ---- 「任务计划」面板：todo_write 发的 todos_updated 事件驱动，一张卡片原地更新 ----

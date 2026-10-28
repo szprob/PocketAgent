@@ -50,17 +50,25 @@ export function formatNumber(count) {
   return (Number(count) || 0).toLocaleString("zh-CN");
 }
 
+// 大数字缩成 1.2k / 35k / 1.5m / 2.1b；web 的 ui/dom.js 里是同一套写法
+const COMPACT_UNITS = [
+  { size: 1_000_000_000, suffix: "b" },
+  { size: 1_000_000, suffix: "m" },
+  { size: 1000, suffix: "k" },
+];
+
 export function formatTokens(count) {
   if (!Number.isFinite(count)) {
     return "?";
   }
-  if (count >= 10000) {
-    return `${Math.round(count / 1000)}k`;
+  for (const unit of COMPACT_UNITS) {
+    if (count >= unit.size) {
+      const value = count / unit.size;
+      // 十以内留一位小数（1.2k），再大就取整（35k），不然数字太长
+      return `${value.toFixed(value >= 10 ? 0 : 1)}${unit.suffix}`;
+    }
   }
-  if (count >= 1000) {
-    return `${(count / 1000).toFixed(1)}k`;
-  }
-  return String(count);
+  return String(Math.round(count));
 }
 
 export function formatBytes(size) {

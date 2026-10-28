@@ -56,15 +56,23 @@ export function isImagePath(path) {
   return dot >= 0 && IMAGE_EXTENSIONS.has(name.slice(dot + 1).toLowerCase());
 }
 
+// 大数字缩成 1.2k / 35k / 1.5m / 2.1b；桌面端 dom.js 里是同一套写法
+const COMPACT_UNITS = [
+  { size: 1_000_000_000, suffix: "b" },
+  { size: 1_000_000, suffix: "m" },
+  { size: 1000, suffix: "k" },
+];
+
 export function formatTokens(count) {
   const number = Number(count) || 0;
-  if (number >= 1_000_000) {
-    return `${(number / 1_000_000).toFixed(number >= 10_000_000 ? 0 : 1)}M`;
+  for (const unit of COMPACT_UNITS) {
+    if (number >= unit.size) {
+      const value = number / unit.size;
+      // 十以内留一位小数（1.2k），再大就取整（35k），不然数字太长
+      return `${value.toFixed(value >= 10 ? 0 : 1)}${unit.suffix}`;
+    }
   }
-  if (number >= 1000) {
-    return `${(number / 1000).toFixed(number >= 10_000 ? 0 : 1)}K`;
-  }
-  return String(number);
+  return String(Math.round(number));
 }
 
 export function formatNumber(count) {

@@ -1,4 +1,5 @@
 import asyncio
+import json
 import unittest
 from typing import Any
 
@@ -6,7 +7,7 @@ from pocketagent.core.agent import INTERRUPTED_TOOL_RESULT
 from pocketagent.core.compaction import MERGE_SUMMARY_INSTRUCTION, SUMMARY_PREFIX
 from pocketagent.core.events import EventType
 from pocketagent.core.nodes import apply_finished_compaction, start_background_compaction
-from pocketagent.core.session import SessionStore
+from pocketagent.core.session import Session, SessionStore
 from pocketagent.llm import ContextOverflowError, LLMResponse, ToolCall
 from pocketagent.safety.permissions import ApprovalMode, DenyAllApprover
 from pocketagent.tools import Tool, ToolContext, ToolKind, ToolResult, default_tool_registry
@@ -28,6 +29,25 @@ class SlowTool(Tool):
         self.started.set()
         await asyncio.sleep(60)
         return ToolResult("不该走到这里")
+
+
+def harness_free_session_with_tool_calls() -> Session:
+    """老格式会话：一条 assistant 消息里有两个工具调用。"""
+    tool_calls = [
+        {"id": "c1", "type": "function", "function": {"name": "read_file", "arguments": "{}"}},
+        {"id": "c2", "type": "function", "function": {"name": "list_dir", "arguments": "{}"}},
+    ]
+    return Session(
+        id="old-session",
+        workspace="/tmp",
+        messages=[
+            {"role": "user", "content": "看看"},
+            {"role": "assistant", "content": "", "tool_calls": tool_calls},
+            {"role": "tool", "tool_call_id": "c1", "content": "a"},
+            {"role": "tool", "tool_call_id": "c2", "content": "b"},
+            {"role": "assistant", "content": "好了"},
+        ],
+    )
 
 
 class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
@@ -62,6 +82,40 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(session_file.is_file())
         trace_file = harness.settings.traces_dir / f"{harness.agent.session.id}.jsonl"
         self.assertIn('"type": "tool_result"', trace_file.read_text(encoding="utf-8"))
+
+    async def test_tool_calls_are_counted_and_saved(self) -> None:
+        (self.directories.workspace / "a.txt").write_text("a\n", encoding="utf-8")
+        harness = build_harness(
+            self.directories,
+            [
+                LLMResponse(
+                    tool_calls=[
+                        tool_call("call_1", "read_file", '{"path": "a.txt"}'),
+                        tool_call("call_2", "list_dir", '{"path": "."}'),
+                    ]
+                ),
+                LLMResponse(tool_calls=[tool_call("call_3", "read_file", '{"path": "a.txt"}')]),
+                LLMResponse(text="看完了"),
+            ],
+        )
+
+        await harness.agent.run_turn("看看目录")
+
+        self.assertEqual(harness.agent.session.turns, 1)
+        self.assertEqual(harness.agent.session.tool_calls, 3)
+        store = SessionStore(harness.settings.sessions_dir)
+        self.assertEqual(store.load(harness.agent.session.id).tool_calls, 3)
+
+    def test_old_sessions_estimate_tool_calls_from_messages(self) -> None:
+        store = SessionStore(self.directories.home_dir / "sessions")
+        session = harness_free_session_with_tool_calls()
+        store.save(session)
+        path = store.path_for(session.id)
+        data = json.loads(path.read_text(encoding="utf-8"))
+        del data["tool_calls"]
+        path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+        self.assertEqual(store.load(session.id).tool_calls, 2)
 
     async def test_denied_call_stops_turn_and_skips_the_rest(self) -> None:
         harness = build_harness(
