@@ -1216,6 +1216,18 @@ body.platform-darwin .app.sidebar-hidden .view-header {
   vertical-align: middle;
 }
 
+.md-math-block {
+  max-width: 100%;
+  margin: 12px 0;
+  padding: 2px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.md-math-block .katex-display {
+  margin: 0;
+}
+
 .assistant-body a.md-link {
   color: var(--accent-strong);
   text-decoration: none;
