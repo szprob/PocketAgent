@@ -273,9 +273,12 @@ class WebServerTest(WebTestBase):
             await self._receive_until(socket_client, is_event("interjection_queued"))
             gated.gate.set()
             applied = await self._receive_until(socket_client, is_event("interjection_applied"))
+            # 插话交给模型后服务端马上推一次 state，「待发」里已经没有它了（各前端不用自己删）
+            state_after = await self._receive_until(socket_client, lambda message: message["type"] == "state")
             await self._receive_until(socket_client, is_event("turn_end"))
 
         second_call = gated.received_messages[1]
+        self.assertEqual(state_after["interjections"], [])
         self.assertEqual(applied["event"]["user_text"], "顺便看看 README")
         self.assertEqual([message["role"] for message in second_call[-2:]], ["tool", "user"])
         self.assertEqual(second_call[-1]["content"], "顺便看看 README")

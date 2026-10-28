@@ -1,15 +1,35 @@
-// 右侧栏：任务概要（token 用量、上下文）、文件变更（点开看 diff、可撤销）、产出、检查点。
+// 右侧栏：任务概要（token 用量、上下文）、预览（本地服务的页面）、文件变更（点开看 diff、可撤销）、产出、检查点。
 
-import { binaryDataUrl, request, sendJson, sessionFilePath } from "./api.js";
+import { binaryDataUrl, openExternal, request, sendJson, sessionFilePath } from "./api.js";
 import { button, el, formatClock, formatNumber, formatTokens, isImagePath, renderDiff, workspaceName } from "./dom.js";
 import { icon } from "./icons.js";
 import { openFilePreview } from "./filepreview.js";
+import { loadPreference, savePreference } from "./state.js";
 
 const STATUS_LABELS = { added: "新建", modified: "修改", deleted: "删除" };
 const CHECKPOINT_KINDS = { baseline: "任务开始", turn: "这一轮之前", safety: "撤销 / 恢复之前" };
+const MAX_PREVIEW_LINKS = 8;
+
+// iframe 里只放 http/https；没写协议的补 http://，别的写法（javascript: 之类）一律当输入错误
+function normalizePreviewUrl(raw) {
+  const text = raw.trim();
+  if (!text) {
+    return "";
+  }
+  const url = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(text) ? text : `http://${text}`;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return "";
+    }
+    return parsed.href;
+  } catch {
+    return "";
+  }
+}
 
 export class RightPanel {
-  constructor({ overviewCard, changeList, changesCount, outputList, checkpointList, refreshButton }) {
+  constructor({ overviewCard, changeList, changesCount, outputList, checkpointList, refreshButton, preview }) {
     this.overviewCard = overviewCard;
     this.changeList = changeList;
     this.outputList = outputList;
@@ -33,8 +53,69 @@ export class RightPanel {
 
     refreshButton.append(icon("refresh"));
     refreshButton.addEventListener("click", () => this.refreshChanges());
+    this.initPreview(preview);
     this.renderOverview();
     this.renderChanges();
+  }
+
+  // ---- 预览 ----
+
+  initPreview(preview) {
+    this.preview = preview;
+    // 候选链接按任务记，换任务就清；上次打开的地址记在本地，切任务不用重输
+    this.previewLinks = [];
+    this.previewUrl = loadPreference("previewUrl", "");
+    preview.go.append(icon("arrowUp"));
+    preview.input.value = this.previewUrl;
+    preview.input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.isComposing) {
+        this.openPreview(preview.input.value);
+      }
+    });
+    preview.go.addEventListener("click", () => this.openPreview(preview.input.value));
+    // 有的站点不让嵌（X-Frame-Options），用系统浏览器打开
+    preview.openWindow.addEventListener("click", () => openExternal(this.previewUrl));
+    if (this.previewUrl) {
+      preview.frame.src = this.previewUrl;
+    }
+    this.renderPreview();
+  }
+
+  addPreviewLinks(links) {
+    for (const link of links) {
+      this.previewLinks = [link, ...this.previewLinks.filter((existing) => existing !== link)].slice(0, MAX_PREVIEW_LINKS);
+    }
+    this.renderPreview();
+  }
+
+  openPreview(raw) {
+    const url = normalizePreviewUrl(raw);
+    if (!url) {
+      this.preview.input.focus();
+      return;
+    }
+    this.previewUrl = url;
+    this.preview.input.value = url;
+    savePreference("previewUrl", url);
+    this.preview.frame.src = url;
+    this.renderPreview();
+  }
+
+  renderPreview() {
+    const preview = this.preview;
+    preview.links.replaceChildren();
+    preview.links.classList.toggle("hidden", this.previewLinks.length === 0);
+    for (const link of this.previewLinks) {
+      const chip = el("button", "preview-link", link.replace(/^https?:\/\//, ""));
+      chip.type = "button";
+      chip.title = `打开 ${link}`;
+      chip.addEventListener("click", () => this.openPreview(link));
+      preview.links.append(chip);
+    }
+    const hasPreview = Boolean(this.previewUrl);
+    preview.frameWrap.classList.toggle("hidden", !hasPreview);
+    preview.openWindow.classList.toggle("hidden", !hasPreview);
+    preview.empty.classList.toggle("hidden", hasPreview);
   }
 
   showTask(taskId) {
@@ -50,6 +131,9 @@ export class RightPanel {
     this.checkpointsEnabled = true;
     this.checkpointsDisabledReason = "";
     this.expandedPath = null;
+    // 候选链接是上一个任务的输出里找到的，换任务就清（已经打开的预览留着）
+    this.previewLinks = [];
+    this.renderPreview();
     this.renderOverview();
     this.renderChanges();
     this.refreshTask();

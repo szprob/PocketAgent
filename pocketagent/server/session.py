@@ -26,7 +26,13 @@ from pocketagent.server.history import history_items
 ProviderFactory = Callable[[Settings], LLMProvider]
 
 
-STATE_CHANGING_EVENTS = {EventType.COMPACTION_STARTED, EventType.COMPACTION, EventType.COMPACTION_FAILED}
+# 这些事件之后状态（state 消息里的字段）变了，要额外推一次 state，各个前端不用自己去改本地副本
+STATE_CHANGING_EVENTS = {
+    EventType.COMPACTION_STARTED,
+    EventType.COMPACTION,
+    EventType.COMPACTION_FAILED,
+    EventType.INTERJECTION_APPLIED,
+}
 
 
 class SessionBusyError(RuntimeError):
@@ -147,7 +153,8 @@ class WebSession:
     async def _forward_event(self, event: Event) -> None:
         await self.broadcast({"type": "event", "event": event.to_record()})
         if event.type in STATE_CHANGING_EVENTS:
-            # 压缩开始 / 换上摘要会改变「压缩中」和上下文占用，空闲时也要让界面知道
+            # 压缩开始 / 换上摘要会改变「压缩中」和上下文占用，空闲时也要让界面知道；
+            # 插话交给模型后要从「待发」里拿掉
             await self.broadcast_state()
 
     def status_fields(self) -> dict[str, Any]:
