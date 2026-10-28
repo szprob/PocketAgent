@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from pocketagent.processes import terminate_process_tree
+from pocketagent.safety.processes import terminate_process_tree
 
 GREP_TIMEOUT_SECONDS = 60.0
 GLOB_TIMEOUT_SECONDS = 30.0
