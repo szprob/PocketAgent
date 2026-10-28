@@ -3153,6 +3153,30 @@ code.md-inline-code {
   .app #panel-resizer {
     display: none !important;
   }
+
+  /* 窄窗口时右栏不占位置，但右上角按钮还能把它以浮层打开，盖在对话右侧；点遮罩、再点按钮或按 Esc 收起 */
+  .app.in-task.narrow-panel-open .right-panel {
+    display: flex !important;
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 30;
+    width: min(340px, 90vw) !important;
+    box-shadow: -12px 0 32px rgba(0, 0, 0, 0.45);
+  }
+
+  .app.in-task.narrow-panel-open .panel-backdrop {
+    display: block;
+  }
+}
+
+.panel-backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 25;
+  background: rgba(0, 0, 0, 0.35);
 }
 
 @media (max-width: 1060px) {

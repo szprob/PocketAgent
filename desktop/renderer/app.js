@@ -681,10 +681,26 @@ function bindLayoutControls() {
       savePreference("sidebarHidden", false);
     });
   }
+  // 窄窗口（和 style.css 里藏右栏的宽度一致）右栏默认不占位置，按钮改成开关浮层，不动宽窗口记住的偏好
+  const narrowPanelQuery = window.matchMedia("(max-width: 1280px)");
   elements.toggleRightPanel.addEventListener("click", () => {
+    if (narrowPanelQuery.matches) {
+      elements.app.classList.toggle("narrow-panel-open");
+      return;
+    }
     const hidden = elements.app.classList.toggle("right-panel-hidden");
     savePreference("rightPanel", !hidden);
   });
+  narrowPanelQuery.addEventListener("change", closeNarrowPanel);
+  document.getElementById("panel-backdrop").addEventListener("click", closeNarrowPanel);
+}
+
+function closeNarrowPanel() {
+  elements.app.classList.remove("narrow-panel-open");
+}
+
+function isNarrowPanelOpen() {
+  return elements.app.classList.contains("narrow-panel-open");
 }
 
 function fillStaticIcons() {
@@ -730,6 +746,10 @@ function bindGlobalShortcuts() {
       }
       if (isAutomationEditorOpen()) {
         closeEditor();
+        return;
+      }
+      if (isNarrowPanelOpen()) {
+        closeNarrowPanel();
         return;
       }
       if (chat.running) {
