@@ -619,10 +619,15 @@ body.resizing {
 .message-assistant blockquote, .markdown-view blockquote { margin: 0.5em 0; padding-left: 12px; border-left: 3px solid var(--border-strong); color: var(--text-secondary); }
 .message-assistant a, .markdown-view a { color: var(--info); }
 .message-assistant hr, .markdown-view hr { border: 0; border-top: 1px solid var(--border); }
-.message-assistant table, .markdown-view table { display: block; max-width: 100%; overflow-x: auto; margin: 0.6em 0; border-collapse: separate; border-spacing: 0; border: 1px solid var(--border); border-radius: 10px; }
+.message-assistant .md-table-wrap, .markdown-view .md-table-wrap { max-width: 100%; overflow-x: auto; margin: 0.6em 0; border: 1px solid var(--border); border-radius: 10px; }
+.message-assistant .md-table-wrap table, .markdown-view .md-table-wrap table { min-width: 100%; border-collapse: collapse; }
 .message-assistant th, .markdown-view th, .message-assistant td, .markdown-view td { padding: 6px 12px; text-align: left; border-bottom: 1px solid var(--border); }
 .message-assistant tr:last-child td, .markdown-view tr:last-child td { border-bottom: 0; }
 .message-assistant th, .markdown-view th { background: var(--surface-muted); font-weight: 600; }
+.message-assistant .md-align-center, .markdown-view .md-align-center { text-align: center; }
+.message-assistant .md-align-right, .markdown-view .md-align-right { text-align: right; }
+.message-assistant .md-task-list, .markdown-view .md-task-list { list-style: none; padding-left: 0.4em; }
+.message-assistant .md-task-item input, .markdown-view .md-task-item input { margin: 0 6px 0 0; vertical-align: middle; }
 
 code { padding: 1px 5px; border-radius: 5px; background: var(--surface-sunken); font-family: var(--mono); font-size: 0.88em; }
 
@@ -638,6 +643,42 @@ pre {
 }
 
 pre code { padding: 0; background: none; font-size: inherit; }
+
+/* 代码块：语言标签 + 复制按钮，外面包一层和桌面端同样式 */
+.code-block {
+  margin: 0.6em 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--surface-sunken);
+}
+
+.code-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: calc(11px * var(--font-scale));
+}
+
+.code-head button {
+  padding: 1px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: calc(11px * var(--font-scale));
+}
+
+.code-head button:hover { background: var(--surface-muted); color: var(--text); }
+
+.code-block pre {
+  margin: 0;
+  border-radius: 0;
+  background: transparent;
+}
 
 .reasoning { color: var(--text-muted); font-size: calc(13px * var(--font-scale)); }
 .reasoning summary { cursor: pointer; user-select: none; }
