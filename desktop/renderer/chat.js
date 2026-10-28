@@ -184,7 +184,7 @@ export class ChatView {
   renderHistoryItem(item) {
     switch (item.kind) {
       case "user":
-        this.addUserMessage(item.text, item.attachments);
+        this.addUserMessage(item.text, item.attachments, "", item.message_id);
         break;
       case "assistant":
         this.appendStaticAssistant(item.text, item.finish);
@@ -220,12 +220,12 @@ export class ChatView {
         this.lastReply = null;
         this.turnStartChildCount = this.inner.children.length;
         this.turnImagePaths = new Set();
-        this.addUserMessage(event.user_text, event.attachments);
+        this.addUserMessage(event.user_text, event.attachments, "", event.message_id);
         this.showActivity("等待模型响应");
         break;
       case "interjection_applied":
         this.finishStreamingBlocks();
-        this.addUserMessage(event.user_text, event.attachments, "插话");
+        this.addUserMessage(event.user_text, event.attachments, "插话", event.message_id);
         this.showActivity("等待模型响应");
         break;
       case "text_delta":
@@ -319,7 +319,7 @@ export class ChatView {
 
   // ---- 对话条目 ----
 
-  addUserMessage(text, attachments = [], badge = "") {
+  addUserMessage(text, attachments = [], badge = "", messageId = "") {
     this.closeActivityFold();
     const wrapper = el("div", "message user");
     if (attachments.length > 0) {
@@ -333,7 +333,53 @@ export class ChatView {
       bubble.append(document.createTextNode(text || "（附件）"));
       wrapper.append(bubble);
     }
+    if (messageId) {
+      wrapper.append(this.buildRewindButton(messageId));
+    }
     this.appendNode(wrapper);
+  }
+
+  // 用户消息上的「恢复到这里」：把这句之后的内容全删掉，原话放回输入框重新编辑
+  buildRewindButton(messageId) {
+    const rewind = button("message-rewind", "恢复到这里", "undo", "撤销这句话之后的对话，并把这句话放回输入框");
+    rewind.addEventListener("click", () => this.rewindTo(messageId));
+    return rewind;
+  }
+
+  async rewindTo(messageId) {
+    if (this.running) {
+      this.addNotice("任务还在运行，等它停下再恢复", "warning");
+      return;
+    }
+    const confirmed = window.confirm(
+      "恢复到这里？\n这句话之后的对话会全部删掉，这句话和附件放回输入框。工作区里的文件不动。"
+    );
+    if (!confirmed) {
+      return;
+    }
+    const sessionId = this.sessionId;
+    let result;
+    try {
+      result = await request(`/api/sessions/${encodeURIComponent(sessionId)}/rewind`, {
+        method: "POST",
+        body: { message_id: messageId },
+      });
+    } catch (error) {
+      if (error.status === 409 && sessionId === this.sessionId) {
+        // 对话已经变了（比如压缩过），把界面拉回服务端的样子再提示
+        const snapshot = await request(`/api/sessions/${encodeURIComponent(sessionId)}`).catch(() => null);
+        if (snapshot && sessionId === this.sessionId) {
+          this.renderSnapshot(snapshot);
+        }
+      }
+      this.addNotice(`恢复失败：${error.message}`, "error");
+      return;
+    }
+    if (sessionId !== this.sessionId) {
+      return;
+    }
+    this.renderSnapshot(result.snapshot);
+    this.callbacks.onRewind?.(result.message);
   }
 
   buildAttachments(attachments) {

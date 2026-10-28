@@ -16,7 +16,7 @@ from pocketagent.safety.checkpoints import CheckpointError
 from pocketagent.server.common import MANAGER_KEY, error_response
 from pocketagent.server.manager import SessionManager
 from pocketagent.server.routes import add_routes
-from pocketagent.server.session import ProviderFactory, SessionBusyError
+from pocketagent.server.session import ProviderFactory, RewindError, SessionBusyError
 from pocketagent.web import STATIC_DIR
 
 TOKEN_COOKIE_NAME = "pocketagent_token"
@@ -56,6 +56,8 @@ async def error_middleware(request: web.Request, handler: Handler) -> web.Stream
     except ConfigError as error:
         return error_response(str(error))
     except SessionBusyError as error:
+        return error_response(str(error), status=409)
+    except RewindError as error:
         return error_response(str(error), status=409)
     except KeyError as error:
         return error_response(f"找不到：{error}", status=404)

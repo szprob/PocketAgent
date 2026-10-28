@@ -64,6 +64,27 @@ class Session:
         first_text = self.first_user_text().strip()
         return first_text.splitlines()[0][:80] if first_text else "新任务"
 
+    def rewind_to_message(self, message_id: str) -> dict[str, Any] | None:
+        """把这条用户消息和之后的消息都删掉，返回它的界面信息（前端放回输入框）。
+
+        找不到（比如这句话已经被压缩掉）返回 None。
+        """
+        target_index = None
+        for index, message in enumerate(self.messages):
+            if message.get("_id") == message_id and message.get("role") == "user" and not message.get("_kind"):
+                target_index = index
+                break
+        if target_index is None:
+            return None
+        display = message_display(self.messages[target_index])
+        removed = self.messages[target_index:]
+        self.turns = max(0, self.turns - _count_turns(removed))
+        self.tool_calls = max(0, self.tool_calls - _count_tool_calls(removed))
+        del self.messages[target_index:]
+        # 计划属于被删掉的那部分未来
+        self.todos = []
+        return display
+
 
 @dataclass
 class SessionSummary:
@@ -113,6 +134,7 @@ class SessionStore:
         session = Session(**data)
         if recover:
             self._replay_journal(session)
+            _ensure_message_ids(session)
         if "turns" not in data:
             session.turns = _count_turns(session.messages)
         if "tool_calls" not in data:
@@ -187,6 +209,19 @@ class SessionStore:
             return None
         # 列表用的是 JSON 里的元数据；真正续跑时再重放进行中那一轮的日志
         return self.load(sessions[0].id)
+
+
+def _ensure_message_ids(session: Session) -> None:
+    """恢复对话靠消息 id 找那句话；老会话没存过 id，读出来时补上。
+
+    只补真正的用户发言：压缩摘要和内部提示不是对话里能恢复的点。
+    """
+    for message in session.messages:
+        if message.get("role") != "user" or message.get("_kind") or message.get("_id"):
+            continue
+        if message_display(message)["text"].startswith(SUMMARY_PREFIX):
+            continue
+        message["_id"] = uuid.uuid4().hex
 
 
 def _count_turns(messages: list[dict[str, Any]]) -> int:

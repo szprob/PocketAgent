@@ -261,6 +261,66 @@ class WebServerTest(WebTestBase):
         history = await self._get_json(f"/api/sessions/{session_id}")
         self.assertEqual(history["items"][1]["name"], "todo_write")
 
+    async def test_rewind_removes_the_message_and_everything_after(self) -> None:
+        self.responses.extend(
+            [
+                LLMResponse(text="第一答", usage=Usage(prompt_tokens=10, completion_tokens=2)),
+                LLMResponse(text="第二答", usage=Usage(prompt_tokens=10, completion_tokens=2)),
+            ]
+        )
+        session_id = await self._create_session()
+
+        async with self._connect(session_id) as socket_client:
+            await socket_client.receive_json()
+            for text in ("第一问", "第二问"):
+                await socket_client.send_json({"type": "user_message", "text": text})
+                await self._receive_until(socket_client, is_event("turn_end"))
+                await self._receive_until(socket_client, is_idle_state)
+
+            snapshot = await self._get_json(f"/api/sessions/{session_id}")
+            users = [item for item in snapshot["items"] if item["kind"] == "user"]
+            self.assertTrue(all(item["message_id"] for item in users))
+
+            response = await self._send_json(
+                "POST", f"/api/sessions/{session_id}/rewind", {"message_id": users[1]["message_id"]}
+            )
+            payload = await response.json()
+            # 新快照也推给其它标签页 / 桌面窗口
+            broadcast = await self._receive_until(socket_client, is_type("snapshot"))
+
+            again = await self._send_json(
+                "POST", f"/api/sessions/{session_id}/rewind", {"message_id": users[1]["message_id"]}
+            )
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(payload["message"]["text"], "第二问")
+        self.assertEqual([item["kind"] for item in payload["snapshot"]["items"]], ["user", "assistant"])
+        self.assertEqual(broadcast["items"], payload["snapshot"]["items"])
+        # 这句话已经不在了，再恢复一次是冲突
+        self.assertEqual(again.status, 409)
+        stored = self.app[MANAGER_KEY].store.load(session_id)
+        self.assertEqual([message.get("content") for message in stored.messages if message.get("role") == "user"], ["第一问"])
+        self.assertEqual(stored.turns, 1)
+        self.assertEqual(stored.title, None)
+
+    async def test_rewind_is_refused_while_the_agent_is_running(self) -> None:
+        gated = GatedProvider([LLMResponse(text="答")])
+        self.provider_override = gated
+        session_id = await self._create_session()
+
+        async with self._connect(session_id) as socket_client:
+            await socket_client.receive_json()
+            await socket_client.send_json({"type": "user_message", "text": "先说一句"})
+            started = await self._receive_until(socket_client, is_event("turn_start"))
+            response = await self._send_json(
+                "POST", f"/api/sessions/{session_id}/rewind", {"message_id": started["event"]["message_id"]}
+            )
+            gated.gate.set()
+            await self._receive_until(socket_client, is_event("turn_end"))
+
+        self.assertEqual(response.status, 409)
+        self.assertIn("还在运行", (await response.json())["error"])
+
     async def test_interrupt_returns_pending_inputs_to_the_composer(self) -> None:
         self.responses.append(LLMResponse(tool_calls=[tool_call("call_1", "bash", '{"command": "touch never"}')]))
         session_id = await self._create_session()

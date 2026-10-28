@@ -11,7 +11,8 @@ manager.py 所有任务、工作区、配置和自动化调度（SessionManager�
   {"type": "interrupt"} / {"type": "compact"} / {"type": "remove_queued", "index": n}
   {"type": "set_mode", "mode": ...} / {"type": "set_model", "model_id": ...}
 服务 → 前端：
-  snapshot（连上时的完整历史）、state（是否在跑、模型、审批模式、上下文占用、排队和插话）、
+  snapshot（连上时的完整历史；用户条目带 message_id，rewind 用它指定恢复到哪句话）、
+  state（是否在跑、模型、审批模式、上下文占用、排队和插话）、
   event（agent 事件，见 core/events.py）、approval_request / approval_resolved、question_request / question_resolved、
   （approval_request 一项时字段平铺；一批里有几项要问时合成一张，字段放在 items 列表里）
   returned_inputs（中断时退回的输入）、error
@@ -26,6 +27,7 @@ REST（都在 /api 下）：
   browse                                 选工作区时浏览本机目录（只列目录）
   sessions            GET / POST         任务列表 / 新建任务（工作区、模型、审批模式；ephemeral=true 用临时目录）
   sessions/{id}       GET / PATCH / DELETE   快照 / 改标题 / 删除
+  sessions/{id}/rewind                   POST 删掉某条用户消息和之后的全部对话，把这句话放回输入框
   sessions/{id}/overview                 右侧栏概要（用量、缓存命中、最新回复），比快照轻
   sessions/{id}/attachments              POST 上传（multipart），GET .../{附件 id} 取文件
   sessions/{id}/file/raw                 GET 会话工作区里的原始文件（聊天和产出里的图片）

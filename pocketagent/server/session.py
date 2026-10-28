@@ -39,6 +39,10 @@ class SessionBusyError(RuntimeError):
     pass
 
 
+class RewindError(RuntimeError):
+    """要恢复到的这句话已经不在对话里了（比如被压缩掉了）。"""
+
+
 @dataclass
 class PendingApproval:
     """等用户答复的审批：一批调用里要问的合成一张卡，一项时消息和以前一样，多项时放在 items 里。"""
@@ -247,6 +251,26 @@ class WebSession:
 
     def start_turn(self, message: dict[str, Any] | str) -> None:
         self._start_background(self.agent.run_turn(message))
+
+    def rewind_to(self, message_id: str) -> dict[str, Any]:
+        """删掉这条用户消息和之后的全部内容，返回它的话和附件（前端放回输入框）。
+
+        只动对话，不动工作区里的文件；要连文件一起回到过去用检查点恢复。
+        """
+        if self.running:
+            raise SessionBusyError("任务还在运行，等它停下再恢复")
+        if self.agent.context.pending_compaction is not None:
+            # 压缩做完会用旧历史换掉消息，把刚恢复掉的对话又带回来
+            raise SessionBusyError("正在压缩上下文，等压缩完再恢复")
+        display = self.session.rewind_to_message(message_id)
+        if display is None:
+            raise RewindError("这句话已经不在对话里了（可能被压缩过），刷新后再试")
+        context = self.agent.context
+        # 历史短了，按旧锚点算的上下文占用已经不准
+        context.token_anchor = None
+        context.history_version += 1
+        self.agent.session_store.save(self.session)
+        return display
 
     async def start_compaction(self) -> None:
         """「压缩」按钮：在后台做摘要，做完自动换上；不占着这个任务，照样可以接着聊。"""

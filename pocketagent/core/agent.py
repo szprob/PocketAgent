@@ -12,6 +12,7 @@
 
 import asyncio
 import copy
+import uuid
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -220,6 +221,7 @@ class Agent:
         await context.events.emit(
             EventType.TURN_START,
             session_id=self.session.id,
+            message_id=message.get("_id"),
             user_text=display["text"],
             attachments=display["attachments"],
         )
@@ -350,8 +352,12 @@ class Agent:
 
 def _as_user_message(user_input: str | dict[str, Any]) -> dict[str, Any]:
     if isinstance(user_input, str):
-        return {"role": "user", "content": user_input}
-    return user_input
+        message: dict[str, Any] = {"role": "user", "content": user_input}
+    else:
+        message = user_input
+    # 界面上「恢复到这里」靠这个 id 找是哪句话；发给模型前下划线字段会被去掉
+    message.setdefault("_id", uuid.uuid4().hex)
+    return message
 
 
 def _with_usage_recording(

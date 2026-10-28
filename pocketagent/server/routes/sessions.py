@@ -50,6 +50,16 @@ async def update_session(request: web.Request) -> web.Response:
     return json_response({"title": web_session.session.display_title()})
 
 
+async def rewind_session(request: web.Request) -> web.Response:
+    """删掉这句话和之后的全部对话；返回新快照，并且推给其它标签页 / 桌面窗口。"""
+    web_session = find_session(request)
+    payload = await request.json()
+    message = web_session.rewind_to(str(payload.get("message_id") or ""))
+    snapshot = web_session.snapshot_message()
+    await web_session.broadcast(snapshot)
+    return json_response({"message": message, "snapshot": snapshot})
+
+
 async def delete_session(request: web.Request) -> web.Response:
     await session_manager(request).delete_task(request.match_info["session_id"])
     return json_response({"ok": True})
