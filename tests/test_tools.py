@@ -57,6 +57,53 @@ class ToolsTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(replaced.is_error)
         self.assertEqual((self.workspace / "c.py").read_text(encoding="utf-8"), "x = 2\nx = 2\n")
 
+    async def test_edit_receipt_shows_numbered_context_and_replacement_count(self) -> None:
+        self.write("e.py", "".join(f"line_{index} = {index}\n" for index in range(1, 21)))
+
+        result = await EditFileTool().run(
+            {"path": "e.py", "old_string": "line_10 = 10", "new_string": "line_10 = 100"}, self.context
+        )
+        replaced_all = await EditFileTool().run(
+            {"path": "e.py", "old_string": " = ", "new_string": " =  ", "replace_all": True}, self.context
+        )
+
+        self.assertFalse(result.is_error)
+        self.assertIn("替换了 1 处", result.content)
+        self.assertIn("+1 / −1 行", result.content)
+        self.assertIn("    10\tline_10 = 100", result.content)
+        # 前后各带 3 行上下文，再远的不带
+        self.assertIn("     7\tline_7 = 7", result.content)
+        self.assertNotIn("     6\t", result.content)
+        self.assertIn("替换了 20 处", replaced_all.content)
+
+    async def test_syntax_problems_are_a_hint_not_an_error(self) -> None:
+        self.write("f.py", "def ok():\n    return 1\n")
+
+        broken = await EditFileTool().run({"path": "f.py", "old_string": "return 1", "new_string": "return ("}, self.context)
+        bad_json = await WriteFileTool().run({"path": "g.json", "content": '{"a": 1,}'}, self.context)
+        good_toml = await WriteFileTool().run({"path": "h.toml", "content": 'name = "x"\n'}, self.context)
+        plain_text = await WriteFileTool().run({"path": "i.txt", "content": "def (\n"}, self.context)
+
+        self.assertFalse(broken.is_error)
+        self.assertIn("有语法错误（第 2 行", broken.content)
+        self.assertIn("中间状态可以先不管", broken.content)
+        self.assertFalse(bad_json.is_error)
+        self.assertIn("g.json 有语法错误", bad_json.content)
+        self.assertNotIn("语法错误", good_toml.content)
+        self.assertNotIn("语法错误", plain_text.content)
+        # 只用 ast 检查，不在工作区里留 .pyc
+        self.assertEqual(list(self.workspace.rglob("*.pyc")), [])
+
+    async def test_overwrite_receipt_lists_changed_lines(self) -> None:
+        self.write("j.txt", "a\nb\nc\n")
+
+        created = await WriteFileTool().run({"path": "k.txt", "content": "1\n2\n"}, self.context)
+        overwritten = await WriteFileTool().run({"path": "j.txt", "content": "a\nB\nc\n"}, self.context)
+
+        self.assertEqual(created.content, "已新建 k.txt（2 行）")
+        self.assertIn("已覆盖 j.txt，+1 / −1 行", overwritten.content)
+        self.assertIn("     2\tB", overwritten.content)
+
     def test_edit_preview_is_a_diff(self) -> None:
         self.write("d.py", "print('old')\n")
 

@@ -191,7 +191,7 @@ class WebServerTest(WebTestBase):
         self.assertEqual((self.directories.workspace / "a.txt").read_text(encoding="utf-8"), "x")
         history = await self._get_json(f"/api/sessions/{session_id}")
         self.assertEqual([item["kind"] for item in history["items"]], ["user", "tool", "assistant"])
-        self.assertEqual(history["items"][1]["result"], "已新建 a.txt")
+        self.assertEqual(history["items"][1]["result"], "已新建 a.txt（1 行）")
         self.assertEqual(history["title"], "写个文件")
         tasks = await self._get_json("/api/sessions")
         self.assertEqual(tasks["sessions"][0]["title"], "写个文件")

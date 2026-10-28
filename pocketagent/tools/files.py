@@ -2,10 +2,12 @@
 
 import asyncio
 import difflib
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from pocketagent.tools.base import Tool, ToolAccess, ToolContext, ToolKind, ToolResult
+from pocketagent.tools.edit_report import numbered_snippets, summarize_changes, syntax_hint, syntax_problem
 
 READ_DEFAULT_LINE_LIMIT = 2000
 READ_MAX_LINE_CHARS = 2000
@@ -91,7 +93,10 @@ def read_numbered_lines(path: Path, offset: int, limit: int) -> ToolResult:
 
 class WriteFileTool(Tool):
     name = "write_file"
-    description = "把完整内容写入文件，文件已存在则覆盖。改已有文件请优先用 edit_file。"
+    description = (
+        "把完整内容写入文件，文件已存在则覆盖。改已有文件请优先用 edit_file。"
+        "覆盖时结果里带改动处前后几行（带行号）；.py / .json / .toml 会顺手查语法。"
+    )
     kind = ToolKind.EDIT
     parameters = {
         "type": "object",
@@ -118,11 +123,16 @@ class WriteFileTool(Tool):
 
     async def run(self, arguments: dict[str, Any], context: ToolContext) -> ToolResult:
         path = context.resolve_path(arguments["path"])
-        existed = path.exists()
+        new_text = arguments["content"]
+        old_text = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else None
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(arguments["content"], encoding="utf-8")
-        action = "覆盖" if existed else "新建"
-        return ToolResult(f"已{action} {context.display_path(path)}")
+        path.write_text(new_text, encoding="utf-8")
+        display_path = context.display_path(path)
+        if old_text is None:
+            # 新建的文件内容模型刚写过，不用再贴一遍
+            headline = f"已新建 {display_path}（{len(new_text.splitlines())} 行）"
+            return ToolResult(_with_syntax_hint(headline, path, new_text, display_path))
+        return ToolResult(_edit_receipt(f"已覆盖 {display_path}", old_text, new_text, path, display_path))
 
 
 class EditFileTool(Tool):
@@ -130,6 +140,8 @@ class EditFileTool(Tool):
     description = (
         "精确替换文件里的一段文本。old_string 必须和文件内容逐字一致（含缩进）且只出现一次；"
         "要替换所有出现的地方就把 replace_all 设为 true。"
+        "结果里带改动处前后几行（改完后的内容，带行号）和替换了几处，不用再 read_file 确认；"
+        ".py / .json / .toml 会顺手查语法。"
     )
     kind = ToolKind.EDIT
     parameters = {
@@ -152,38 +164,66 @@ class EditFileTool(Tool):
     def preview(self, arguments: dict[str, Any], context: ToolContext) -> str:
         path = context.resolve_path(arguments["path"])
         old_text = path.read_text(encoding="utf-8", errors="replace")
-        new_text, error = _apply_edit(old_text, arguments)
-        if error:
-            return f"{context.display_path(path)}：{error}"
-        return _unified_diff(old_text, new_text, context.display_path(path))
+        edit = _apply_edit(old_text, arguments)
+        if edit.error:
+            return f"{context.display_path(path)}：{edit.error}"
+        return _unified_diff(old_text, edit.text, context.display_path(path))
 
     async def run(self, arguments: dict[str, Any], context: ToolContext) -> ToolResult:
         path = context.resolve_path(arguments["path"])
         if not path.is_file():
             return ToolResult(f"文件不存在：{arguments['path']}", is_error=True)
         old_text = path.read_text(encoding="utf-8")
-        new_text, error = _apply_edit(old_text, arguments)
-        if error:
-            return ToolResult(error, is_error=True)
-        path.write_text(new_text, encoding="utf-8")
-        return ToolResult(f"已修改 {context.display_path(path)}")
+        edit = _apply_edit(old_text, arguments)
+        if edit.error:
+            return ToolResult(edit.error, is_error=True)
+        path.write_text(edit.text, encoding="utf-8")
+        display_path = context.display_path(path)
+        headline = f"已修改 {display_path}（替换了 {edit.replacements} 处）"
+        return ToolResult(_edit_receipt(headline, old_text, edit.text, path, display_path))
 
 
-def _apply_edit(old_text: str, arguments: dict[str, Any]) -> tuple[str, str | None]:
-    """返回 (替换后的全文, 错误信息)；出错时全文原样返回。"""
+@dataclass
+class EditOutcome:
+    # 替换后的全文；出错时是原文
+    text: str
+    error: str | None = None
+    # 实际替换了几处（replace_all 时可能不止一处）
+    replacements: int = 0
+
+
+def _apply_edit(old_text: str, arguments: dict[str, Any]) -> EditOutcome:
     old_string = arguments["old_string"]
     new_string = arguments["new_string"]
     replace_all = bool(arguments.get("replace_all", False))
     if old_string == new_string:
-        return old_text, "old_string 和 new_string 相同，没有可改的"
+        return EditOutcome(old_text, "old_string 和 new_string 相同，没有可改的")
     occurrences = old_text.count(old_string)
     if occurrences == 0:
-        return old_text, "文件里找不到 old_string，先 read_file 确认原文（注意缩进和空白）"
+        return EditOutcome(old_text, "文件里找不到 old_string，先 read_file 确认原文（注意缩进和空白）")
     if occurrences > 1 and not replace_all:
-        return old_text, f"old_string 出现了 {occurrences} 次，请带上更多上下文让它唯一，或设 replace_all=true"
+        return EditOutcome(old_text, f"old_string 出现了 {occurrences} 次，请带上更多上下文让它唯一，或设 replace_all=true")
     if replace_all:
-        return old_text.replace(old_string, new_string), None
-    return old_text.replace(old_string, new_string, 1), None
+        return EditOutcome(old_text.replace(old_string, new_string), replacements=occurrences)
+    return EditOutcome(old_text.replace(old_string, new_string, 1), replacements=1)
+
+
+def _edit_receipt(headline: str, old_text: str, new_text: str, path: Path, display_path: str) -> str:
+    """改完的回执：加减了几行 + 改动处前后几行（改完后的内容，带行号）+ 语法提示。"""
+    changes = summarize_changes(old_text, new_text)
+    lines = [f"{headline}，+{changes.added_lines} / −{changes.removed_lines} 行"]
+    snippets = numbered_snippets(new_text, changes.ranges)
+    if snippets:
+        lines.append("改动处（改完后的内容，带行号）：")
+        lines.append(snippets)
+    return _with_syntax_hint("\n".join(lines), path, new_text, display_path)
+
+
+def _with_syntax_hint(text: str, path: Path, content: str, display_path: str) -> str:
+    problem = syntax_problem(path, content)
+    if problem is None:
+        return text
+    return f"{text}\n\n{syntax_hint(display_path, problem)}"
 
 
 def _unified_diff(old_text: str, new_text: str, display_path: str) -> str:
