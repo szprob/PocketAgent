@@ -54,6 +54,11 @@ class SubagentTool(Tool):
         "required": ["description", "prompt"],
     }
 
+    def kind_for(self, arguments: dict[str, Any]) -> ToolKind:
+        # general 能改文件、跑命令：一批里有它就得按顺序跑，不然两个子 agent 同时改文件、同时弹审批。
+        # 派活本身仍按 kind（READ）审批，子 agent 里面的每次调用照常审批
+        return ToolKind.EDIT if arguments.get("type") == "general" else ToolKind.READ
+
     def describe(self, arguments: dict[str, Any]) -> str:
         kind = "可改动" if arguments.get("type") == "general" else "只读"
         return f"{arguments.get('description', '')}（{kind}）"
