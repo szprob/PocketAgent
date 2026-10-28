@@ -45,6 +45,10 @@ export function initSettings(handlers) {
   elements.defaultMode = document.getElementById("default-mode-select");
   elements.reviewModel = document.getElementById("review-model-select");
   elements.reviewReasoning = document.getElementById("review-reasoning-select");
+  elements.subagentModel = document.getElementById("subagent-model-select");
+  elements.subagentReasoning = document.getElementById("subagent-reasoning-select");
+  elements.subagentExploreMinutes = document.getElementById("subagent-explore-minutes");
+  elements.subagentGeneralMinutes = document.getElementById("subagent-general-minutes");
   elements.maxSteps = document.getElementById("max-steps-input");
   elements.autoCompact = document.getElementById("auto-compact-input");
   elements.compactThreshold = document.getElementById("compact-threshold-select");
@@ -116,7 +120,12 @@ export function initSettings(handlers) {
     elements.webSearchKeyHint.textContent = pendingClearSearchKey ? "保存后清除" : "留空表示不修改已保存的密钥";
   });
   elements.imageGenProvider.addEventListener("change", paintImageGenFields);
-  elements.reviewModel.addEventListener("change", () => renderReviewReasoningOptions(elements.reviewReasoning.value));
+  elements.reviewModel.addEventListener("change", () =>
+    renderAuxiliaryReasoningOptions(reviewSelects(), elements.reviewReasoning.value),
+  );
+  elements.subagentModel.addEventListener("change", () =>
+    renderAuxiliaryReasoningOptions(subagentSelects(), elements.subagentReasoning.value),
+  );
   elements.sandboxEnabled.addEventListener("change", paintSandboxFields);
 
   for (const tab of elements.tabs) {
@@ -256,7 +265,10 @@ function fillGeneral() {
     elements.defaultMode.append(option);
   }
   elements.defaultMode.value = config.approval_mode;
-  renderReviewOptions(config.review_model, config.review_reasoning);
+  renderAuxiliaryModelOptions(reviewSelects(), config.review_model, config.review_reasoning);
+  renderAuxiliaryModelOptions(subagentSelects(), config.subagent_model, config.subagent_reasoning);
+  elements.subagentExploreMinutes.value = config.subagent_explore_minutes;
+  elements.subagentGeneralMinutes.value = config.subagent_general_minutes;
 
   elements.maxSteps.value = config.max_steps;
   elements.autoCompact.checked = Boolean(config.auto_compact);
@@ -320,32 +332,40 @@ function paintWebSearchFields() {
 }
 
 // 智谱用官方地址；OpenAI 兼容的可以走网关，没填就用第一个 OpenAI 兼容模型的地址（和 web 端一样）
-// ---- AI 审批用的模型和思考档位（和 web 端 settings/settings.js 同一套） ----
+// ---- AI 审批、子 agent 用的模型和思考档位（和 web 端 settings/settings.js 同一套） ----
 // 「最低」= 这个模型能选的最低档（能关思考就关），「跟模型一样」= 用模型配置里的档位；选了具体模型时还能挑它支持的档位
-const REVIEW_REASONING_FIXED = [
-  { value: "lowest", label: "最低（默认，能关思考就关）" },
+const AUXILIARY_REASONING_FIXED = [
+  { value: "lowest", label: "最低（能关思考就关）" },
   { value: "inherit", label: "跟模型配置一样" },
 ];
 
-function renderReviewOptions(selectedModel, selectedReasoning) {
-  elements.reviewModel.replaceChildren(new Option("跟任务的模型一样", ""));
+function renderAuxiliaryModelOptions(selects, selectedModel, selectedReasoning) {
+  selects.model.replaceChildren(new Option("跟任务的模型一样", ""));
   for (const model of config.models || []) {
-    elements.reviewModel.append(new Option(model.name, model.id));
+    selects.model.append(new Option(model.name, model.id));
   }
-  elements.reviewModel.value = selectedModel || "";
-  renderReviewReasoningOptions(selectedReasoning);
+  selects.model.value = selectedModel || "";
+  renderAuxiliaryReasoningOptions(selects, selectedReasoning);
 }
 
-function renderReviewReasoningOptions(selectedReasoning) {
-  const model = (config.models || []).find((each) => each.id === elements.reviewModel.value);
-  const options = [...REVIEW_REASONING_FIXED];
+function renderAuxiliaryReasoningOptions(selects, selectedReasoning) {
+  const model = (config.models || []).find((each) => each.id === selects.model.value);
+  const options = [...AUXILIARY_REASONING_FIXED];
   for (const choice of model?.reasoning_choices || []) {
     options.push({ value: choice, label: `${REASONING_LABELS[choice] || choice}（${choice}）` });
   }
-  elements.reviewReasoning.replaceChildren(...options.map((option) => new Option(option.label, option.value)));
-  // 原来选的档位新模型不支持，就回到「最低」
+  selects.reasoning.replaceChildren(...options.map((option) => new Option(option.label, option.value)));
+  // 原来选的档位新模型不支持，就回到这一项的默认档
   const stillAvailable = options.some((option) => option.value === selectedReasoning);
-  elements.reviewReasoning.value = stillAvailable ? selectedReasoning : "lowest";
+  selects.reasoning.value = stillAvailable ? selectedReasoning : selects.fallbackReasoning;
+}
+
+function reviewSelects() {
+  return { model: elements.reviewModel, reasoning: elements.reviewReasoning, fallbackReasoning: "lowest" };
+}
+
+function subagentSelects() {
+  return { model: elements.subagentModel, reasoning: elements.subagentReasoning, fallbackReasoning: "inherit" };
 }
 
 function paintImageGenFields() {
@@ -738,6 +758,10 @@ async function saveConfig() {
     approval_mode: elements.defaultMode.value,
     review_model: elements.reviewModel.value || null,
     review_reasoning: elements.reviewReasoning.value,
+    subagent_model: elements.subagentModel.value || null,
+    subagent_reasoning: elements.subagentReasoning.value,
+    subagent_explore_minutes: Number(elements.subagentExploreMinutes.value) || 10,
+    subagent_general_minutes: Number(elements.subagentGeneralMinutes.value) || 40,
     busy_input_mode: elements.modal.querySelector('input[name="busy-input-mode"]:checked')?.value || "interject",
     max_steps: Number(elements.maxSteps.value) || 50,
     auto_compact: elements.autoCompact.checked,

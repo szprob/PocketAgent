@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import time
 import unittest
 
 from pocketagent.core.events import EventType
@@ -195,6 +196,82 @@ class SubagentRunTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("出错停下了", tool_message["content"])
         self.assertIn("模型挂了", tool_message["content"])
         self.assertEqual(final, "子 agent 出错了，我自己来")
+
+    async def test_time_limit_stops_the_running_command_and_asks_for_a_summary(self) -> None:
+        """到点不直接丢掉：停掉正在跑的 bash，补齐工具结果，再让子 agent 不带工具写一次总结。"""
+        provider = TwoLevelProvider(
+            [LLMResponse(tool_calls=[spawn("p1", "跑测试", "跑一下全量测试", kind="general")]), LLMResponse(text="收到总结")],
+            {
+                "跑测试": [
+                    LLMResponse(tool_calls=[tool_call("c1", "bash", '{"command": "sleep 5"}')]),
+                    LLMResponse(text="测试跑到一半，前 3 个模块都过了"),
+                ]
+            },
+        )
+        # 0.01 分钟 = 0.6 秒
+        harness = build_harness(self.directories, [], provider=provider, subagent_general_minutes=0.01)
+
+        started = time.monotonic()
+        await harness.agent.run_turn("让子 agent 跑测试")
+
+        self.assertLess(time.monotonic() - started, 4)
+        tool_message = next(m for m in harness.agent.context.messages if m["role"] == "tool")
+        self.assertIn("到了时长上限", tool_message["content"])
+        self.assertIn("前 3 个模块都过了", tool_message["content"])
+        summary_request = provider.child_requests["跑测试"][-1]
+        self.assertEqual(summary_request["tools"], [])
+        # 被停掉的 bash 也有一条工具结果，消息不会缺口；然后是「时间到了」和它写的总结
+        child_messages = summary_request["messages"]
+        self.assertEqual([m["role"] for m in child_messages][-4:], ["assistant", "tool", "user", "assistant"])
+        self.assertIn("时间到了", child_messages[-2]["content"])
+
+    async def test_waiting_for_approval_does_not_count_towards_the_time_limit(self) -> None:
+        class SlowApprover(RecordingApprover):
+            async def request_approval(self, request):
+                await asyncio.sleep(1.0)
+                return await super().request_approval(request)
+
+        approver = SlowApprover()
+        provider = TwoLevelProvider(
+            [LLMResponse(tool_calls=[spawn("p1", "写文件", "新建 out.txt", kind="general")]), LLMResponse(text="好了")],
+            {"写文件": [LLMResponse(tool_calls=[tool_call("c1", "write_file", '{"path": "out.txt", "content": "hi"}')]), LLMResponse(text="写好了")]},
+        )
+        harness = build_harness(
+            self.directories, [], provider=provider, mode=ApprovalMode.ASK, approver=approver, subagent_general_minutes=0.01
+        )
+
+        await harness.agent.run_turn("让子 agent 写个文件")
+
+        tool_message = next(m for m in harness.agent.context.messages if m["role"] == "tool")
+        self.assertIn("做完了", tool_message["content"])
+        self.assertEqual((self.directories.workspace / "out.txt").read_text(encoding="utf-8"), "hi")
+
+    async def test_subagent_uses_its_own_reasoning_setting(self) -> None:
+        class EffortRecordingProvider(TwoLevelProvider):
+            def __init__(self, parent_script, child_scripts) -> None:
+                super().__init__(parent_script, child_scripts)
+                self.requested_efforts = []
+
+            def with_reasoning_effort(self, effort):
+                self.requested_efforts.append(effort)
+                return self
+
+        provider = EffortRecordingProvider(
+            [LLMResponse(tool_calls=[spawn("p1", "查", "查一下")]), LLMResponse(text="好")],
+            {"查": [LLMResponse(text="查到了")]},
+        )
+        harness = build_harness(
+            self.directories,
+            [],
+            provider=provider,
+            reasoning_effort="max",
+            reasoning_choices=["none", "low", "high", "max"],
+            subagent_reasoning="low",
+        )
+
+        await harness.agent.run_turn("派个子 agent")
+
+        self.assertEqual(provider.requested_efforts, ["low"])
 
     async def test_stopping_the_main_task_stops_the_child(self) -> None:
         provider = TwoLevelProvider([LLMResponse(tool_calls=[spawn("p1", "很慢", "慢慢查")])], {"很慢": [LLMResponse(text="不会到这")]})

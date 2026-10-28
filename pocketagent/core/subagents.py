@@ -3,7 +3,10 @@
 - 消息：主 agent 的系统提示 + 一段「你是子 agent」的说明 + 任务本身，看不到主对话
 - 工具：explore 只给只读工具；general 给全部工具。都去掉 ask_user（不能问用户）和 subagent（不能再派）
 - 权限：和主 agent 用同一个审批模式、同一组「本任务总是允许」；要审批时卡片上标明是哪个子 agent
-- 模型、用量记录、沙箱、记忆目录都和主 agent 共用；检查点不单独拍，主 agent 这一轮动手前已经拍过
+- 模型：默认和主 agent 一样，设置里可以单独选模型 / 思考档位（subagent_model / subagent_reasoning）；
+  用量记录、沙箱、记忆目录都和主 agent 共用；检查点不单独拍，主 agent 这一轮动手前已经拍过
+- 时长：explore / general 各有上限（分钟，等用户审批的时间不算）。到点不直接丢掉：取消正在做的事（bash 连进程树一起杀）、
+  补齐没结果的工具调用，再让它不带工具写一次总结交回来
 - 过程：子 agent 每调用一个工具，就给主 agent 发一个 SUBAGENT_PROGRESS 事件，界面在子 agent 的工具卡片里实时显示
 - 停止：主 agent 被中断时子 agent 一起停
 """
@@ -17,6 +20,7 @@ from pocketagent.core.context import AgentContext, TurnState
 from pocketagent.core.events import Event, EventBus, EventType
 from pocketagent.core.session import Session
 from pocketagent.interaction.questions import Question, QuestionAnswer
+from pocketagent.llm.base import SilentListener
 from pocketagent.safety.permissions import ApprovalAnswer, ApprovalRequest, Approver, PermissionGate, ask_approvals
 from pocketagent.tools.base import ToolKind, ToolRegistry, current_tool_call_id
 from pocketagent.tools.subagent import SubagentRequest, SubagentResult
@@ -24,21 +28,63 @@ from pocketagent.tools.subagent import SubagentRequest, SubagentResult
 # 子 agent 不能有的工具：不能问用户，不能再派子 agent
 NOT_FOR_SUBAGENTS = {"ask_user", "subagent"}
 PROGRESS_SUMMARY_LIMIT = 160
+# 看一眼时长的间隔：到点最多晚这么久发现
+TIME_LIMIT_POLL_SECONDS = 1.0
+TIME_UP_PROMPT = (
+    "时间到了（子 agent 的时长上限是 {minutes} 分钟），没跑完的操作已经停掉。不要再调用工具，"
+    "现在根据已经查到、做完的内容写总结：做了什么、结论是什么、还有哪些没做完。"
+)
+
+
+class ActiveClock:
+    """子 agent 跑了多久：等用户审批的时间不算（人去倒杯水，不该把子 agent 的时间用完）。"""
+
+    def __init__(self) -> None:
+        self.started_at = time.monotonic()
+        self.paused_seconds = 0.0
+        self.paused_since: float | None = None
+
+    @property
+    def paused(self) -> bool:
+        return self.paused_since is not None
+
+    def pause(self) -> None:
+        if self.paused_since is None:
+            self.paused_since = time.monotonic()
+
+    def resume(self) -> None:
+        if self.paused_since is not None:
+            self.paused_seconds += time.monotonic() - self.paused_since
+            self.paused_since = None
+
+    def active_seconds(self) -> float:
+        now = time.monotonic()
+        current_pause = now - self.paused_since if self.paused_since is not None else 0.0
+        return now - self.started_at - self.paused_seconds - current_pause
 
 
 class LabeledApprover:
     """子 agent 的审批请求照常交给用户，摘要前面标上是哪个子 agent 发的；问题一律不问。"""
 
-    def __init__(self, approver: Approver, label: str) -> None:
+    def __init__(self, approver: Approver, label: str, clock: ActiveClock | None = None) -> None:
         self.approver = approver
         self.label = label
+        # 等用户审批时暂停计时（子 agent 的时长上限不算这段）
+        self.clock = clock
 
     async def request_approval(self, request: ApprovalRequest) -> ApprovalAnswer:
-        return await self.approver.request_approval(self._labeled(request))
+        answers = await self.request_approvals([request])
+        return answers[0]
 
     async def request_approvals(self, requests: list[ApprovalRequest]) -> list[ApprovalAnswer]:
         # 主 agent 的通道支持合并就照样合成一张卡
-        return await ask_approvals(self.approver, [self._labeled(request) for request in requests])
+        if self.clock is not None:
+            self.clock.pause()
+        try:
+            return await ask_approvals(self.approver, [self._labeled(request) for request in requests])
+        finally:
+            if self.clock is not None:
+                self.clock.resume()
 
     def _labeled(self, request: ApprovalRequest) -> ApprovalRequest:
         return replace(request, summary=f"〔子 agent：{self.label}〕{request.summary}")
@@ -118,9 +164,10 @@ async def run_subagent(parent: AgentContext, request: SubagentRequest, call_id: 
         ],
     )
     gate = parent.permissions
+    clock = ActiveClock()
     permissions = PermissionGate(
         mode=gate.mode,
-        approver=LabeledApprover(gate.approver, request.description),
+        approver=LabeledApprover(gate.approver, request.description, clock),
         # 同一组集合：在子 agent 里选了「本任务总是允许」，主 agent 也生效，反过来也一样
         always_allowed_tools=gate.always_allowed_tools,
         always_allowed_dirs=gate.always_allowed_dirs,
@@ -131,7 +178,8 @@ async def run_subagent(parent: AgentContext, request: SubagentRequest, call_id: 
     events.subscribe(forwarder)
     context = AgentContext(
         settings=parent.settings,
-        provider=parent.provider,
+        # 设置里可以给子 agent 单独选模型和思考档位
+        provider=parent.subagent_provider() if parent.subagent_provider else parent.provider,
         tools=tools,
         tool_context=replace(parent.tool_context, ask_user=None, spawn_subagent=None, history=lambda: session.messages),
         permissions=permissions,
@@ -142,22 +190,70 @@ async def run_subagent(parent: AgentContext, request: SubagentRequest, call_id: 
         review_provider=parent.review_provider,
     )
     context.turn = TurnState()
-    started = time.monotonic()
+    limit_minutes = time_limit_minutes(parent, request.kind)
+    flow_task = asyncio.create_task(build_agent_flow().run_async(context))
     try:
-        await build_agent_flow().run_async(context)
+        timed_out = await _wait_within_time_limit(flow_task, clock, limit_minutes * 60)
     except asyncio.CancelledError:
+        # 主 agent 被中断：子 agent 一起停
+        await _cancel_and_wait(flow_task)
         close_dangling_tool_calls(session.messages)
         raise
     except Exception as error:
         close_dangling_tool_calls(session.messages)
         context.turn.stop_reason = "error"
         context.turn.final_text = f"{type(error).__name__}: {error}"
+        timed_out = False
+    if timed_out:
+        close_dangling_tool_calls(session.messages)
+        context.turn.stop_reason = "time_limit"
+        context.turn.final_text = await _summarize_after_time_up(context, limit_minutes)
     return SubagentResult(
         text=context.turn.final_text or _last_assistant_text(session.messages),
         stop_reason=context.turn.stop_reason or "done",
         tool_calls=forwarder.tool_calls,
-        seconds=time.monotonic() - started,
+        seconds=time.monotonic() - clock.started_at,
     )
+
+
+def time_limit_minutes(parent: AgentContext, kind: str) -> int:
+    if kind == "general":
+        return parent.settings.subagent_general_minutes
+    return parent.settings.subagent_explore_minutes
+
+
+async def _wait_within_time_limit(flow_task: asyncio.Task, clock: ActiveClock, limit_seconds: float) -> bool:
+    """等子 agent 跑完；到了时长上限（等审批的时间不算）就取消它正在做的事，返回 True。"""
+    while not flow_task.done():
+        remaining = limit_seconds - clock.active_seconds()
+        if remaining <= 0 and not clock.paused:
+            # 取消会一路传到正在跑的工具：bash 连进程树一起杀，已经做完的工具结果写进历史
+            await _cancel_and_wait(flow_task)
+            return True
+        await asyncio.wait({flow_task}, timeout=min(max(remaining, 0.05), TIME_LIMIT_POLL_SECONDS))
+    flow_task.result()
+    return False
+
+
+async def _cancel_and_wait(task: asyncio.Task) -> None:
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
+async def _summarize_after_time_up(context: AgentContext, limit_minutes: int) -> str:
+    """到点后再给一次不带工具的调用，让子 agent 把已有的结论写下来交回去。"""
+    messages = context.session.messages
+    messages.append({"role": "user", "content": TIME_UP_PROMPT.format(minutes=limit_minutes)})
+    try:
+        response = await context.provider.complete(messages, [], SilentListener())
+    except Exception as error:
+        return f"到了时长上限，写总结时也出错了（{type(error).__name__}: {error}）；下面是它停下前最后说的：\n{_last_assistant_text(messages)}"
+    if response.text:
+        messages.append({"role": "assistant", "content": response.text})
+    return response.text
 
 
 def attach_subagent_runner(context: AgentContext) -> None:

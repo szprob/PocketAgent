@@ -59,6 +59,10 @@ export function initSettings() {
     defaultMode: byId("default-mode-select"),
     reviewModel: byId("review-model-select"),
     reviewReasoning: byId("review-reasoning-select"),
+    subagentModel: byId("subagent-model-select"),
+    subagentReasoning: byId("subagent-reasoning-select"),
+    subagentExploreMinutes: byId("subagent-explore-minutes"),
+    subagentGeneralMinutes: byId("subagent-general-minutes"),
     maxSteps: byId("max-steps-input"),
     busyModeInputs: [...document.querySelectorAll('input[name="busy-input-mode"]')],
     autoCompact: byId("auto-compact-input"),
@@ -118,7 +122,12 @@ export function initSettings() {
   elements.testButton.addEventListener("click", testSelectedModel);
   elements.webSearchProvider.addEventListener("change", () => updateWebSearchFields());
   elements.imageGenProvider.addEventListener("change", () => updateImageGenFields());
-  elements.reviewModel.addEventListener("change", () => renderReviewReasoningOptions(elements.reviewReasoning.value));
+  elements.reviewModel.addEventListener("change", () =>
+    renderAuxiliaryReasoningOptions(reviewSelects(), elements.reviewReasoning.value)
+  );
+  elements.subagentModel.addEventListener("change", () =>
+    renderAuxiliaryReasoningOptions(subagentSelects(), elements.subagentReasoning.value)
+  );
 }
 
 // 智谱的档位只在选智谱时才有意义；必应不用密钥，DeepSeek / 智谱要
@@ -133,33 +142,41 @@ function updateWebSearchFields() {
 }
 
 // 智谱用官方地址；OpenAI 兼容的可以走网关，没填就用第一个 OpenAI 兼容模型的地址
-// ---- AI 审批用的模型和思考档位 ----
+// ---- AI 审批、子 agent 用的模型和思考档位 ----
 // 「最低」= 这个模型能选的最低档（能关思考就关），「跟模型一样」= 用模型配置里的档位；
 // 选了具体模型时还能挑它支持的具体档位。和桌面端 settings.js 同一套
-const REVIEW_REASONING_FIXED = [
-  { value: "lowest", label: "最低（默认，能关思考就关）" },
+const AUXILIARY_REASONING_FIXED = [
+  { value: "lowest", label: "最低（能关思考就关）" },
   { value: "inherit", label: "跟模型配置一样" },
 ];
 
-function renderReviewOptions(selectedModel, selectedReasoning) {
-  elements.reviewModel.replaceChildren(new Option("跟任务的模型一样", ""));
+function renderAuxiliaryModelOptions(selects, selectedModel, selectedReasoning) {
+  selects.model.replaceChildren(new Option("跟任务的模型一样", ""));
   for (const model of draft.savedModels) {
-    elements.reviewModel.appendChild(new Option(model.name, model.id));
+    selects.model.appendChild(new Option(model.name, model.id));
   }
-  elements.reviewModel.value = selectedModel || "";
-  renderReviewReasoningOptions(selectedReasoning);
+  selects.model.value = selectedModel || "";
+  renderAuxiliaryReasoningOptions(selects, selectedReasoning);
 }
 
-function renderReviewReasoningOptions(selectedReasoning) {
-  const model = draft.savedModels.find((each) => each.id === elements.reviewModel.value);
-  const options = [...REVIEW_REASONING_FIXED];
+function renderAuxiliaryReasoningOptions(selects, selectedReasoning) {
+  const model = draft.savedModels.find((each) => each.id === selects.model.value);
+  const options = [...AUXILIARY_REASONING_FIXED];
   for (const choice of model?.reasoning_choices || []) {
     options.push({ value: choice, label: `${reasoningLabel(choice)}（${choice}）` });
   }
-  elements.reviewReasoning.replaceChildren(...options.map((option) => new Option(option.label, option.value)));
-  // 原来选的档位新模型不支持，就回到「最低」
+  selects.reasoning.replaceChildren(...options.map((option) => new Option(option.label, option.value)));
+  // 原来选的档位新模型不支持，就回到这一项的默认档
   const stillAvailable = options.some((option) => option.value === selectedReasoning);
-  elements.reviewReasoning.value = stillAvailable ? selectedReasoning : "lowest";
+  selects.reasoning.value = stillAvailable ? selectedReasoning : selects.fallbackReasoning;
+}
+
+function reviewSelects() {
+  return { model: elements.reviewModel, reasoning: elements.reviewReasoning, fallbackReasoning: "lowest" };
+}
+
+function subagentSelects() {
+  return { model: elements.subagentModel, reasoning: elements.subagentReasoning, fallbackReasoning: "inherit" };
 }
 
 function updateImageGenFields() {
@@ -312,7 +329,10 @@ export async function openSettings(tabName) {
   }
   elements.defaultMode.value = config.approval_mode;
   draft.savedModels = config.models;
-  renderReviewOptions(config.review_model, config.review_reasoning);
+  renderAuxiliaryModelOptions(reviewSelects(), config.review_model, config.review_reasoning);
+  renderAuxiliaryModelOptions(subagentSelects(), config.subagent_model, config.subagent_reasoning);
+  elements.subagentExploreMinutes.value = config.subagent_explore_minutes;
+  elements.subagentGeneralMinutes.value = config.subagent_general_minutes;
   renderDefaultWorkspaceOptions(config);
   elements.maxSteps.value = config.max_steps;
   elements.userName.value = config.user_name;
@@ -659,6 +679,10 @@ async function saveSettings() {
     approval_mode: elements.defaultMode.value,
     review_model: elements.reviewModel.value || null,
     review_reasoning: elements.reviewReasoning.value,
+    subagent_model: elements.subagentModel.value || null,
+    subagent_reasoning: elements.subagentReasoning.value,
+    subagent_explore_minutes: elements.subagentExploreMinutes.value,
+    subagent_general_minutes: elements.subagentGeneralMinutes.value,
     default_workspace: elements.defaultWorkspace.value || null,
     busy_input_mode: busyInput ? busyInput.value : "interject",
     max_steps: elements.maxSteps.value,

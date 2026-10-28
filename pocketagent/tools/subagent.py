@@ -9,6 +9,7 @@ SUBAGENT_KINDS = ["explore", "general"]
 STOP_REASON_LABELS = {
     "done": "做完了",
     "step_limit": "到了步数上限，下面是它停下时的结论",
+    "time_limit": "到了时长上限，下面是它停下时写的总结",
     "denied": "有操作被用户拒绝，先停下了",
     "truncated": "回复多次超长，先停下了",
     "filtered": "回复被上游内容审核掐断，下面是它已经输出的部分",
