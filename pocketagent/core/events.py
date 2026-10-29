@@ -1,7 +1,7 @@
 """事件总线：agent 运行过程中的一切（流式文本、工具调用、节点进出）都以事件发出。
 
 PocketFlow 的节点 exec 只能一次性返回结果，没有框架级的流式；这里用旁路的事件总线补上。
-界面（CLI / 以后的 TUI、IDE 插件、Web）和 trace 都只是事件的订阅者。
+界面（CLI / TUI / IDE 插件 / Web）和 trace 都只是事件的订阅者。
 """
 
 import inspect
