@@ -94,3 +94,17 @@ def create_worktree(workspace: Path, home_dir: Path, session_id: str) -> Worktre
         if _git(repository_root, "show-ref", "--verify", "--quiet", f"refs/heads/{branch}", check=False).returncode == 0:
             _git(repository_root, "branch", "-D", branch, check=False)
         raise
+
+
+def commit_worktree(info: WorktreeInfo, message: str) -> bool:
+    """把 worktree 里没提交的改动提交到它的分支，返回这条分支上有没有新成果。
+
+    子 agent 自己已经提交过也照样返回 True；子 agent 改完靠这个把成果收进分支，主 agent 才能看到、才能合并。
+    """
+    root = Path(info.root)
+    status = _git(root, "status", "--porcelain")
+    if status.stdout.strip():
+        _git(root, "add", "-A")
+        _git(root, "-c", "user.name=PocketAgent", "-c", "user.email=pocketagent@localhost", "commit", "-qm", message)
+    ahead = _git_text(root, "rev-list", "--count", f"{info.base_commit}..HEAD")
+    return ahead not in ("", "0")

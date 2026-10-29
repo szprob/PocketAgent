@@ -13,6 +13,8 @@
       "default_model": "a1b2c3",
       "approval_mode": "ask",
       "busy_input_mode": "interject",
+      "worktree_foreground": false,
+      "worktree_background": true,
       "max_steps": 50,
       "workspaces": ["/Users/me/projects/foo"],
       "trusted_dirs": ["/Users/me/data"],
@@ -413,6 +415,10 @@ class AppConfig:
     subagent_explore_minutes: int = DEFAULT_SUBAGENT_EXPLORE_MINUTES
     subagent_general_minutes: int = DEFAULT_SUBAGENT_GENERAL_MINUTES
     busy_input_mode: str = BUSY_INPUT_INTERJECT
+    # 独立 worktree：前台任务（和用户对话的会话）默认就地编辑；并行 / 后台任务（前台任务派出的
+    # 会改文件的子 agent）默认自动隔离，不问用户
+    worktree_foreground: bool = False
+    worktree_background: bool = True
     max_steps: int = DEFAULT_MAX_STEPS
     # 外观和字号，见 APPEARANCES / FONT_SCALES
     appearance: str = "system"
@@ -494,6 +500,8 @@ class AppConfig:
                 data, "subagent_general_minutes", DEFAULT_SUBAGENT_GENERAL_MINUTES, "general 子 agent 的时长上限"
             ),
             busy_input_mode=_busy_input_mode(data.get("busy_input_mode")),
+            worktree_foreground=_boolean_with_default(data, "worktree_foreground", False),
+            worktree_background=_boolean_with_default(data, "worktree_background", True),
             max_steps=_positive_int(data, "max_steps", DEFAULT_MAX_STEPS, "单轮最多调用模型次数"),
             appearance=_one_of(data.get("appearance"), APPEARANCES, "system", "外观"),
             font_size=_one_of(data.get("font_size"), tuple(FONT_SCALES), "medium", "字号"),
@@ -550,6 +558,8 @@ class AppConfig:
             "subagent_explore_minutes": self.subagent_explore_minutes,
             "subagent_general_minutes": self.subagent_general_minutes,
             "busy_input_mode": self.busy_input_mode,
+            "worktree_foreground": self.worktree_foreground,
+            "worktree_background": self.worktree_background,
             "max_steps": self.max_steps,
             "appearance": self.appearance,
             "font_size": self.font_size,
@@ -595,6 +605,8 @@ class AppConfig:
             "subagent_explore_minutes": self.subagent_explore_minutes,
             "subagent_general_minutes": self.subagent_general_minutes,
             "busy_input_mode": self.busy_input_mode,
+            "worktree_foreground": self.worktree_foreground,
+            "worktree_background": self.worktree_background,
             "max_steps": self.max_steps,
             "appearance": self.appearance,
             "font_size": self.font_size,
@@ -811,6 +823,9 @@ class Settings:
     trusted_dirs: list[str] = field(default_factory=list)
     ripgrep_path: str | None = None
     memory_enabled: bool = True
+    # 独立 worktree 策略：前台任务（和用户对话的会话）是否隔离；并行 / 后台任务（子 agent）是否隔离
+    worktree_foreground: bool = False
+    worktree_background: bool = True
     # 当前用的是配置文件里哪个模型；为空表示来自环境变量
     model_profile_id: str | None = None
     model_profile_name: str = ""
@@ -915,6 +930,8 @@ class Settings:
         self.trusted_dirs = list(app_config.trusted_dirs)
         self.ripgrep_path = app_config.ripgrep_path
         self.memory_enabled = app_config.memory_enabled
+        self.worktree_foreground = app_config.worktree_foreground
+        self.worktree_background = app_config.worktree_background
         self.review_profile = app_config.find_model(app_config.review_model) if app_config.review_model else None
         self.review_reasoning = app_config.review_reasoning
         self.subagent_profile = app_config.find_model(app_config.subagent_model) if app_config.subagent_model else None

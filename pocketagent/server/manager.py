@@ -149,11 +149,8 @@ class SessionManager:
         title: str | None = None,
         source: str | None = None,
         ephemeral: bool = False,
-        worktree: bool = False,
     ) -> WebSession:
-        """ephemeral=True 表示不指定工作区；worktree=True 从 HEAD 建独立工作区。"""
-        if ephemeral and worktree:
-            raise ConfigError("临时任务不能使用独立 worktree")
+        """ephemeral=True 表示不指定工作区；要不要独立 worktree 按设置自动决定（worktree_foreground）。"""
         if ephemeral:
             workspace = create_scratch_workspace(self.base_settings.home_dir)
         if workspace is None:
@@ -162,12 +159,17 @@ class SessionManager:
             raise ConfigError(f"工作区不存在：{workspace}")
         workspace = workspace.resolve()
         session = None
-        if worktree:
+        if not ephemeral and self.app_config.worktree_foreground:
             session = self.store.new_session(workspace)
-            worktree_info = create_worktree(workspace, self.base_settings.home_dir, session.id)
-            session.worktree = worktree_info.to_dict()
-            session.workspace = worktree_info.path
-            workspace = Path(worktree_info.path)
+            try:
+                worktree_info = create_worktree(workspace, self.base_settings.home_dir, session.id)
+            except ConfigError as error:
+                # 自动隔离失败不该让任务开不出来：退回就地编辑，概要里标一下原因
+                session.worktree_fallback = str(error)
+            else:
+                session.worktree = worktree_info.to_dict()
+                session.workspace = worktree_info.path
+                workspace = Path(worktree_info.path)
         settings = self._settings_for(
             workspace, model_id, mode_name, ephemeral=ephemeral, worktree=session.worktree if session else None
         )

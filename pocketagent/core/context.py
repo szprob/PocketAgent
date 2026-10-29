@@ -14,6 +14,7 @@ from pocketagent.core.compaction import PendingCompaction
 from pocketagent.core.events import EventBus
 from pocketagent.core.session import Session, SessionJournal
 from pocketagent.core.tokens import estimate_tokens, estimate_tools_tokens
+from pocketagent.knowledge.skills import Skill
 from pocketagent.llm.base import LLMProvider, ToolCall, Usage
 from pocketagent.safety.permissions import PermissionGate
 from pocketagent.tools.base import ToolContext, ToolRegistry
@@ -76,6 +77,8 @@ class AgentContext:
     subagent_provider: Callable[[], LLMProvider] | None = None
     # MCP 连接（同一进程里同 home_dir 的会话共用一个）；None 表示这个上下文不接 MCP（子 agent 就是）
     mcp_manager: McpManager | None = None
+    # 这个任务装了哪些技能（子 agent 隔离到 worktree 时要用它重建系统提示）
+    skills: list[Skill] = field(default_factory=list)
 
     async def wait_for_turn_checkpoint(self) -> None:
         """工具要动工作区了，等这一轮的检查点拍完（被中断也让它拍完，git 拍到一半被杀会留下锁文件）。"""

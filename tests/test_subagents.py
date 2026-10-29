@@ -2,8 +2,10 @@
 
 import asyncio
 import json
+import subprocess
 import time
 import unittest
+from pathlib import Path
 
 from pocketagent.core.events import EventType
 from pocketagent.core.subagents import subagent_tools
@@ -14,6 +16,10 @@ from pocketagent.tools.subagent import SubagentTool
 from tests.helpers import TemporaryDirectories, build_harness, tool_call
 
 SUBAGENT_MARK = "# 你现在是子 agent"
+
+
+def git(repository: Path, *arguments: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", "-C", str(repository), *arguments], capture_output=True, text=True, check=True)
 
 
 class TwoLevelProvider:
@@ -182,6 +188,50 @@ class SubagentRunTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((self.directories.workspace / "out.txt").read_text(encoding="utf-8"), "hi")
         self.assertEqual(len(approver.requests), 1)
         self.assertTrue(approver.requests[0].summary.startswith("〔子 agent：写文件〕"))
+
+    async def test_general_subagent_works_in_its_own_worktree_and_commits_the_branch(self) -> None:
+        self._init_git_workspace()
+        provider = TwoLevelProvider(
+            [LLMResponse(tool_calls=[spawn("p1", "写文件", "新建 out.txt 写 hi", kind="general")]), LLMResponse(text="好了")],
+            {"写文件": [LLMResponse(tool_calls=[tool_call("c1", "write_file", '{"path": "out.txt", "content": "hi"}')]), LLMResponse(text="写好了 out.txt")]},
+        )
+        harness = build_harness(self.directories, [], provider=provider)
+
+        await harness.agent.run_turn("让子 agent 写个文件")
+
+        self.assertFalse((self.directories.workspace / "out.txt").exists())
+        worktrees = list((self.directories.home_dir / "worktrees").iterdir())
+        self.assertEqual(len(worktrees), 1)
+        self.assertEqual((worktrees[0] / "out.txt").read_text(encoding="utf-8"), "hi")
+        tool_message = next(m["content"] for m in harness.agent.context.messages if m["role"] == "tool")
+        self.assertIn("〔独立 worktree〕", tool_message)
+        self.assertIn("git merge", tool_message)
+        branch = git(
+            self.directories.workspace, "branch", "--list", "pocketagent/*", "--format=%(refname:short)"
+        ).stdout.strip()
+        self.assertTrue(branch.startswith("pocketagent/"))
+        committed = git(self.directories.workspace, "log", "-1", "--format=%s", branch).stdout.strip()
+        self.assertIn("子 agent：写文件", committed)
+
+    async def test_general_subagent_stays_in_place_when_background_isolation_is_off(self) -> None:
+        self._init_git_workspace()
+        provider = TwoLevelProvider(
+            [LLMResponse(tool_calls=[spawn("p1", "写文件", "新建 out.txt 写 hi", kind="general")]), LLMResponse(text="好了")],
+            {"写文件": [LLMResponse(tool_calls=[tool_call("c1", "write_file", '{"path": "out.txt", "content": "hi"}')]), LLMResponse(text="写好了 out.txt")]},
+        )
+        harness = build_harness(self.directories, [], provider=provider, worktree_background=False)
+
+        await harness.agent.run_turn("让子 agent 写个文件")
+
+        self.assertEqual((self.directories.workspace / "out.txt").read_text(encoding="utf-8"), "hi")
+        self.assertFalse((self.directories.home_dir / "worktrees").exists())
+        tool_message = next(m["content"] for m in harness.agent.context.messages if m["role"] == "tool")
+        self.assertNotIn("〔独立 worktree〕", tool_message)
+
+    def _init_git_workspace(self) -> None:
+        git(self.directories.workspace, "init", "-q")
+        git(self.directories.workspace, "add", ".")
+        git(self.directories.workspace, "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-qm", "initial")
 
     async def test_child_errors_come_back_as_a_result_not_a_crash(self) -> None:
         provider = TwoLevelProvider(

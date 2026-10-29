@@ -103,15 +103,9 @@ export class Composer {
       this.workspaceSelect = el("select", "workspace-select");
       this.workspaceSelect.title = "在哪个工作区里做";
       this.workspaceSelect.addEventListener("change", () => {
-        this._syncWorktreeAvailability();
         this.onWorkspaceChange?.();
       });
-      this.worktreeCheckbox = el("input");
-      this.worktreeCheckbox.type = "checkbox";
-      this.worktreeOption = el("label", "worktree-option");
-      this.worktreeOption.title = "从 HEAD 创建独立 git worktree；不包含原工作区未提交修改，删除任务也保留分支和成果";
-      this.worktreeOption.append(this.worktreeCheckbox, el("span", "", "独立 worktree"));
-      workspace.append(this.workspaceSelect, this.worktreeOption);
+      workspace.append(this.workspaceSelect);
     } else {
       this.workspaceLabel = el("span", "workspace-label");
       workspace.appendChild(this.workspaceLabel);
@@ -473,18 +467,6 @@ export class Composer {
     show(this.compactingHint, Boolean(compacting));
   }
 
-  _syncWorktreeAvailability() {
-    if (!this.worktreeCheckbox) {
-      return;
-    }
-    const scratch = this.workspaceSelect.value === SCRATCH_WORKSPACE;
-    this.worktreeCheckbox.disabled = scratch;
-    this.worktreeOption.classList.toggle("disabled", scratch);
-    if (scratch) {
-      this.worktreeCheckbox.checked = false;
-    }
-  }
-
   setWorkspaces(workspaces, selectedPath) {
     this.workspaceSelect.replaceChildren();
     for (const workspace of workspaces) {
@@ -502,16 +484,15 @@ export class Composer {
     const wanted = selectedPath || this.workspaceSelect.value;
     const available = [...this.workspaceSelect.options].filter((option) => !option.disabled).map((option) => option.value);
     this.workspaceSelect.value = available.includes(wanted) ? wanted : available[0];
-    this._syncWorktreeAvailability();
   }
 
   // 新任务页要的：选了哪个工作区，还是「临时任务」
   getWorkspaceChoice() {
     const value = this.workspaceSelect?.value || "";
     if (value === SCRATCH_WORKSPACE) {
-      return { workspace: null, ephemeral: true, worktree: false };
+      return { workspace: null, ephemeral: true };
     }
-    return { workspace: value || null, ephemeral: false, worktree: Boolean(this.worktreeCheckbox?.checked) };
+    return { workspace: value || null, ephemeral: false };
   }
 
   setWorkspaceLabel(path, ephemeral, worktree = null) {

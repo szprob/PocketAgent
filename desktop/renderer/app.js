@@ -255,7 +255,6 @@ async function startNewTask({ text, files }) {
     created = await sendJson("/api/sessions", "POST", {
       workspace: choice.workspace,
       ephemeral: choice.ephemeral,
-      worktree: choice.worktree,
       model_id: newTaskComposer.getModel(),
       mode: newTaskComposer.getMode(),
     });

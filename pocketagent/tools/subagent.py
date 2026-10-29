@@ -32,6 +32,11 @@ class SubagentResult:
     stop_reason: str
     tool_calls: int
     seconds: float
+    # 隔离到独立 worktree 时的分支信息；没隔离为 None
+    worktree: dict | None = None
+    worktree_committed: bool = False
+    # 设置要求隔离、但没能建 worktree 的原因（不是 git 仓库、没有 HEAD 等）
+    isolation_note: str = ""
 
 
 class SubagentTool(Tool):
@@ -76,5 +81,16 @@ class SubagentTool(Tool):
         request = SubagentRequest(description=str(arguments.get("description") or "子任务").strip(), prompt=prompt, kind=kind)
         result: SubagentResult = await context.spawn_subagent(request)
         status = STOP_REASON_LABELS.get(result.stop_reason, result.stop_reason)
-        header = f"子 agent「{request.description}」{status}（{result.tool_calls} 次工具调用，{result.seconds:.0f} 秒）："
+        lines = [f"子 agent「{request.description}」{status}（{result.tool_calls} 次工具调用，{result.seconds:.0f} 秒）："]
+        if result.worktree:
+            branch = result.worktree["branch"]
+            if result.worktree_committed:
+                lines.append(
+                    f"〔独立 worktree〕改动已提交到分支 {branch}；需要时在任务工作区 git merge {branch}（路径 {result.worktree['path']}）"
+                )
+            else:
+                lines.append(f"〔独立 worktree〕分支 {branch} 没有新改动（路径 {result.worktree['path']}）")
+        elif result.isolation_note:
+            lines.append(f"〔未隔离：{result.isolation_note}〕")
+        header = "\n".join(lines)
         return ToolResult(f"{header}\n\n{result.text or '（它没有给出结论）'}", is_error=result.stop_reason == "error")

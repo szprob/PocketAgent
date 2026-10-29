@@ -27,7 +27,6 @@ async def create_session(request: web.Request) -> web.Response:
         model_id=payload.get("model_id"),
         mode_name=payload.get("mode"),
         ephemeral=ephemeral,
-        worktree=bool(payload.get("worktree")),
     )
     return json_response({"id": web_session.id, "workspace": web_session.session.workspace})
 

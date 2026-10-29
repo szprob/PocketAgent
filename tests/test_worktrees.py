@@ -2,7 +2,7 @@ import subprocess
 import unittest
 from pathlib import Path
 
-from pocketagent.config import AppConfig, ConfigError, Settings
+from pocketagent.config import AppConfig, Settings
 from pocketagent.llm import ScriptedProvider
 from pocketagent.safety.sandbox import SandboxPolicy, available_sandbox, wrap_command
 from pocketagent.server.manager import SessionManager
@@ -29,16 +29,22 @@ class WorktreeTest(unittest.IsolatedAsyncioTestCase):
     def tearDown(self) -> None:
         self.directories.cleanup()
 
-    def _manager(self) -> SessionManager:
+    def _manager(self, **config_overrides) -> SessionManager:
         settings = Settings(workspace=self.workspace, home_dir=self.directories.home_dir, sandbox_enabled=False)
-        return SessionManager(settings, AppConfig(), provider_factory=lambda current: ScriptedProvider([]))
+        return SessionManager(
+            settings, AppConfig(**config_overrides), provider_factory=lambda current: ScriptedProvider([])
+        )
+
+    def _isolated_manager(self) -> SessionManager:
+        return self._manager(worktree_foreground=True)
 
     async def test_worktree_starts_from_head_and_isolates_parallel_changes(self) -> None:
         (self.workspace / "tracked.txt").write_text("dirty-original\n", encoding="utf-8")
         (self.workspace / "untracked.txt").write_text("not-copied\n", encoding="utf-8")
+        manager = self._isolated_manager()
 
-        first = self.manager.create(self.workspace, worktree=True)
-        second = self.manager.create(self.workspace, worktree=True)
+        first = manager.create(self.workspace)
+        second = manager.create(self.workspace)
         first_path = Path(first.session.workspace)
         second_path = Path(second.session.workspace)
 
@@ -52,8 +58,15 @@ class WorktreeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((second_path / "tracked.txt").read_text(encoding="utf-8"), "second-change\n")
         self.assertTrue(first.session.worktree["branch"].startswith("pocketagent/"))
 
+    async def test_foreground_edits_in_place_by_default(self) -> None:
+        created = self._manager().create(self.workspace)
+
+        self.assertIsNone(created.session.worktree)
+        self.assertIsNone(created.session.worktree_fallback)
+        self.assertEqual(Path(created.session.workspace), self.workspace)
+
     async def test_session_restore_and_delete_preserve_worktree(self) -> None:
-        created = self.manager.create(self.workspace, worktree=True)
+        created = self._isolated_manager().create(self.workspace)
         session_id = created.id
         worktree_path = Path(created.session.workspace)
         branch = created.session.worktree["branch"]
@@ -69,31 +82,40 @@ class WorktreeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(git(self.workspace, "show-ref", "--verify", f"refs/heads/{branch}").returncode, 0)
 
     async def test_subdirectory_workspace_keeps_same_relative_root(self) -> None:
-        created = self.manager.create(self.workspace / "sub", worktree=True)
+        created = self._isolated_manager().create(self.workspace / "sub")
 
         self.assertEqual(Path(created.session.workspace).name, "sub")
         self.assertTrue((Path(created.session.workspace) / "code.txt").is_file())
         self.assertFalse((Path(created.session.workspace) / "tracked.txt").exists())
 
     async def test_file_browser_accepts_saved_worktree_without_registering_it(self) -> None:
-        created = self.manager.create(self.workspace, worktree=True)
-        self.manager.store.save(created.session)
+        manager = self._isolated_manager()
+        created = manager.create(self.workspace)
+        manager.store.save(created.session)
 
-        self.assertIn(created.session.workspace, self.manager.file_workspaces())
-        self.assertNotIn(created.session.workspace, self.manager.app_config.workspaces)
+        self.assertIn(created.session.workspace, manager.file_workspaces())
+        self.assertNotIn(created.session.workspace, manager.app_config.workspaces)
 
-    async def test_non_git_empty_head_and_scratch_are_clear_errors(self) -> None:
+    async def test_failed_isolation_falls_back_to_editing_in_place(self) -> None:
         non_git = self.workspace.parent / "not-git"
         non_git.mkdir()
-        with self.assertRaisesRegex(ConfigError, "只支持普通 git 仓库"):
-            self.manager.create(non_git, worktree=True)
         empty = self.workspace.parent / "empty"
         empty.mkdir()
         git(empty, "init", "-q")
-        with self.assertRaisesRegex(ConfigError, "还没有提交"):
-            self.manager.create(empty, worktree=True)
-        with self.assertRaisesRegex(ConfigError, "临时任务"):
-            self.manager.create(ephemeral=True, worktree=True)
+        manager = self._isolated_manager()
+
+        plain = manager.create(non_git)
+        no_head = manager.create(empty)
+        scratch = manager.create(ephemeral=True)
+
+        self.assertIsNone(plain.session.worktree)
+        self.assertIn("只支持普通 git 仓库", plain.session.worktree_fallback)
+        self.assertEqual(Path(plain.session.workspace), non_git.resolve())
+        self.assertIsNone(no_head.session.worktree)
+        self.assertIn("还没有提交", no_head.session.worktree_fallback)
+        # 临时任务本来就不隔离，也不算失败
+        self.assertIsNone(scratch.session.worktree)
+        self.assertIsNone(scratch.session.worktree_fallback)
 
     def test_git_metadata_points_to_real_worktree_and_common_repository(self) -> None:
         info = create_worktree(self.workspace, self.directories.home_dir, "test-session")

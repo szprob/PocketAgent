@@ -204,6 +204,7 @@ class WebSession:
             # 临时任务：工作区是 ~/.pocketagent/scratch 下自动建的目录，界面上显示成「临时任务」
             "ephemeral": self.session.ephemeral,
             "worktree": self.session.worktree,
+            "worktree_fallback": self.session.worktree_fallback,
             "context_tokens": context.estimated_context_tokens(),
             "context_window": self.settings.context_window_tokens,
             "compact_threshold": self.settings.compact_threshold if self.settings.auto_compact else None,

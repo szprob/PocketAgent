@@ -7,7 +7,7 @@
 bash 沙箱、工作目录外的访问审批、影子 git 检查点（看变更、撤销、整体恢复）、技能（Agent Skills 标准）、项目记忆、
 流式事件、trace、会话续跑、后台自动压缩上下文、多模型配置（OpenAI 兼容 / Anthropic 两种协议，思考档位 / 上下文长度随模型走）、
 附件（图片 / 文件）、插话和排队、token 用量和缓存命中统计、定时自动化，以及命令行 REPL、全屏 TUI 和 web 三套界面。
-新任务可选独立 git worktree，避免并行任务互改工作区。grep / glob 优先用 ripgrep（遵守 .gitignore），没装 rg 时回退纯 Python 实现。
+新任务默认就地编辑；前台任务派出的、会改文件的子 agent 自动在独立 git worktree 里做，互不干扰。grep / glob 优先用 ripgrep（遵守 .gitignore），没装 rg 时回退纯 Python 实现。
 
 ## 设计哲学
 
@@ -202,7 +202,7 @@ KaTeX 的脚本、样式和字体都随界面本地加载，不依赖 CDN；代�
   任务改了文件会自动刷新）；最近任务（全部历史，运行中的有蓝点，等你回答 / 确认的换成琥珀色的 ? / !，
   悬停出现 × 可以删除）；两段都能点标题折叠；
   最下面是账户名和 ⚙ 设置。
-- **中间**：新任务页选工作区、模型、权限后直接说话（工作区也可以选「临时任务」，或勾「独立 worktree」，见下）；任务页是对话。输入框底下一排：📎 附件（也可以粘贴截图、拖文件进来）、
+- **中间**：新任务页选工作区、模型、权限后直接说话（工作区也可以选「临时任务」，见下）；任务页是对话。输入框底下一排：📎 附件（也可以粘贴截图、拖文件进来）、
   权限、模型（选模型的面板里直接改思考档位和上下文长度，存进配置；设置里可以让某个模型不出现在这里）、发送 / 停止；
   再下面是上下文占用和压缩阈值。鼠标移到你说过的话上会出现「恢复到这里」：删掉这句之后的全部对话，
   把原话和附件放回输入框，改完接着发；工作区里的文件不动（要连文件一起回到过去用右侧栏的检查点）。
@@ -235,11 +235,16 @@ AI 说的话永远在折叠外面：它一开口，前面那一块就收尾，�
 
 ### 独立 worktree
 
-web 和桌面端的新任务页勾选「独立 worktree」后，服务端从当前仓库的 `HEAD` 创建
-`~/.pocketagent/worktrees/<任务 id>/` 和分支 `pocketagent/<任务 id>`，agent 只在这个目录里工作。
-并行任务可以改同一批文件而不互相覆盖，原工作区的未提交修改也不会被带进去或碰掉。
+要不要隔离由设置里两个开关决定，新任务页不再让用户勾选：
 
-- 默认不勾，普通任务行为不变；临时任务不能同时选。非 git 仓库、裸仓库、还没有 `HEAD` 的仓库会明确报错，不会退回原目录
+- **前台任务**（和用户对话的任务，同时开几个都算）：默认就地编辑，直接改工作区；`worktree_foreground` 打开后改成从 `HEAD` 建独立 worktree
+- **并行 / 后台任务**（前台任务派出的、会改文件的 `general` 子 agent）：默认自动隔离（`worktree_background`），不问用户；只读的 `explore` 子 agent 不隔离，要读到前台任务还没提交的改动
+
+隔离时服务端从当前仓库的 `HEAD` 创建 `~/.pocketagent/worktrees/<任务 id>/` 和分支 `pocketagent/<任务 id>`，agent 只在这个目录里工作。
+原工作区的未提交修改不会被带进去或碰掉。子 agent 干完会把改动自动提交到自己的分支，结果里告诉主 agent 分支和路径，
+需要时主 agent 自己 `git merge`；主干合并冲突由主 agent 处理。
+
+- 工作区不是 git 仓库、是裸仓库、或者还没有 `HEAD` 时，自动退回就地编辑，不挡住任务；任务概要里会标「未启用，就地编辑」和原因
 - 选择的是仓库子目录时，任务仍落在 worktree 里对应的子目录；任务概要看实际目录、来源、分支和基线提交
 - 项目记忆和原工作区共用；文件树、diff、检查点都针对隔离目录。沙箱额外放开 worktree 的 Git 元数据，`hooks` / `config` 仍禁止写
 - 删除任务只删对话，不自动删 worktree 和分支，避免丢掉未提交或尚未合并的成果。确认成果已经合并或不再需要后，再用 `git worktree remove` 和 `git branch -d` 手动清理
@@ -462,6 +467,7 @@ agent 可以用 `subagent` 工具派子 agent 去独立干一件事。子 agent 
 - 模型默认和任务的一样，⚙ 设置 → 智能体里可以单独选模型和思考档位（`subagent_model` / `subagent_reasoning`）
 - 有时长上限：explore 默认 10 分钟、general 默认 40 分钟（`subagent_explore_minutes` / `subagent_general_minutes`），等你审批的时间不算。到点不会直接丢掉：停下正在跑的命令（连进程树一起杀）、补齐没结果的工具调用，再让它不带工具写一次总结交回来
 - 一批里有 general 子 agent 时按顺序跑，不会和别的改动同时进行
+- general 子 agent 默认在独立 worktree 里做（`worktree_background`），做完自动提交到 `pocketagent/<任务 id>-sub-*` 分支并把分支交回主 agent；explore 只读，不隔离。worktree 建不出来（不是 git 仓库等）就退回共用工作区，结论里会注明
 - 子 agent 每调一个工具，它那张工具卡片下面就实时多一行；点停止时子 agent 一起停
 
 ### agent 干活时又发了一句话
@@ -644,7 +650,7 @@ pocketagent/
     routes/              按资源分的接口：sessions / workspace / settings / commands / automations / socket
     session.py           一个任务一个 Agent（WebSession）：插话 / 排队、审批和提问广播给所有连接
     manager.py           所有任务、工作区、配置、技能、记忆（SessionManager），自动化调度
-    worktrees.py         从 HEAD 创建任务 worktree，失败时回滚新建目录和分支
+    worktrees.py         从 HEAD 创建任务 worktree、把隔离任务 / 子 agent 的改动提交到分支，失败时回滚新建目录和分支
     automations.py       自动化的定义、计划计算、存储
     files.py             文件树、文件预览、选目录（只能看登记过的工作区）
     history.py           把存下来的消息转成前端渲染用的条目

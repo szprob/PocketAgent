@@ -57,6 +57,8 @@ export function initSettings(handlers) {
   elements.subagentReasoning = document.getElementById("subagent-reasoning-select");
   elements.subagentExploreMinutes = document.getElementById("subagent-explore-minutes");
   elements.subagentGeneralMinutes = document.getElementById("subagent-general-minutes");
+  elements.worktreeForeground = document.getElementById("worktree-foreground");
+  elements.worktreeBackground = document.getElementById("worktree-background");
   elements.maxSteps = document.getElementById("max-steps-input");
   elements.autoCompact = document.getElementById("auto-compact-input");
   elements.compactThreshold = document.getElementById("compact-threshold-select");
@@ -307,6 +309,8 @@ function fillGeneral() {
   renderAuxiliaryModelOptions(subagentSelects(), config.subagent_model, config.subagent_reasoning);
   elements.subagentExploreMinutes.value = config.subagent_explore_minutes;
   elements.subagentGeneralMinutes.value = config.subagent_general_minutes;
+  elements.worktreeForeground.checked = Boolean(config.worktree_foreground);
+  elements.worktreeBackground.checked = config.worktree_background !== false;
 
   elements.maxSteps.value = config.max_steps;
   elements.autoCompact.checked = Boolean(config.auto_compact);
@@ -814,6 +818,8 @@ async function saveConfig() {
     subagent_reasoning: elements.subagentReasoning.value,
     subagent_explore_minutes: Number(elements.subagentExploreMinutes.value) || 10,
     subagent_general_minutes: Number(elements.subagentGeneralMinutes.value) || 40,
+    worktree_foreground: elements.worktreeForeground.checked,
+    worktree_background: elements.worktreeBackground.checked,
     busy_input_mode: elements.modal.querySelector('input[name="busy-input-mode"]:checked')?.value || "interject",
     max_steps: Number(elements.maxSteps.value) || 50,
     auto_compact: elements.autoCompact.checked,

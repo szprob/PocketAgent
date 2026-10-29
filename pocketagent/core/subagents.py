@@ -13,16 +13,23 @@
 
 import asyncio
 import time
+import uuid
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
+from pocketagent.config import ConfigError, Settings
 from pocketagent.core.context import AgentContext, TurnState
 from pocketagent.core.events import Event, EventBus, EventType
+from pocketagent.core.prompts import build_system_prompt
 from pocketagent.core.session import Session
 from pocketagent.interaction.questions import Question, QuestionAnswer
 from pocketagent.llm.base import SilentListener
 from pocketagent.safety.permissions import ApprovalAnswer, ApprovalRequest, Approver, PermissionGate, ask_approvals
-from pocketagent.tools.base import ToolKind, ToolRegistry, current_tool_call_id
+from pocketagent.safety.sandbox import SandboxPolicy
+from pocketagent.server.worktrees import WorktreeInfo, commit_worktree, create_worktree
+from pocketagent.tools.background import BackgroundTaskManager
+from pocketagent.tools.base import ToolContext, ToolKind, ToolRegistry, current_tool_call_id
 from pocketagent.tools.subagent import SubagentRequest, SubagentResult
 
 # 子 agent 不能有的工具：不能问用户，不能再派子 agent
@@ -116,6 +123,52 @@ def subagent_system_prompt(parent_system_prompt: str, request: SubagentRequest, 
 {read_only}- 你这次能用的工具只有：{"、".join(tools.names())}（上面列的其他工具这次用不了）。"""
 
 
+def _isolated_worktree(parent: AgentContext, request: SubagentRequest) -> tuple[WorktreeInfo | None, str]:
+    """会改文件的子 agent 按设置在自己的 worktree 里做。
+
+    只读的 explore 不隔离（要读到前台任务刚改、还没提交的内容）；不是 git 仓库这类建不出来的情况
+    退回共用工作区，把原因带回去，不影响子 agent 干活。
+    """
+    if request.kind != "general" or not parent.settings.worktree_background or parent.settings.ephemeral:
+        return None, ""
+    subagent_id = f"{parent.session.id}-sub-{uuid.uuid4().hex[:6]}"
+    try:
+        info = create_worktree(Path(parent.session.workspace), parent.settings.home_dir, subagent_id)
+    except ConfigError as error:
+        return None, str(error)
+    return info, ""
+
+
+def _worktree_sandbox(policy: SandboxPolicy | None, info: WorktreeInfo) -> SandboxPolicy | None:
+    if policy is None:
+        return None
+    return replace(policy, workspace=Path(info.path), worktree_git_dirs=[Path(path) for path in info.git_dirs])
+
+
+def _subagent_tool_context(parent: AgentContext, settings: Settings, session: Session, worktree: WorktreeInfo | None) -> ToolContext:
+    if worktree is None:
+        return replace(parent.tool_context, ask_user=None, spawn_subagent=None, history=lambda: session.messages)
+    return replace(
+        parent.tool_context,
+        workspace=Path(worktree.path),
+        sandbox=_worktree_sandbox(parent.tool_context.sandbox, worktree),
+        # 后台命令记在子 agent 自己名下：它的工作区是 worktree，不能挂到主任务的目录上
+        background_tasks=BackgroundTaskManager(settings.background_tasks_dir, Path(worktree.path), session.id),
+        ask_user=None,
+        spawn_subagent=None,
+        history=lambda: session.messages,
+    )
+
+
+def _commit_isolated(worktree: WorktreeInfo | None, request: SubagentRequest) -> bool:
+    if worktree is None:
+        return False
+    try:
+        return commit_worktree(worktree, f"子 agent：{request.description}")
+    except ConfigError:
+        return False
+
+
 class _ProgressForwarder:
     """把子 agent 的工具调用转成主 agent 的 SUBAGENT_PROGRESS 事件，顺便数一下调了几次工具。"""
 
@@ -155,14 +208,37 @@ async def run_subagent(parent: AgentContext, request: SubagentRequest, call_id: 
 
     tools = subagent_tools(parent.tools, request.kind)
     parent_system_prompt = str(parent.messages[0].get("content", "")) if parent.messages else ""
+    worktree, isolation_note = _isolated_worktree(parent, request)
+    settings = parent.settings
+    workspace = parent.session.workspace
+    session_id = f"{parent.session.id}-sub"
+    if worktree is not None:
+        settings = replace(parent.settings, workspace=Path(worktree.path), worktree=worktree.to_dict(), ephemeral=False)
+        workspace = worktree.path
+        session_id = Path(worktree.root).name
     session = Session(
-        id=f"{parent.session.id}-sub",
-        workspace=parent.session.workspace,
+        id=session_id,
+        workspace=workspace,
         messages=[
-            {"role": "system", "content": subagent_system_prompt(parent_system_prompt, request, tools)},
+            {"role": "system", "content": ""},
             {"role": "user", "content": request.prompt},
         ],
     )
+    tool_context = _subagent_tool_context(parent, settings, session, worktree)
+    if worktree is None:
+        system_prompt = parent_system_prompt
+    else:
+        # 主 agent 的提示词里工作目录还是来源目录，隔离后按 worktree 重写一遍，免得子 agent 去改原工作区
+        system_prompt = build_system_prompt(
+            Path(worktree.path),
+            settings.home_dir,
+            tools,
+            skills=parent.skills,
+            sandbox=tool_context.sandbox,
+            memory_dir=tool_context.memory_dir,
+            worktree=worktree.to_dict(),
+        )
+    session.messages[0]["content"] = subagent_system_prompt(system_prompt, request, tools)
     gate = parent.permissions
     clock = ActiveClock()
     permissions = PermissionGate(
@@ -177,17 +253,18 @@ async def run_subagent(parent: AgentContext, request: SubagentRequest, call_id: 
     events = EventBus()
     events.subscribe(forwarder)
     context = AgentContext(
-        settings=parent.settings,
+        settings=settings,
         # 设置里可以给子 agent 单独选模型和思考档位
         provider=parent.subagent_provider() if parent.subagent_provider else parent.provider,
         tools=tools,
-        tool_context=replace(parent.tool_context, ask_user=None, spawn_subagent=None, history=lambda: session.messages),
+        tool_context=tool_context,
         permissions=permissions,
         events=events,
         session=session,
         attachments_root=parent.attachments_root,
         # 子 agent 里的调用也按设置里的审批模型 / 档位做 AI 审批
         review_provider=parent.review_provider,
+        skills=parent.skills,
     )
     context.turn = TurnState()
     limit_minutes = time_limit_minutes(parent, request.kind)
@@ -195,9 +272,10 @@ async def run_subagent(parent: AgentContext, request: SubagentRequest, call_id: 
     try:
         timed_out = await _wait_within_time_limit(flow_task, clock, limit_minutes * 60)
     except asyncio.CancelledError:
-        # 主 agent 被中断：子 agent 一起停
+        # 主 agent 被中断：子 agent 一起停；隔离出来的改动照样提交，别把做到一半的成果丢了
         await _cancel_and_wait(flow_task)
         close_dangling_tool_calls(session.messages)
+        _commit_isolated(worktree, request)
         raise
     except Exception as error:
         close_dangling_tool_calls(session.messages)
@@ -213,6 +291,9 @@ async def run_subagent(parent: AgentContext, request: SubagentRequest, call_id: 
         stop_reason=context.turn.stop_reason or "done",
         tool_calls=forwarder.tool_calls,
         seconds=time.monotonic() - clock.started_at,
+        worktree=worktree.to_dict() if worktree is not None else None,
+        worktree_committed=_commit_isolated(worktree, request),
+        isolation_note=isolation_note,
     )
 
 

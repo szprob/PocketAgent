@@ -40,6 +40,8 @@ class Session:
     source: str | None = None
     # 独立 worktree 的路径、来源、分支和 Git 目录；普通任务为 None
     worktree: dict[str, Any] | None = None
+    # 设置里要求隔离、但没能建 worktree 的原因（不是 git 仓库、没有 HEAD 等）：任务退回就地编辑
+    worktree_fallback: str | None = None
     # 影子 git 里的检查点（见 checkpoints.py），第一个是任务开始时的样子
     checkpoints: list[dict[str, Any]] = field(default_factory=list)
     # 跑了多少轮：用户说一句话到 agent 停下算一轮；老会话没有这个字段，读的时候按消息估一个
