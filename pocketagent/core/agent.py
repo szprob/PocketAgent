@@ -42,9 +42,9 @@ from pocketagent.knowledge.skills import Skill, discover_skills, find_skill_comm
 from pocketagent.llm.base import LLMProvider
 from pocketagent.safety.checkpoints import TaskCheckpoints
 from pocketagent.safety.permissions import Approver, PermissionGate
-from pocketagent.safety.processes import BackgroundShells
 from pocketagent.safety.sandbox import SandboxPolicy, available_sandbox, default_secret_dirs
 from pocketagent.tools import default_tool_registry
+from pocketagent.tools.background import BackgroundTaskManager
 from pocketagent.tools.base import ToolContext, ToolRegistry, trusted_dirs_outside_secrets
 
 INTERRUPTED_TOOL_RESULT = "用户中断了这一轮，这个调用没有执行完"
@@ -106,7 +106,7 @@ def build_tool_context(
     skills: list[Skill],
     approver: Approver,
     on_todos_changed: Callable[[list[dict[str, Any]]], Awaitable[None]] | None = None,
-    background: BackgroundShells | None = None,
+    background: BackgroundTaskManager | None = None,
 ) -> ToolContext:
     """附件目录、技能目录不用确认就能读，项目记忆目录读写都不用确认；
     用户配的免问目录和工作目录一样对待（读不问、改照审批模式走，里面的密钥也不问）；
@@ -132,6 +132,7 @@ def build_tool_context(
             readable_exceptions=extra_read_dirs,
             # 免问目录和密钥目录重叠时不进沙箱的可写范围：bash 在沙箱里照旧碰不到密钥
             writable_roots=trusted_dirs_outside_secrets(trusted_dirs, secret_dirs),
+            worktree_git_dirs=[Path(path) for path in (settings.worktree or {}).get("git_dirs", [])],
         )
     return ToolContext(
         workspace=settings.workspace,
@@ -149,8 +150,9 @@ def build_tool_context(
         # 同一个 list 引用：todo_write 原地改，存会话时自然带上
         todo_list=session.todos,
         on_todos_changed=on_todos_changed,
-        # reload_tools 会把工具环境整个重装一遍，后台命令表要沿用，不然正在跑的 dev server 就找不到了
-        background=background or BackgroundShells(),
+        # reload_tools 会把工具环境整个重装一遍，管理器要沿用，不然当前会话上次读到哪就丢了
+        background_tasks=background
+        or BackgroundTaskManager(settings.background_tasks_dir, settings.workspace, session.id),
     )
 
 
@@ -203,6 +205,7 @@ class Agent:
                 sandbox=self.context.tool_context.sandbox,
                 memory_dir=self.context.tool_context.memory_dir,
                 ephemeral=settings.ephemeral,
+                worktree=settings.worktree,
             ),
         }
         messages = self.context.messages
@@ -321,10 +324,6 @@ class Agent:
         """换模型时用：新的 provider 同样包上用量记录。"""
         self.context.provider = _with_usage_recording(provider, self.usage_log, self.context.settings, self.session)
 
-    async def close(self) -> None:
-        """会话结束时把后台命令连同子进程一起结束。"""
-        await self.context.tool_context.background.kill_all()
-
     def _expand_skill_command(self, message: dict[str, Any]) -> dict[str, Any]:
         """消息以 /技能名 开头：把技能的完整说明接在用户的话后面，界面上还是只显示原话。"""
         display = message_display(message)
@@ -350,7 +349,7 @@ class Agent:
             self.skills,
             self.context.permissions.approver,
             on_todos_changed=self._emit_todos_updated,
-            background=self.context.tool_context.background,
+            background=self.context.tool_context.background_tasks,
         )
         attach_subagent_runner(self.context)
         self.refresh_system_prompt()

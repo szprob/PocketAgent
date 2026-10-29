@@ -30,6 +30,7 @@ from pocketagent.server.session import (
     SessionBusyError,
     WebSession,
 )
+from pocketagent.server.worktrees import create_worktree
 
 CONNECTION_TEST_PROMPT = "这是一次连通性测试，请只回复两个字：收到"
 CONNECTION_TEST_TIMEOUT_SECONDS = 60
@@ -60,12 +61,18 @@ class SessionManager:
         return create_provider(settings)
 
     def _settings_for(
-        self, workspace: Path, model_key: str | None, mode_name: str | None, ephemeral: bool = False
+        self,
+        workspace: Path,
+        model_key: str | None,
+        mode_name: str | None,
+        ephemeral: bool = False,
+        worktree: dict[str, Any] | None = None,
     ) -> Settings:
         """以启动时的设置为底，换上这个任务的工作区、模型（找不到就用默认模型）和审批模式。"""
         settings = copy.deepcopy(self.base_settings)
         settings.workspace = workspace
         settings.ephemeral = ephemeral
+        settings.worktree = copy.deepcopy(worktree)
         settings.apply_app_config(self.app_config)
         settings.approval_mode = ApprovalMode(mode_name) if mode_name else self.app_config.approval_mode
         profile = self.app_config.find_model(model_key) or self.app_config.default_profile()
@@ -91,6 +98,18 @@ class SessionManager:
             {"path": path, "name": Path(path).name or path, "exists": Path(path).is_dir()}
             for path in self.app_config.workspaces
         ]
+
+    def file_workspaces(self) -> list[str]:
+        """文件树还能读已有任务的 worktree，但不把它们加进全局工作区列表。"""
+        paths = list(self.app_config.workspaces)
+        for summary in self.store.summaries():
+            if summary.worktree and summary.workspace not in paths:
+                paths.append(summary.workspace)
+        for session_id, live in self.sessions.items():
+            worktree = live.session.worktree
+            if worktree and live.session.workspace not in paths:
+                paths.append(live.session.workspace)
+        return paths
 
     def add_workspace(self, raw_path: str) -> None:
         path = Path(raw_path).expanduser()
@@ -122,16 +141,29 @@ class SessionManager:
         title: str | None = None,
         source: str | None = None,
         ephemeral: bool = False,
+        worktree: bool = False,
     ) -> WebSession:
-        """ephemeral=True 表示不指定工作区：在 ~/.pocketagent/scratch 下建一个临时目录给它。"""
+        """ephemeral=True 表示不指定工作区；worktree=True 从 HEAD 建独立工作区。"""
+        if ephemeral and worktree:
+            raise ConfigError("临时任务不能使用独立 worktree")
         if ephemeral:
             workspace = create_scratch_workspace(self.base_settings.home_dir)
         if workspace is None:
             raise ConfigError("没有指定工作区")
         if not workspace.is_dir():
             raise ConfigError(f"工作区不存在：{workspace}")
-        settings = self._settings_for(workspace.resolve(), model_id, mode_name, ephemeral=ephemeral)
-        web_session = self._register(settings, session=None)
+        workspace = workspace.resolve()
+        session = None
+        if worktree:
+            session = self.store.new_session(workspace)
+            worktree_info = create_worktree(workspace, self.base_settings.home_dir, session.id)
+            session.worktree = worktree_info.to_dict()
+            session.workspace = worktree_info.path
+            workspace = Path(worktree_info.path)
+        settings = self._settings_for(
+            workspace, model_id, mode_name, ephemeral=ephemeral, worktree=session.worktree if session else None
+        )
+        web_session = self._register(settings, session=session)
         web_session.session.title = title
         web_session.session.source = source
         return web_session
@@ -147,7 +179,9 @@ class SessionManager:
         if session.ephemeral:
             # 用户可能已经把 scratch 清掉了，重建一个空的，别让工具全报「目录不存在」
             workspace = ensure_scratch_workspace(workspace)
-        settings = self._settings_for(workspace, session.model_profile, session.approval_mode, session.ephemeral)
+        settings = self._settings_for(
+            workspace, session.model_profile, session.approval_mode, session.ephemeral, worktree=session.worktree
+        )
         return self._register(settings, session=session)
 
     def list_tasks(self) -> list[dict[str, Any]]:
@@ -179,6 +213,7 @@ class SessionManager:
                         "ephemeral": session.ephemeral,
                         "updated_at": session.updated_at,
                         "source": session.source,
+                        "worktree": session.worktree,
                         "running": True,
                         "waiting": live.waiting_for,
                     },

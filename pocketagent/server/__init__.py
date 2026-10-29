@@ -25,7 +25,7 @@ REST（都在 /api 下）：
   workspaces/default  POST               把某个工作区设成新任务的默认
   files / file / file/raw                工作区文件树 / 文件预览 / 原始文件（图片预览）
   browse                                 选工作区时浏览本机目录（只列目录）
-  sessions            GET / POST         任务列表 / 新建任务（工作区、模型、审批模式；ephemeral=true 用临时目录）
+  sessions            GET / POST         任务列表 / 新建任务（工作区、模型、审批模式；ephemeral=true 用临时目录；worktree=true 从 HEAD 隔离）
   sessions/{id}       GET / PATCH / DELETE   快照 / 改标题 / 删除
   sessions/{id}/rewind                   POST 删掉某条用户消息和之后的全部对话，把这句话放回输入框
   sessions/{id}/overview                 右侧栏概要（用量、缓存命中、最新回复），比快照轻

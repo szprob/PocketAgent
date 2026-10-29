@@ -78,13 +78,22 @@ class BashTool(Tool):
         policy = None if arguments.get("outside_sandbox") else context.sandbox
         command_line, sandbox_note = wrap_command(arguments["command"], policy)
         if arguments.get("run_in_background"):
-            shell = await context.background.launch(command_line, context.workspace, arguments["command"])
+            manager = _background_manager(context)
+            if manager is None:
+                return ToolResult("当前上下文没有配置后台命令管理器", is_error=True)
+            try:
+                record = await manager.start(arguments["command"], command_line, sandbox_note)
+            except (OSError, TimeoutError) as error:
+                return ToolResult(f"后台命令启动失败：{error}", is_error=True)
             note = f"\n{sandbox_note}" if sandbox_note else ""
-            return ToolResult(
-                f"已在后台启动（{shell.id}）：{arguments['command']}\n"
+            text = (
+                f"已在后台启动（{record['id']}）：{arguments['command']}\n"
                 "用 bash_output 查看输出（可带 wait_seconds 等新输出），用 kill_shell 结束。"
                 f"{note}"
             )
+            if record.get("error"):
+                text += f"\n{record['error']}"
+            return ToolResult(text, is_error=record["status"] == "error")
         process = await asyncio.create_subprocess_exec(
             *command_line,
             cwd=context.workspace,
@@ -147,18 +156,27 @@ class BashOutputTool(Tool):
         return f"查看后台命令 {shell_id}" if shell_id else "列出后台命令"
 
     async def run(self, arguments: dict[str, Any], context: ToolContext) -> ToolResult:
+        manager = _background_manager(context)
+        if manager is None:
+            return ToolResult("当前上下文没有配置后台命令管理器", is_error=True)
         shell_id = str(arguments.get("id") or "").strip()
         if not shell_id:
             return _list_background_shells(context)
-        shell = context.background.get(shell_id)
-        if shell is None:
+        try:
+            record = manager.status(shell_id)
+        except ValueError:
             return _unknown_shell(shell_id, context)
+        offsets = context.tool_state.setdefault("background_offsets", {})
+        offset = int(offsets.get(shell_id, 0))
         wait_seconds = min(max(int(arguments.get("wait_seconds") or 0), 0), MAX_OUTPUT_WAIT_SECONDS)
         if wait_seconds:
-            await shell.wait_for_update(wait_seconds)
-        output = shell.read_new()
-        text = f"{shell.status_text()}\n{output}" if output else f"{shell.status_text()}\n（这期间没有新输出）"
-        return ToolResult(text, is_error=not shell.running and shell.exit_code != 0)
+            record = await _wait_for_background(manager, shell_id, offset, wait_seconds)
+        result = manager.read(shell_id, offset=offset)
+        offsets[shell_id] = result["next_offset"]
+        output = result["output"]
+        status = _background_status_text(record)
+        text = f"{status}\n{output}" if output else f"{status}\n（这期间没有新输出）"
+        return ToolResult(text, is_error=not _background_running(record) and record.get("exit_code") not in (0, None))
 
 
 class KillShellTool(Tool):
@@ -177,33 +195,69 @@ class KillShellTool(Tool):
         return f"结束后台命令 {arguments.get('id', '')}"
 
     async def run(self, arguments: dict[str, Any], context: ToolContext) -> ToolResult:
+        manager = _background_manager(context)
+        if manager is None:
+            return ToolResult("当前上下文没有配置后台命令管理器", is_error=True)
         shell_id = str(arguments.get("id") or "").strip()
-        shell = context.background.get(shell_id)
-        if shell is None:
+        try:
+            before = manager.status(shell_id)
+        except ValueError:
             return _unknown_shell(shell_id, context)
-        was_running = shell.running
-        await shell.kill()
-        output = shell.read_new()
+        was_running = _background_running(before)
+        try:
+            record = await manager.stop(shell_id, grace_seconds=2)
+        except (OSError, ValueError) as error:
+            return ToolResult(f"结束后台命令失败：{error}", is_error=True)
         action = "已结束" if was_running else "本来就已经退出"
-        text = f"{action}（{shell.id}）：{shell.status_text()}"
-        if output:
-            text += f"\n{output}"
-        return ToolResult(text)
+        return ToolResult(f"{action}（{shell_id}）：{_background_status_text(record)}")
+
+
+def _background_manager(context: ToolContext) -> Any:
+    return context.background_tasks
 
 
 def _list_background_shells(context: ToolContext) -> ToolResult:
-    shells = context.background.list_all()
-    if not shells:
+    manager = _background_manager(context)
+    if manager is None:
+        return ToolResult("当前上下文没有配置后台命令管理器", is_error=True)
+    records = manager.list()
+    if not records:
         return ToolResult("没有后台命令")
     lines = ["后台命令："]
-    for shell in shells:
-        lines.append(f"  {shell.status_text()}  {shell.command}")
+    for record in records:
+        lines.append(f"  {_background_status_text(record)}  {record['command']}")
     return ToolResult("\n".join(lines))
 
 
 def _unknown_shell(shell_id: str, context: ToolContext) -> ToolResult:
-    known = "、".join(shell.id for shell in context.background.list_all()) or "没有"
-    return ToolResult(f"没有 {shell_id} 这个后台命令（现有的：{known}）", is_error=True)
+    manager = _background_manager(context)
+    known_ids = "、".join(record["id"] for record in manager.list()) if manager is not None else "没有"
+    return ToolResult(f"没有 {shell_id} 这个后台命令（现有的：{known_ids or '没有'}）", is_error=True)
+
+
+def _background_running(record: dict[str, Any]) -> bool:
+    return record.get("status") in {"starting", "running"}
+
+
+def _background_status_text(record: dict[str, Any]) -> str:
+    shell_id = record["id"]
+    if _background_running(record):
+        return f"[{shell_id} 还在运行；要结束用 kill_shell]"
+    return f"[{shell_id} 已退出，exit code {record.get('exit_code')}]"
+
+
+async def _wait_for_background(
+    manager: Any, shell_id: str, offset: int, timeout_seconds: float
+) -> dict[str, Any]:
+    deadline = asyncio.get_running_loop().time() + timeout_seconds
+    while True:
+        record = manager.status(shell_id)
+        if record["output_bytes"] > offset or not _background_running(record):
+            return record
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            return record
+        await asyncio.sleep(min(0.1, remaining))
 
 
 async def _pump_output(

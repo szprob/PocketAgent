@@ -67,9 +67,12 @@ class SandboxPolicy:
     readable_exceptions: list[Path] = field(default_factory=list)
     # 额外能写的地方：用户配的免问目录（工作目录以外，读写都不用确认）
     writable_roots: list[Path] = field(default_factory=list)
+    # worktree 的 .git 是文件，真实 index / refs / objects 在这些目录；hooks / config 仍单独保护
+    worktree_git_dirs: list[Path] = field(default_factory=list)
 
     def all_writable(self) -> list[Path]:
         roots = [self.workspace] + [Path(os.path.expanduser(item)) for item in EXTRA_WRITABLE] + self.writable_roots
+        roots += self.worktree_git_dirs
         roots.append(Path(tempfile.gettempdir()))
         return _unique_real_paths(roots)
 
@@ -82,7 +85,10 @@ class SandboxPolicy:
         return [root for root in self.all_writable() if any(is_within(root, secret) for secret in secrets)]
 
     def protected_paths(self) -> list[Path]:
-        return [self.workspace.resolve() / relative for relative in PROTECTED_IN_WORKSPACE]
+        protected = [self.workspace.resolve() / relative for relative in PROTECTED_IN_WORKSPACE]
+        for git_dir in self.worktree_git_dirs:
+            protected += [git_dir.resolve() / "hooks", git_dir.resolve() / "config"]
+        return protected
 
 
 def _unique_real_paths(paths: list[Path]) -> list[Path]:

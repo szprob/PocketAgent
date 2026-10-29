@@ -38,6 +38,8 @@ class Session:
     title: str | None = None
     # 谁建的：空是用户，"automation:<id>" 是定时任务
     source: str | None = None
+    # 独立 worktree 的路径、来源、分支和 Git 目录；普通任务为 None
+    worktree: dict[str, Any] | None = None
     # 影子 git 里的检查点（见 checkpoints.py），第一个是任务开始时的样子
     checkpoints: list[dict[str, Any]] = field(default_factory=list)
     # 跑了多少轮：用户说一句话到 agent 停下算一轮；老会话没有这个字段，读的时候按消息估一个
@@ -96,6 +98,7 @@ class SessionSummary:
     updated_at: str
     source: str | None
     ephemeral: bool = False
+    worktree: dict[str, Any] | None = None
 
 
 class SessionStore:
@@ -184,6 +187,7 @@ class SessionStore:
                     updated_at=session.updated_at,
                     source=session.source,
                     ephemeral=session.ephemeral,
+                    worktree=session.worktree,
                 )
                 cached = (modified_at, summary)
             current[path.stem] = cached

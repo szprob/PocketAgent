@@ -348,7 +348,7 @@ function applyStatus(status) {
   chat.composer.setRunning(status.running, state.info?.busy_input_mode);
   chat.composer.setContext(status.context_tokens, status.context_window, status.compact_threshold);
   chat.composer.setCompacting(status.compacting);
-  chat.composer.setWorkspaceLabel(status.workspace, status.ephemeral);
+  chat.composer.setWorkspaceLabel(status.workspace, status.ephemeral, status.worktree);
   loadSkillNames(status.workspace).then((names) => chat.composer.setSkillNames(names));
   renderPendingInputs(status);
   emit("task-status", status);

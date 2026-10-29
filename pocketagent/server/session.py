@@ -203,6 +203,7 @@ class WebSession:
             "workspace": self.session.workspace,
             # 临时任务：工作区是 ~/.pocketagent/scratch 下自动建的目录，界面上显示成「临时任务」
             "ephemeral": self.session.ephemeral,
+            "worktree": self.session.worktree,
             "context_tokens": context.estimated_context_tokens(),
             "context_window": self.settings.context_window_tokens,
             "compact_threshold": self.settings.compact_threshold if self.settings.auto_compact else None,
@@ -317,9 +318,8 @@ class WebSession:
             self.agent.context.pending_compaction = None
 
     async def close(self) -> None:
-        """删任务或服务退出时：停掉压缩，结束 agent 起的后台命令和它们的子进程。"""
+        """删任务或服务退出时停掉压缩；后台命令由独立监督进程继续运行。"""
         self.cancel_background_work()
-        await self.agent.close()
 
     async def interrupt(self) -> None:
         """停止这一轮。还没用上的插话和排队的消息退回给浏览器，放回输入框。"""
