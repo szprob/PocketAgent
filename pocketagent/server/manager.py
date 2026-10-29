@@ -15,7 +15,7 @@ from typing import Any
 
 from pocketagent.account.usage import UsageLog
 from pocketagent.config import AppConfig, ConfigError, ModelProfile, Settings
-from pocketagent.core.agent import create_provider
+from pocketagent.core.agent import close_shared_mcp_managers, create_provider
 from pocketagent.core.scratch import create_scratch_workspace, ensure_scratch_workspace
 from pocketagent.core.session import Session, SessionStore
 from pocketagent.core.tool_outputs import session_directory
@@ -477,3 +477,5 @@ class SessionManager:
             await web_session.close()
             for client in list(web_session.clients):
                 await client.close()
+        # 服务停了就把 MCP 服务器进程也结束掉（连接是同 home_dir 的会话共用的）
+        await close_shared_mcp_managers()

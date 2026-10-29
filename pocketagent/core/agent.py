@@ -46,6 +46,7 @@ from pocketagent.safety.sandbox import SandboxPolicy, available_sandbox, default
 from pocketagent.tools import default_tool_registry
 from pocketagent.tools.background import BackgroundTaskManager
 from pocketagent.tools.base import ToolContext, ToolRegistry, trusted_dirs_outside_secrets
+from pocketagent.tools.mcp import McpManager
 
 INTERRUPTED_TOOL_RESULT = "用户中断了这一轮，这个调用没有执行完"
 
@@ -169,6 +170,26 @@ def build_tool_registry(settings: Settings, skills: list[Skill]) -> ToolRegistry
     )
 
 
+# MCP 连接按 PocketAgent 目录共享：web 里多个任务共用同一套服务器进程，命令行换会话也不用重启
+_MCP_MANAGERS: dict[str, McpManager] = {}
+
+
+def shared_mcp_manager(home_dir: Path) -> McpManager:
+    """同一个 PocketAgent 目录（~/.pocketagent）共用一个 McpManager。"""
+    key = str(Path(home_dir).expanduser().resolve())
+    if key not in _MCP_MANAGERS:
+        _MCP_MANAGERS[key] = McpManager(Path(key))
+    return _MCP_MANAGERS[key]
+
+
+async def close_shared_mcp_managers() -> None:
+    """进程退出前调用：关掉所有 MCP 连接，别留下没人收的子进程。"""
+    managers = list(_MCP_MANAGERS.values())
+    _MCP_MANAGERS.clear()
+    for manager in managers:
+        await manager.close()
+
+
 class Agent:
     def __init__(
         self,
@@ -183,6 +204,8 @@ class Agent:
         self.skills = skills or []
         # 正在跑一轮；后台压缩做完时只有空闲才能直接换上摘要
         self.turn_running = False
+        # MCP 的问题只报一次（每轮都会确认连接，连不上会重复报同样的话）
+        self._mcp_problems_reported: set[str] = set()
         # 影子 git 检查点：每轮开始前给工作区拍一张
         self.checkpoints = TaskCheckpoints(context.settings.shadow_dir, context.settings.workspace, context.session)
         self.flow = build_agent_flow()
@@ -214,6 +237,31 @@ class Agent:
         else:
             messages.insert(0, system_message)
 
+    async def _ensure_mcp_tools(self) -> None:
+        """每一轮开跑前确认 MCP 服务器连着、工具都在注册表里（幂等，没配 mcp.json 时几乎不花时间）。
+
+        连不上只报一次，不挡住这一轮：MCP 是可选能力，坏了照常用内置工具。
+        """
+        manager = self.context.mcp_manager
+        if manager is None:
+            return
+        try:
+            problems = await manager.ensure_connected()
+            tools_before = len(self.context.tools.names())
+            problems += manager.register_tools(self.context.tools)
+            tools_after = len(self.context.tools.names())
+        except Exception as error:
+            problems = [f"MCP 出错：{type(error).__name__}: {error}"]
+            tools_before = tools_after = 0
+        if tools_after != tools_before:
+            # 工具清单变了，系统提示里的「可用工具」也要跟着变
+            self.refresh_system_prompt()
+        for problem in problems:
+            if problem in self._mcp_problems_reported:
+                continue
+            self._mcp_problems_reported.add(problem)
+            await self.context.events.emit(EventType.ERROR, message=problem)
+
     async def run_turn(self, user_input: str | dict[str, Any]) -> str:
         """user_input 是一句话，或者 attachments.build_user_message 拼好的带附件的 user 消息。"""
         context = self.context
@@ -234,6 +282,8 @@ class Agent:
         )
         # 拍检查点要读一遍工作区（大工作区要几百毫秒），和第一次调用模型同时做，不让用户干等
         context.pending_checkpoint = asyncio.create_task(self._checkpoint_turn_start(display["text"]))
+        # MCP 工具每次开跑前确认一遍：连上了、或者用户刚改了 mcp.json，都下一轮生效
+        await self._ensure_mcp_tools()
         self.turn_running = True
         try:
             await self.flow.run_async(context)
@@ -339,7 +389,11 @@ class Agent:
         return {**message, "content": [*parts, {"type": "text", "text": content}], DISPLAY_KEY: display}
 
     def reload_tools(self) -> None:
-        """设置变了（联网、沙箱、技能）：工具、工具环境、系统提示都重新装一遍，下一次调用模型时生效。"""
+        """设置变了（联网、沙箱、技能）：工具、工具环境、系统提示都重新装一遍，下一次调用模型时生效。
+
+        MCP 连接不在这一步重建（连接是进程级共享的，见 McpManager）；新注册表由这里
+        先把已经连着的服务器工具装回去。
+        """
         settings = self.context.settings
         self.skills = enabled_skills(settings)
         self.context.tools = build_tool_registry(settings, self.skills)
@@ -352,7 +406,20 @@ class Agent:
             background=self.context.tool_context.background_tasks,
         )
         attach_subagent_runner(self.context)
+        if self.context.mcp_manager is not None:
+            self.context.mcp_manager.register_tools(self.context.tools)
         self.refresh_system_prompt()
+
+    async def attach_mcp(self, manager: McpManager) -> list[str]:
+        """连上 manager 里的 MCP 服务器，把它们的工具注册进当前注册表（幂等）。
+
+        放在 Agent 上而不是工具注册表里，是因为连服务器是异步的，而注册表是同步构建的；
+        命令行和 web 在会话开始时各调一次。返回问题列表，由调用方决定怎么显示。
+        """
+        problems = await manager.ensure_connected()
+        problems += manager.register_tools(self.context.tools)
+        self.refresh_system_prompt()
+        return problems
 
     async def _emit_todos_updated(self, todos: list[dict[str, Any]]) -> None:
         await self.context.events.emit(EventType.TODOS_UPDATED, todos=todos)
@@ -442,7 +509,7 @@ def create_agent(
     """组装一个 Agent。provider / tools 留空就用默认的（OpenAI 兼容接口 + 内置工具）。
 
     同时接好：trace（~/.pocketagent/traces）、用量记录（usage.jsonl）、影子 git 检查点（shadow/<工作区>）、
-    附件目录和技能目录（只读工具不用确认就能读）、bash 沙箱。
+    附件目录和技能目录（只读工具不用确认就能读）、bash 沙箱、MCP 连接（~/.pocketagent/mcp.json）。
     """
     session_store = SessionStore(settings.sessions_dir)
     if session is None:
@@ -471,6 +538,8 @@ def create_agent(
         session=session,
         attachments_root=settings.attachments_dir,
         journal=journal,
+        # MCP 工具由 run_turn 每轮开头自动接（见 _ensure_mcp_tools）
+        mcp_manager=shared_mcp_manager(settings.home_dir),
     )
     attach_subagent_runner(context)
     # 审批 / 子 agent 用别的模型时按同样的方式造 provider（web 端传 SessionManager.build_provider，测试里能换成假模型）
