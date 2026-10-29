@@ -15,12 +15,15 @@ from pocketagent.llm import LLMResponse, ScriptedProvider, ToolCall
 from pocketagent.safety.permissions import AllowAllApprover, ApprovalMode
 from pocketagent.tools.base import ToolContext, ToolRegistry, current_tool_output
 from pocketagent.tools.mcp import (
+    McpError,
     McpManager,
     McpServerConfig,
     bridged_name,
+    config_to_public_dict,
     expand_env_value,
     load_mcp_servers,
     parse_call_result,
+    save_mcp_servers,
 )
 
 FAKE_SERVER = Path(__file__).parent / "fake_mcp_server.py"
@@ -128,6 +131,82 @@ class McpConfigTests(unittest.TestCase):
         empty = parse_call_result({})
         self.assertEqual(empty.content, [])
         self.assertFalse(empty.is_error)
+
+
+class McpSettingsTests(McpTestCase):
+    """设置界面的配置读写：密钥留空保留原值、坏配置不落盘、返回脱敏视图。"""
+
+    async def test_save_keeps_secret_when_left_blank(self) -> None:
+        (self.home / "mcp.json").write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "github": {
+                            "command": "npx",
+                            "args": ["-y", "server-github"],
+                            "env": {"GITHUB_TOKEN": "ghp_old", "OTHER": "keep"},
+                            "timeout_seconds": 30,
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        existing = load_mcp_servers(self.home)
+        saved = save_mcp_servers(
+            self.home,
+            [
+                {
+                    "name": "github",
+                    "transport": "stdio",
+                    "command": "npx",
+                    "args": ["-y", "server-github"],
+                    # 界面上看不到值：留空 = 不改；OTHER 从提交里消失了 = 删掉
+                    "env": {"GITHUB_TOKEN": ""},
+                    "timeout_seconds": 30,
+                    "enabled": True,
+                },
+                {"name": "docs", "transport": "http", "url": "https://example.com/mcp", "enabled": False},
+            ],
+            existing,
+        )
+        by_name = {config.name: config for config in saved.servers}
+        self.assertEqual(by_name["github"].env, {"GITHUB_TOKEN": "ghp_old"})
+        self.assertFalse(by_name["docs"].enabled)
+        written = json.loads((self.home / "mcp.json").read_text(encoding="utf-8"))
+        self.assertEqual(written["mcpServers"]["github"]["env"]["GITHUB_TOKEN"], "ghp_old")
+        self.assertEqual(len(written["mcpServers"]), 2)
+
+    async def test_save_rejects_bad_server_without_touching_file(self) -> None:
+        (self.home / "mcp.json").write_text(
+            json.dumps({"mcpServers": {"keep": {"command": "npx"}}}), encoding="utf-8"
+        )
+        before = (self.home / "mcp.json").read_text(encoding="utf-8")
+        with self.assertRaises(McpError):
+            save_mcp_servers(self.home, [{"name": "broken"}], load_mcp_servers(self.home))
+        self.assertEqual((self.home / "mcp.json").read_text(encoding="utf-8"), before)
+
+    async def test_public_overview_masks_secret_values(self) -> None:
+        config = fake_config(FAKE_ONLY_ECHO="1")
+        config.env["GITHUB_TOKEN"] = "ghp_secret"
+        manager = McpManager(home_dir=self.home, configs=[config])
+        self.managers.append(manager)
+        await manager.ensure_connected()
+        manager.register_tools(ToolRegistry())
+        overview = manager.public_overview()
+        server = overview["servers"][0]
+        self.assertEqual(server["env"]["GITHUB_TOKEN"], "")
+        self.assertEqual(server["env_keys"] if "env_keys" in server else list(server["env"]), ["FAKE_ONLY_ECHO", "GITHUB_TOKEN"])
+        self.assertTrue(server["connected"])
+        self.assertEqual(server["tool_count"], 1)
+        self.assertEqual(server["tools"], ["echo"])
+        self.assertTrue(overview["config_path"].endswith("mcp.json"))
+
+    async def test_config_to_public_dict_has_no_values(self) -> None:
+        config = McpServerConfig(name="x", url="https://a", headers={"Authorization": "Bearer secret"})
+        public = config_to_public_dict(config)
+        self.assertEqual(public["headers"], {"Authorization": ""})
+        self.assertEqual(public["transport"], "http")
 
 
 class McpStdioTests(McpTestCase):

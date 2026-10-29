@@ -158,6 +158,7 @@
             <button class="settings-tab" type="button" data-tab="agent">智能体</button>
             <button class="settings-tab" type="button" data-tab="permissions">权限与安全</button>
             <button class="settings-tab" type="button" data-tab="tools">工具</button>
+            <button class="settings-tab" type="button" data-tab="mcp">MCP</button>
             <button class="settings-tab" type="button" data-tab="skills">技能</button>
             <button class="settings-tab" type="button" data-tab="memory">记忆</button>
             <button class="settings-tab" type="button" data-tab="usage">用量</button>
@@ -370,6 +371,55 @@
                     <span>允许 agent 截屏、点鼠标、敲键盘（能操作整台电脑，不在沙箱里）</span></label>
                   <div class="field-hint" id="computer-use-hint"></div>
                 </fieldset>
+              </div>
+            </div>
+
+            <div class="settings-page hidden" data-page="mcp">
+              <div class="model-layout">
+                <div class="model-sidebar">
+                  <div id="mcp-server-list" class="model-list"></div>
+                  <button id="add-mcp-server" class="ghost-button full-width" type="button"
+                    data-icon="plus"><span>添加服务器</span></button>
+                  <div class="field-hint" id="mcp-config-path"></div>
+                </div>
+                <form id="mcp-form" class="model-form" autocomplete="off">
+                  <div id="mcp-form-empty" class="muted">还没有 MCP 服务器：本地命令用 stdio，远程服务填 HTTP 地址。
+                    保存后它们的工具会以 mcp__服务器__工具 的名字出现在会话里。</div>
+                  <div id="mcp-form-fields" class="form-fields">
+                    <label class="field"><span>名称 *</span>
+                      <input name="name" type="text" placeholder="如 github、docs（会变成工具名的前缀）" /></label>
+                    <label class="field"><span>连接方式</span>
+                      <select name="transport">
+                        <option value="stdio">stdio：启动一个本地命令</option>
+                        <option value="http">HTTP：连一个远程地址（streamable HTTP）</option>
+                      </select></label>
+                    <label class="field" data-mcp-stdio><span>命令 *</span>
+                      <input name="command" type="text" placeholder="npx" /></label>
+                    <label class="field" data-mcp-stdio><span>参数（每行一个）</span>
+                      <textarea name="args" rows="3" placeholder="-y&#10;@modelcontextprotocol/server-github"></textarea></label>
+                    <label class="field" data-mcp-stdio><span>环境变量（每行一个 KEY=VALUE，值里可以用 ${VAR}）</span>
+                      <textarea name="env" rows="3" placeholder="GITHUB_TOKEN=${GITHUB_TOKEN}"></textarea>
+                      <span class="field-hint">已有的值不回显：留空表示沿用原来的值，删掉整行才删掉这个变量。</span></label>
+                    <label class="field" data-mcp-http><span>地址 *</span>
+                      <input name="url" type="text" placeholder="https://example.com/mcp" /></label>
+                    <label class="field" data-mcp-http><span>请求头（每行一个 Key: Value）</span>
+                      <textarea name="headers" rows="2" placeholder="Authorization: Bearer ${DOCS_KEY}"></textarea>
+                      <span class="field-hint">值同样不回显：留空表示沿用原来的值。</span></label>
+                    <div class="field-row">
+                      <label class="field"><span>调用超时（秒）</span>
+                        <input name="timeout_seconds" type="number" min="1" step="1" placeholder="默认 120" /></label>
+                      <label class="checkbox-field"><input type="checkbox" name="enabled" />
+                        <span>启用（取消勾选只保留配置，不连接）</span></label>
+                    </div>
+                    <div class="model-actions">
+                      <button id="save-mcp" class="ghost-button" type="button">保存并重连</button>
+                      <button id="reload-mcp" class="ghost-button" type="button">重新连接</button>
+                      <button id="delete-mcp-server" class="ghost-button danger-text" type="button">删除</button>
+                      <span id="mcp-result" class="test-result"></span>
+                    </div>
+                    <div class="field-hint" id="mcp-status"></div>
+                  </div>
+                </form>
               </div>
             </div>
 

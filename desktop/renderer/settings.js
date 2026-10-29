@@ -1,4 +1,4 @@
-// 设置弹窗：模型、通用、技能、记忆、用量五个页签。
+// 设置弹窗：模型、通用、工具、MCP、技能、记忆、用量。MCP 页写的是 ~/.pocketagent/mcp.json，其余写 config.json。
 // 所有改动先在本地草稿里，点「保存」才 PUT /api/config（和 web 一样整份提交）。
 
 import { invalidateSkillNames, request, sendJson } from "./api.js";
@@ -24,6 +24,8 @@ let memoryContentCache = new Map();
 let memoryWorkspace = null;
 let pendingClearSearchKey = false;
 let currentTab = "general";
+// MCP 页的草稿：服务器配置、当前选中、有没有和服务端同步过（和服务端存的 mcp.json 对应）
+let mcpDraft = { servers: [], selected: null, loaded: false };
 
 export function initSettings(handlers) {
   callbacks = handlers;
@@ -95,6 +97,13 @@ export function initSettings(handlers) {
   elements.memoryContent = document.getElementById("memory-content");
   elements.memoryWorkspaceHint = document.getElementById("memory-workspace-hint");
   elements.usageContent = document.getElementById("usage-content");
+  elements.mcpServerList = document.getElementById("mcp-server-list");
+  elements.mcpForm = document.getElementById("mcp-form");
+  elements.mcpFormEmpty = document.getElementById("mcp-form-empty");
+  elements.mcpFormFields = document.getElementById("mcp-form-fields");
+  elements.mcpResult = document.getElementById("mcp-result");
+  elements.mcpStatus = document.getElementById("mcp-status");
+  elements.mcpConfigPath = document.getElementById("mcp-config-path");
 
   elements.clearSearchKey = button("ghost-button small", "清除已保存的密钥");
   elements.clearSearchKey.addEventListener("click", () => {
@@ -135,6 +144,14 @@ export function initSettings(handlers) {
   );
   elements.sandboxEnabled.addEventListener("change", paintSandboxFields);
 
+  elements.mcpForm.addEventListener("input", onMcpFieldInput);
+  elements.mcpForm.addEventListener("submit", (event) => event.preventDefault());
+  elements.mcpForm.elements.transport.addEventListener("change", updateMcpTransportFields);
+  document.getElementById("add-mcp-server").addEventListener("click", addMcpServer);
+  document.getElementById("save-mcp").addEventListener("click", saveMcp);
+  document.getElementById("reload-mcp").addEventListener("click", reloadMcp);
+  document.getElementById("delete-mcp-server").addEventListener("click", deleteSelectedMcpServer);
+
   for (const tab of elements.tabs) {
     if (tab.dataset.tab === "models") {
       tab.classList.add("active");
@@ -147,6 +164,8 @@ export function isSettingsOpen() {
 }
 
 export async function openSettings(tab = "general") {
+  // 每次打开都重新拉 MCP（外部改过 mcp.json、或者刚断开重连过，状态要新）
+  mcpDraft.loaded = false;
   if (!elements.modal) {
     return;
   }
@@ -177,12 +196,19 @@ function switchTab(name) {
   for (const page of elements.pages) {
     page.classList.toggle("hidden", page.dataset.page !== name);
   }
+  // MCP 页有自己的「保存并重连」，底部的全局保存按钮在这儿没有意义，先禁掉
+  const saveButton = document.getElementById("settings-save");
+  if (saveButton) {
+    saveButton.disabled = name === "mcp";
+  }
   if (name === "skills") {
     loadSkills();
   } else if (name === "memory") {
     loadMemory();
   } else if (name === "usage") {
     renderUsage(elements.usageContent);
+  } else if (name === "mcp" && !mcpDraft.loaded) {
+    loadMcp();
   }
 }
 
@@ -845,4 +871,285 @@ function linesOf(text) {
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean);
+}
+
+// ---- MCP ----
+
+// 服务端给的 overview → 界面草稿。env / headers 的值不回显，只列键名（提交时值为空 = 沿用原来的）
+function toDraftMcp(server) {
+  return {
+    name: server.name || "",
+    transport: server.transport === "http" ? "http" : "stdio",
+    command: server.command || "",
+    args: (server.args || []).join("\n"),
+    env: Object.keys(server.env || {})
+      .map((key) => `${key}=`)
+      .join("\n"),
+    url: server.url || "",
+    headers: Object.keys(server.headers || {})
+      .map((key) => `${key}: `)
+      .join("\n"),
+    timeout_seconds: String(server.timeout_seconds || 120),
+    enabled: server.enabled !== false,
+    connected: Boolean(server.connected),
+    tool_count: server.tool_count || 0,
+    tools: server.tools || [],
+    problem: server.problem || "",
+  };
+}
+
+function selectedMcpServer() {
+  if (mcpDraft.selected === null) {
+    return null;
+  }
+  return mcpDraft.servers[mcpDraft.selected] || null;
+}
+
+function renderMcpList() {
+  const items = mcpDraft.servers.map((server, index) => {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "model-item";
+    if (index === mcpDraft.selected) {
+      item.classList.add("active");
+    }
+    let metaText = "未启用";
+    if (server.enabled !== false) {
+      metaText = server.connected ? `已连接 · ${server.tool_count} 个工具` : "未连接";
+    }
+    item.append(el("span", "model-item-name", server.name || "（未命名）"), el("span", "model-item-model", metaText));
+    item.addEventListener("click", () => {
+      mcpDraft.selected = index;
+      renderMcpList();
+      renderMcpForm();
+    });
+    return item;
+  });
+  elements.mcpServerList.replaceChildren(...items);
+}
+
+function renderMcpForm() {
+  const server = selectedMcpServer();
+  show(elements.mcpFormEmpty, !server);
+  show(elements.mcpFormFields, Boolean(server));
+  if (!server) {
+    elements.mcpStatus.textContent = "";
+    return;
+  }
+  const form = elements.mcpForm.elements;
+  form.name.value = server.name;
+  form.transport.value = server.transport;
+  form.command.value = server.command;
+  form.args.value = server.args;
+  form.env.value = server.env;
+  form.url.value = server.url;
+  form.headers.value = server.headers;
+  form.timeout_seconds.value = server.timeout_seconds;
+  form.enabled.checked = server.enabled;
+  updateMcpTransportFields();
+  renderMcpStatus(server);
+}
+
+function updateMcpTransportFields() {
+  const transport = elements.mcpForm.elements.transport.value;
+  for (const field of elements.mcpForm.querySelectorAll("[data-mcp-stdio]")) {
+    show(field, transport === "stdio");
+  }
+  for (const field of elements.mcpForm.querySelectorAll("[data-mcp-http]")) {
+    show(field, transport === "http");
+  }
+}
+
+function renderMcpStatus(server) {
+  const parts = [];
+  if (server.enabled === false) {
+    parts.push("已停用");
+  } else if (server.connected) {
+    parts.push(`已连接，${server.tool_count} 个工具`);
+    if (server.tools.length > 0) {
+      parts.push(`工具：${server.tools.join("、")}`);
+    }
+  } else {
+    parts.push("未连接");
+  }
+  if (server.problem) {
+    parts.push(`问题：${server.problem}`);
+  }
+  elements.mcpStatus.textContent = parts.join(" · ");
+}
+
+function onMcpFieldInput(event) {
+  const server = selectedMcpServer();
+  if (!server) {
+    return;
+  }
+  const target = event.target;
+  switch (target.name) {
+    case "name":
+      server.name = target.value;
+      renderMcpList();
+      break;
+    case "transport":
+      server.transport = target.value;
+      updateMcpTransportFields();
+      break;
+    case "command":
+      server.command = target.value;
+      break;
+    case "args":
+      server.args = target.value;
+      break;
+    case "env":
+      server.env = target.value;
+      break;
+    case "url":
+      server.url = target.value;
+      break;
+    case "headers":
+      server.headers = target.value;
+      break;
+    case "timeout_seconds":
+      server.timeout_seconds = target.value;
+      break;
+    case "enabled":
+      server.enabled = target.checked;
+      renderMcpList();
+      renderMcpStatus(server);
+      break;
+    default:
+      break;
+  }
+}
+
+function addMcpServer() {
+  mcpDraft.servers.push({
+    name: `mcp-${mcpDraft.servers.length + 1}`,
+    transport: "stdio",
+    command: "",
+    args: "",
+    env: "",
+    url: "",
+    headers: "",
+    timeout_seconds: "120",
+    enabled: true,
+    connected: false,
+    tool_count: 0,
+    tools: [],
+    problem: "",
+  });
+  mcpDraft.selected = mcpDraft.servers.length - 1;
+  renderMcpList();
+  renderMcpForm();
+  setMcpResult("");
+}
+
+function deleteSelectedMcpServer() {
+  if (mcpDraft.selected === null) {
+    return;
+  }
+  mcpDraft.servers.splice(mcpDraft.selected, 1);
+  mcpDraft.selected = mcpDraft.servers.length
+    ? Math.min(mcpDraft.selected, mcpDraft.servers.length - 1)
+    : null;
+  renderMcpList();
+  renderMcpForm();
+  setMcpResult("已删除，点「保存并重连」后生效", "ok");
+}
+
+async function loadMcp(force = false) {
+  if (mcpDraft.loaded && !force) {
+    return;
+  }
+  try {
+    applyMcpOverview(await request("/api/mcp"));
+  } catch (error) {
+    setMcpResult(`读取 MCP 配置失败：${error.message}`, "error");
+  }
+}
+
+function applyMcpOverview(overview) {
+  mcpDraft.servers = (overview.servers || []).map(toDraftMcp);
+  mcpDraft.loaded = true;
+  if (mcpDraft.servers.length === 0) {
+    mcpDraft.selected = null;
+  } else if (mcpDraft.selected === null || mcpDraft.selected >= mcpDraft.servers.length) {
+    mcpDraft.selected = 0;
+  }
+  elements.mcpConfigPath.textContent = overview.config_path ? `配置文件 ${overview.config_path}` : "";
+  const problems = overview.problems || [];
+  setMcpResult(problems.join("；"), problems.length > 0 ? "error" : "");
+  renderMcpList();
+  renderMcpForm();
+}
+
+function parseKeyValueLines(text, separator) {
+  const result = {};
+  for (const line of linesOf(text)) {
+    const index = line.indexOf(separator);
+    if (index <= 0) {
+      continue;
+    }
+    const key = line.slice(0, index).trim();
+    const value = line.slice(index + separator.length).trim();
+    if (key) {
+      result[key] = value;
+    }
+  }
+  return result;
+}
+
+function mcpPayload() {
+  return {
+    servers: mcpDraft.servers.map((server) => ({
+      name: server.name.trim(),
+      transport: server.transport,
+      command: server.command.trim(),
+      args: linesOf(server.args),
+      env: parseKeyValueLines(server.env, "="),
+      url: server.url.trim(),
+      headers: parseKeyValueLines(server.headers, ":"),
+      timeout_seconds: Number(server.timeout_seconds) || 120,
+      enabled: server.enabled,
+    })),
+  };
+}
+
+async function saveMcp() {
+  const saveButton = document.getElementById("save-mcp");
+  saveButton.disabled = true;
+  setMcpResult("保存中…", "ok");
+  try {
+    const result = await sendJson("/api/mcp", "PUT", mcpPayload());
+    applyMcpOverview(result.overview);
+    if ((result.overview.problems || []).length === 0) {
+      setMcpResult("已保存，配置已生效", "ok");
+    }
+  } catch (error) {
+    setMcpResult(error.message, "error");
+  } finally {
+    saveButton.disabled = false;
+  }
+}
+
+async function reloadMcp() {
+  const reloadButton = document.getElementById("reload-mcp");
+  reloadButton.disabled = true;
+  setMcpResult("重新连接中…", "ok");
+  try {
+    const result = await sendJson("/api/mcp/reload", "POST", {});
+    applyMcpOverview(result.overview);
+    if ((result.overview.problems || []).length === 0) {
+      setMcpResult("已重新连接", "ok");
+    }
+  } catch (error) {
+    setMcpResult(error.message, "error");
+  } finally {
+    reloadButton.disabled = false;
+  }
+}
+
+function setMcpResult(text, kind = "") {
+  elements.mcpResult.textContent = text || "";
+  elements.mcpResult.classList.toggle("ok", kind === "ok");
+  elements.mcpResult.classList.toggle("error", kind === "error");
 }

@@ -234,6 +234,85 @@ def _boolean(value: Any, default: bool) -> bool:
     return bool(value)
 
 
+def config_to_public_dict(config: McpServerConfig) -> dict[str, Any]:
+    """发给设置界面的版本：env / headers 只给键名，值不回传（留空表示不改）。"""
+    return {
+        "name": config.name,
+        "transport": config.transport,
+        "command": config.command,
+        "args": list(config.args),
+        "env": {key: "" for key in config.env},
+        "url": config.url,
+        "headers": {key: "" for key in config.headers},
+        "timeout_seconds": config.timeout_seconds,
+        "enabled": config.enabled,
+    }
+
+
+def save_mcp_servers(home_dir: Path, entries: list[Any], existing: McpConfigs) -> McpConfigs:
+    """把设置界面提交的服务器写成 mcp.json。
+
+    env / headers 里留空的值按同名键保留原值（界面上看不到密钥，留空就是不改）；
+    提交里没有的键等于删掉，列表里没有的服务器等于删掉这个服务器。
+    """
+    existing_by_name = {config.name: config for config in existing.servers}
+    payload: dict[str, dict[str, Any]] = {}
+    problems: list[str] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            problems.append("服务器配置的格式不对")
+            continue
+        name = str(entry.get("name") or "").strip()
+        if not name:
+            problems.append("有服务器没填名字")
+            continue
+        old = existing_by_name.get(name)
+        transport = entry.get("transport")
+        if transport not in ("stdio", "http"):
+            transport = "http" if entry.get("url") else "stdio"
+        data: dict[str, Any] = {
+            "enabled": bool(entry.get("enabled", True)),
+            "timeout_seconds": entry.get("timeout_seconds") or DEFAULT_CALL_TIMEOUT_SECONDS,
+        }
+        if transport == "http":
+            data["url"] = str(entry.get("url") or "").strip()
+            data["headers"] = _merge_secret_values(entry.get("headers"), old.headers if old else {})
+        else:
+            data["command"] = str(entry.get("command") or "").strip()
+            arguments = entry.get("args")
+            data["args"] = [str(item) for item in arguments] if isinstance(arguments, list) else []
+            data["env"] = _merge_secret_values(entry.get("env"), old.env if old else {})
+        try:
+            _parse_server(name, data)
+        except McpError as error:
+            problems.append(str(error))
+            continue
+        payload[name] = data
+    if problems:
+        # 有问题的配置不落盘：别把现有配置写坏
+        raise McpError("；".join(problems))
+    path = mcp_config_path(home_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps({"mcpServers": payload}, ensure_ascii=False, indent=2), encoding="utf-8")
+    # 里面有密钥 / token，只给自己读写
+    temporary.chmod(0o600)
+    temporary.replace(path)
+    return load_mcp_servers(home_dir)
+
+
+def _merge_secret_values(submitted: Any, previous: dict[str, str]) -> dict[str, str]:
+    """设置界面提交的 env / headers：留空的按同名键沿用原来的值（和模型密钥一个逻辑）。"""
+    if not isinstance(submitted, dict):
+        return dict(previous)
+    merged: dict[str, str] = {}
+    for key, value in submitted.items():
+        name = str(key)
+        text = str(value)
+        merged[name] = previous.get(name, "") if text == "" else text
+    return merged
+
+
 # ---- 协议层公共的小工具 ----
 
 
@@ -842,16 +921,19 @@ class McpManager:
             return list(configs.problems)
         return await self._on_manager_loop(self._connect_all())
 
-    async def reload(self) -> list[str]:
-        """重新读配置文件，接上的服务器按新配置增删（设置保存后用）。"""
-        return await self._on_manager_loop(self._connect_all())
+    async def reload(self, force: bool = False) -> list[str]:
+        """重新读配置文件，接上的服务器按新配置增删（设置保存后用）。
 
-    async def _connect_all(self) -> list[str]:
+        force=True 时已连着的也重连（设置里点「重新连接」）。
+        """
+        return await self._on_manager_loop(self._connect_all(force))
+
+    async def _connect_all(self, force: bool = False) -> list[str]:
         # 和 _restart 互斥：设置保存触发重连的同时有工具调用要重连，不能各起一个进程
         async with self._connect_lock:
-            return await self._connect_all_locked()
+            return await self._connect_all_locked(force)
 
-    async def _connect_all_locked(self) -> list[str]:
+    async def _connect_all_locked(self, force: bool = False) -> list[str]:
         configs = self.load()
         problems = list(configs.problems)
         jobs: list[asyncio.Task] = []
@@ -862,7 +944,7 @@ class McpManager:
                 jobs.append(asyncio.create_task(self._drop_client(config.name)))
                 continue
             client = self._clients.get(config.name)
-            if client is not None and client.alive and client.config == config:
+            if not force and client is not None and client.alive and client.config == config:
                 continue
             jobs.append(asyncio.create_task(self._connect_one(config)))
         # 配置里删掉的：连着也关掉
@@ -908,6 +990,25 @@ class McpManager:
                     f"MCP 服务器 {server_name} 重连失败：{self._problems_by_server.get(server_name, '没有说明原因')}"
                 )
             return client
+
+    def public_overview(self) -> dict[str, Any]:
+        """设置界面要的：每个服务器的配置（密钥脱敏）、连接状态、工具、问题。"""
+        configs = self.load()
+        statuses = {status.name: status for status in self.statuses()}
+        servers = []
+        for config in configs.servers:
+            entry = config_to_public_dict(config)
+            status = statuses.get(config.name)
+            entry["connected"] = bool(status and status.connected)
+            entry["tool_count"] = status.tool_count if status else 0
+            entry["tools"] = [info.name for info in self._tool_lists.get(config.name) or []]
+            entry["problem"] = self._problems_by_server.get(config.name, "")
+            servers.append(entry)
+        return {
+            "config_path": str(mcp_config_path(self.home_dir)) if self.home_dir else "",
+            "servers": servers,
+            "problems": list(configs.problems),
+        }
 
     def statuses(self) -> list[McpServerStatus]:
         result: list[McpServerStatus] = []
