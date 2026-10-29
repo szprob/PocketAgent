@@ -14,6 +14,7 @@ dependencies = ["openai>=1.40", "httpx"]
 [project.optional-dependencies]
 # Pillow 用来把大图缩小再发给模型，没有也能跑
 web = ["aiohttp>=3.9", "pillow"]
+tui = ["textual>=1.0"]
 
 [project.scripts]
 pocketagent = "pocketagent.cli:main"

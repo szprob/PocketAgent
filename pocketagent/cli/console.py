@@ -1,7 +1,7 @@
 """命令行界面：交互式 REPL 和 -p 单次执行。
 
 界面只是事件的订阅者（ConsoleRenderer）+ 一个审批实现（ConsoleApprover），
-以后做 TUI / IDE 插件 / Web 时照着替换这两样就行，agent 本身不用动。
+TUI 在 cli/tui.py 里用同一套接口替换这两样，agent 本身不用动。
 """
 
 import argparse
@@ -12,6 +12,7 @@ import sys
 from contextlib import suppress
 from pathlib import Path
 
+from pocketagent.cli.controller import CliController
 from pocketagent.config import AppConfig, ConfigError, Settings
 from pocketagent.core.agent import Agent, create_agent, create_provider
 from pocketagent.core.events import Event, EventType
@@ -247,12 +248,16 @@ class Repl:
         self.style = Style(enabled=sys.stdout.isatty())
         self.renderer = ConsoleRenderer(self.style, show_reasoning=show_reasoning)
         self.loop = asyncio.new_event_loop()
-        self.agent = self._create_agent(session)
+        self.controller = CliController(
+            settings,
+            approver=ConsoleApprover(self.style),
+            renderer=self.renderer,
+            session=session,
+        )
 
-    def _create_agent(self, session: Session | None) -> Agent:
-        agent = create_agent(self.settings, approver=ConsoleApprover(self.style), session=session)
-        agent.context.events.subscribe(self.renderer)
-        return agent
+    @property
+    def agent(self) -> Agent:
+        return self.controller.agent
 
     def run(self, first_prompt: str | None) -> None:
         self._print_banner()
@@ -274,16 +279,13 @@ class Repl:
             self._close_loop()
 
     def _close_loop(self) -> None:
-        """和 asyncio.run 收尾一样：先结束后台命令、回收没跑完的 async generator（如 HTTP 流），再关事件循环。"""
-        self._stop_background_work()
+        """和 asyncio.run 收尾一样：先回收没跑完的 async generator（如 HTTP 流），再关事件循环。
+
+        后台命令由独立监督进程持有、跨重启持久，这里不用也不该去结束它们。
+        """
         self.loop.run_until_complete(self.loop.shutdown_asyncgens())
         self.loop.run_until_complete(self.loop.shutdown_default_executor())
         self.loop.close()
-
-    def _stop_background_work(self) -> None:
-        """退出或换会话时，把 agent 起的后台命令（dev server 之类）连子进程一起结束。"""
-        with suppress(Exception):
-            self.loop.run_until_complete(self.agent.close())
 
     def _print_banner(self) -> None:
         settings = self.settings
@@ -336,17 +338,7 @@ class Repl:
         return self._apply_command_action(result)
 
     async def _run_command(self, command_line: str) -> CommandResult | None:
-        context = CommandContext(
-            settings=self.settings, agent=self.agent, models=self._configured_models(), surface="cli"
-        )
-        return await handle_command_line(command_line, context)
-
-    def _configured_models(self):
-        """配置文件里可切换的模型；配置文件坏了就当没配，不挡住命令行。"""
-        try:
-            return AppConfig.load(self.settings.config_path).models
-        except ConfigError:
-            return []
+        return await self.controller.run_command(command_line)
 
     def _print_command_result(self, result: CommandResult) -> None:
         if not result.text:
@@ -371,33 +363,18 @@ class Repl:
         return True
 
     def _start_new_session(self) -> None:
-        # 旧会话的后台命令没人管了，换之前先结束掉
-        self._stop_background_work()
-        if self.settings.ephemeral:
-            # 临时任务里 /new 就是一个新任务：也给它一个干净的新目录
-            self.settings.workspace = create_scratch_workspace(self.settings.home_dir)
-        self.agent = self._create_agent(session=None)
+        self.controller.start_new_session()
         print(self.style.dim(f"已开新会话 {self.agent.session.id}"))
 
     def _switch_mode(self, mode_name: str) -> None:
-        mode = ApprovalMode(mode_name)
-        self.agent.context.permissions.mode = mode
-        self.settings.approval_mode = mode
+        self.controller.switch_mode(mode_name)
 
     def _switch_model(self, profile_id: str) -> None:
-        profile = next((each for each in self._configured_models() if each.id == profile_id), None)
-        if profile is None:
-            return
-        self.settings.use_profile(profile)
-        self.agent.replace_provider(create_provider(self.settings))
+        self.controller.switch_model(profile_id)
 
     def _open_session(self, session_id: str) -> None:
-        session = SessionStore(self.settings.sessions_dir).load(session_id)
-        # 换会话之前先结束当前会话的后台命令
-        self._stop_background_work()
-        self.settings.workspace = Path(session.workspace)
-        self.settings.ephemeral = session.ephemeral
-        self.agent = self._create_agent(session=session)
+        self.controller.open_session(session_id)
+        session = self.agent.session
         print(self.style.dim(f"已续跑会话 {session.id}：{session.display_title().splitlines()[0][:60]}"))
 
 
@@ -422,16 +399,8 @@ def run_once(settings: Settings, session: Session | None, prompt: str, show_reas
                 settings.use_profile(profile)
                 agent.replace_provider(create_provider(settings))
         return 0
-    asyncio.run(_run_turn_and_close(agent, prompt))
+    asyncio.run(agent.run_turn(prompt))
     return 1 if agent.context.turn.stop_reason == "error" else 0
-
-
-async def _run_turn_and_close(agent: Agent, prompt: str) -> None:
-    """单次执行：跑完这一轮就在同一个事件循环里结束后台命令（换一个 asyncio.run 已经拿不到那些进程了）。"""
-    try:
-        await agent.run_turn(prompt)
-    finally:
-        await agent.close()
 
 
 def _parse_arguments(argv: list[str] | None) -> argparse.Namespace:
@@ -446,6 +415,7 @@ def _parse_arguments(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("-r", "--resume", help="按 id 续跑会话")
     parser.add_argument("--sessions", action="store_true", help="列出这个目录的会话后退出")
     parser.add_argument("--show-reasoning", action="store_true", help="显示模型的思考过程")
+    parser.add_argument("--tui", action="store_true", help="启动全屏交互式终端界面（需要 pocketagent[tui]）")
     web_group = parser.add_argument_group("web 界面")
     web_group.add_argument("--web", action="store_true", help="启动 web 界面，不进命令行交互")
     web_group.add_argument("--host", default="127.0.0.1", help="监听地址，默认只监听本机")
@@ -508,6 +478,16 @@ def _run_web(arguments: argparse.Namespace, settings: Settings) -> None:
     )
 
 
+def _run_tui(settings: Settings, session: Session | None, prompt: str, show_reasoning: bool) -> None:
+    try:
+        from pocketagent.cli.tui import PocketAgentTui
+    except ImportError:
+        sys.exit("交互式终端需要 textual：pip install 'pocketagent[tui]'")
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        sys.exit("--tui 需要在交互式终端里运行；管道或单次执行请用原来的 REPL / -p")
+    PocketAgentTui(settings, session=session, first_prompt=prompt or None, show_reasoning=show_reasoning).run()
+
+
 def main(argv: list[str] | None = None) -> None:
     try:
         import readline  # noqa: F401  让 input() 支持方向键和历史
@@ -519,8 +499,12 @@ def main(argv: list[str] | None = None) -> None:
         _print_sessions(settings)
         return
     if arguments.web:
+        if arguments.tui:
+            sys.exit("--web 和 --tui 只能选一个")
         _run_web(arguments, settings)
         return
+    if arguments.tui and arguments.print_mode:
+        sys.exit("--tui 和 -p 只能选一个：TUI 是持续交互界面")
     if settings.ephemeral:
         # 真正要开跑了才建目录：--web / --sessions 用不上临时工作区，别在磁盘上留空目录
         settings.workspace = create_scratch_workspace(settings.home_dir)
@@ -530,4 +514,7 @@ def main(argv: list[str] | None = None) -> None:
         if not prompt:
             sys.exit("-p 需要给一句 prompt")
         sys.exit(run_once(settings, session, prompt, arguments.show_reasoning))
+    if arguments.tui:
+        _run_tui(settings, session, prompt, arguments.show_reasoning)
+        return
     Repl(settings, session, show_reasoning=arguments.show_reasoning).run(prompt or None)

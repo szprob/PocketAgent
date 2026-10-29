@@ -6,7 +6,7 @@
 已经能用的：主循环、内置工具（文件、搜索、bash（含跨重启的持久后台命令）、联网搜索、读网页、生图 / 搜图、技能、向用户提问、子 agent）、多档权限（含 AI 自动审批）、
 bash 沙箱、工作目录外的访问审批、影子 git 检查点（看变更、撤销、整体恢复）、技能（Agent Skills 标准）、项目记忆、
 流式事件、trace、会话续跑、后台自动压缩上下文、多模型配置（OpenAI 兼容 / Anthropic 两种协议，思考档位 / 上下文长度随模型走）、
-附件（图片 / 文件）、插话和排队、token 用量和缓存命中统计、定时自动化，以及命令行和 web 两套界面。
+附件（图片 / 文件）、插话和排队、token 用量和缓存命中统计、定时自动化，以及命令行 REPL、全屏 TUI 和 web 三套界面。
 新任务可选独立 git worktree，避免并行任务互改工作区。grep / glob 优先用 ripgrep（遵守 .gitignore），没装 rg 时回退纯 Python 实现。
 
 ## 设计哲学
@@ -99,14 +99,16 @@ PocketAgent 不追求功能数量最多、默认权限最宽、把 agent 做成�
 
 ## 快速开始
 
-核心依赖 `openai`（用它的 SDK 调 OpenAI 兼容接口）和 `httpx`；web 界面另外要 `aiohttp`、`pillow`。Python ≥ 3.11。
+核心依赖 `openai`（用它的 SDK 调 OpenAI 兼容接口）和 `httpx`；web 界面另外要 `aiohttp`、`pillow`，全屏 TUI 另外要 `textual`。Python ≥ 3.11。
 
 ```bash
 # 可编辑安装：改源码立即生效，不用重装（只有改了 pyproject 的依赖或入口才要重跑）
 uv pip install -e '.[web]'          # 或 pip install -e '.[web]'
+uv pip install -e '.[tui]'          # 要用全屏交互式终端时再装这个 extra
 
 pocketagent --web                   # 起 web 界面并自动打开浏览器；第一次在左下角 ⚙ 设置里添加模型和 API Key
-pocketagent                         # 命令行交互，在当前目录工作
+pocketagent --tui                   # 全屏交互式终端（Textual）
+pocketagent                         # 默认仍是轻量命令行 REPL，在当前目录工作
 pocketagent -C ~/projects/foo --mode ai_auto
 pocketagent --scratch                # 不指定工作区：在 ~/.pocketagent/scratch 下建个临时目录跑
 pocketagent -c                      # 继续这个目录最近的会话
@@ -159,6 +161,25 @@ py -3.12 -m pocketagent --web -C D:\SZ\git\foo
 
 web 的输入框里打 / 会浮出命令补全（内置命令 + 当前工作区的技能），命令行里 `/help` 查看全部。
 命令行 REPL 里 Ctrl-C 只中断当前这一轮，会话保留，可以接着说。
+
+## 全屏交互式终端（TUI）
+
+```bash
+pip install -e '.[tui]'
+pocketagent --tui -C ~/projects/foo
+pocketagent --tui --continue          # 和 REPL 一样，也支持 -r / -m / --mode / --scratch
+```
+
+TUI 是 `pocketagent/cli/` 里的另一套前端：直接复用同一个 agent、事件总线和审批接口，不经过 web 服务，
+不改主循环和工具。默认的 `pocketagent` REPL 保留，不想装 Textual 时不受影响。
+
+- 对话区流式显示回复、思考（`--show-reasoning`）、工具调用和命令输出；续跑会话时恢复用户 / 助手消息
+- 输入框支持多行：Enter 发送，Shift+Enter 或 Ctrl+J 换行；agent 运行时不会把新输入静默丢掉
+- `/help`、`/new`、`/resume`、`/mode`、`/model`、`/compact` 等斜杠命令和 REPL 共用一套实现
+- 工具审批和 `ask_user` 提问用弹窗处理；审批快捷键沿用 REPL：y 允许一次、a 本任务总是允许、
+  p 连上一级目录一起放行（有这项时）、n 拒绝
+- Ctrl-C 只中断当前轮并保留会话，Ctrl-L 清空屏幕（不清会话），Ctrl-Q 退出
+- agent 与 TUI 共用常驻事件循环，后台 bash 可以跨轮运行；命令由独立监督进程持久持有，退出界面不会误杀
 
 ## web 界面
 
@@ -542,7 +563,11 @@ guard ──think──▶ think ──tool_calls──▶ run_tools ──next�
 ```
 pocketflow/              上游核心代码原样复制（100 行），不改，见 VENDORED.md
 pocketagent/
-  cli.py                 命令行界面：渲染事件 + 终端审批 + REPL
+  cli/                   命令行前端包：默认 REPL 与可选的全屏 TUI
+    console.py           原命令行入口、事件渲染、终端审批和 REPL
+    controller.py        REPL / TUI 共用的会话、斜杠命令动作和模型切换
+    tui.py               Textual 界面、事件渲染、审批 / 提问弹窗
+    __init__.py          兼容 pocketagent.cli:main 和原 Console* 导入；不提前加载 Textual
   config.py              配置文件（多个模型、默认值、工作区、沙箱、技能）和运行时 Settings
   core/                  agent 主循环
     agent.py             连线成图 + Agent（run_turn / interject / compact）+ create_agent 组装（工具、沙箱、技能、检查点）
@@ -636,4 +661,5 @@ make test PYTHON=~/env/s11/bin/python
 ```
 
 测试不连网络，模型用 `ScriptedProvider` 按剧本返回。web 测试用 aiohttp 自带的测试客户端走真实的 HTTP 和 WebSocket，
-没装 aiohttp 时自动跳过；沙箱测试只在有 `sandbox-exec` 的 macOS 上跑。
+没装 aiohttp 时自动跳过；TUI 测试用 Textual 的 `run_test()` 无头驱动真实控件，没装 textual 时自动跳过；
+沙箱测试只在有 `sandbox-exec` 的 macOS 上跑。

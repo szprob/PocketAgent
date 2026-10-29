@@ -7,7 +7,7 @@
 - 不是命令（普通文字、/usr/bin 这种路径）→ 返回 None，当普通消息
 
 换模型、开新会话这类要动界面的动作不在这里做：CommandResult.action 描述意图，
-命令行和 web 各自执行自己那套（见 cli.py / server/routes/commands.py）。
+命令行和 web 各自执行自己那套（见 cli/controller.py / server/routes/commands.py）。
 """
 
 import re
