@@ -35,7 +35,7 @@ PocketAgent 有两个目标：在本地替用户完成编程任务，以及作�
 ### 2. 小内核，显式机制
 
 PocketFlow 只保留上游约 100 行核心代码，不额外包装；图只描述循环阶段，不为每个工具建立节点；
-工具由 `RunToolsNode` 按注册表动态分发（`pocketagent/core/nodes.py`）。新增工具或以后接入 MCP，都不需要修改主图。
+工具由 `RunToolsNode` 按注册表动态分发（`pocketagent/core/nodes.py`）。新增工具或接入 MCP 服务器，都不需要修改主图。
 
 框架的职责是让流程可见，而不是替开发者隐藏流程。
 
@@ -391,6 +391,42 @@ dev server、watch 这类不会自己退出的命令，bash 带上 `run_in_backg
 - 机器上没有 rg 就用原来的 Python 实现。配置里的 `ripgrep_path` 或环境变量 `POCKETAGENT_RIPGREP`
   可以指定可执行文件位置（Homebrew 装在 `/opt/homebrew/bin/rg`，Qoder 插件缓存里也可能有一个）
 
+### MCP 工具
+
+在 `~/.pocketagent/mcp.json` 里配 MCP 服务器，它们的工具就会以内置工具的身份出现（名字是
+`mcp__<服务器>__<工具>`），命令行、web、自动化任务都能用，不需要改代码。
+每轮开跑前会重新确认一遍，改了配置下一轮生效。
+
+```json
+{
+  "mcpServers": {
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {"GITHUB_TOKEN": "${GITHUB_TOKEN}"}
+    },
+    "docs": {
+      "url": "https://mcp.example.com/mcp",
+      "headers": {"Authorization": "Bearer ${DOCS_KEY}"},
+      "timeout_seconds": 60
+    }
+  }
+}
+```
+
+- 配 `command` 的是 stdio 传输（起子进程，一行一条 JSON-RPC）；配 `url` 的是 streamable HTTP 传输
+  （2025-03-26 之后的标准，回应是 JSON 还是 SSE 都支持）。更早的纯 SSE 接入方式不支持
+- `command`、`args`、`env` 的值、`url`、`headers` 的值里的 `${VAR}` 和 `${VAR:-默认值}` 用环境变量展开
+- 单个服务器可以 `"enabled": false` 停用；`timeout_seconds` 是一次工具调用的超时，默认 120 秒
+- 权限：MCP 工具一律算「执行命令」类。ask 模式每次调用都要确认，AI 自动审批交给 AI 判断，
+  常用的工具点一次「本任务总是允许」就不再问
+- 服务器崩了：这一次调用报错，并附上它 stderr 的最后几行（能看出是包没装还是密钥没配）；
+  不自动重试——请求可能已经在服务器那边执行了，重试会把有副作用的操作做两遍。下一次调用会自动重启进程
+- 服务器发来的进度通知显示在工具输出里；这一轮被中断时会给服务器发 `notifications/cancelled`
+- 只接 tools；MCP 的 resources / prompts 不接。不支持 OAuth，需要授权的服务把 token 放进 headers
+- 只读用户级配置，不读仓库里的 `.mcp.json`：那等于让仓库内容决定跑什么命令
+- 连接按 `~/.pocketagent` 共享：web 里多个任务共用同一套服务器进程，命令行换会话也不重启
+
 ### 上下文
 
 - 记账：每次模型调用后以接口报的 `prompt_tokens` 为锚点，之后新加的消息按字符估算（中文每字 0.7、其他 0.27 token，
@@ -556,7 +592,7 @@ guard ──think──▶ think ──tool_calls──▶ run_tools ──next�
 
 和上游 cookbook 里 coding agent 的区别：上游给每个工具建一个节点、action 名就是工具名，模型输出 YAML 再解析，
 一步只能调一个工具。这里图只画循环的阶段，工具走原生 function calling，由 `RunToolsNode` 按注册表动态分发，
-一步可以调多个工具；加工具、以后接 MCP 都不用改图。
+一步可以调多个工具；加工具、接 MCP 都不用改图。
 
 ## 分层
 
@@ -645,13 +681,12 @@ tests/                   unittest；vendor_pocketflow/ 是上游测试
 
 对照 Codex / Claude Code / WorkBuddy / Qoder，还缺这些，大致按优先级排：
 
-1. **MCP 客户端**：把 MCP server 的工具包装成 `Tool` 注册进来
-2. **hooks**（工具调用前后跑用户脚本）
-3. **plan 模式**：todo 清单已经有了，缺「先出方案、人确认再执行」
-4. **沙箱联网白名单**：现在只有开 / 关，可以像 Claude Code 那样走代理按域名放行；Linux bubblewrap 要在真机上验证
-5. **trace 回放和评测**：拿 JSONL trace 重放、对比不同模型或提示词
-6. **界面**：TUI、IDE 插件；web 里搜索任务
-7. **更多协议**：Anthropic 已经接上，Gemini 等其他原生协议按 `LLMProvider` 再加
+1. **hooks**（工具调用前后跑用户脚本）
+2. **plan 模式**：todo 清单已经有了，缺「先出方案、人确认再执行」
+3. **沙箱联网白名单**：现在只有开 / 关，可以像 Claude Code 那样走代理按域名放行；Linux bubblewrap 要在真机上验证
+4. **trace 回放和评测**：拿 JSONL trace 重放、对比不同模型或提示词
+5. **界面**：IDE 插件；web 里搜索任务
+6. **更多协议**：Anthropic 已经接上，Gemini 等其他原生协议按 `LLMProvider` 再加
 
 ## 测试
 

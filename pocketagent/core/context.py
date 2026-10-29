@@ -17,6 +17,7 @@ from pocketagent.core.tokens import estimate_tokens, estimate_tools_tokens
 from pocketagent.llm.base import LLMProvider, ToolCall, Usage
 from pocketagent.safety.permissions import PermissionGate
 from pocketagent.tools.base import ToolContext, ToolRegistry
+from pocketagent.tools.mcp import McpManager
 
 # 占用超过上下文窗口的这个比例时，不能再边压缩边跑了，要等压缩做完
 BLOCKING_COMPACTION_RATIO = 0.95
@@ -73,6 +74,8 @@ class AgentContext:
     review_provider: Callable[[], LLMProvider] | None = None
     # 子 agent 用的 provider（按设置里的子 agent 模型和思考档位现取）；None 表示就用 provider
     subagent_provider: Callable[[], LLMProvider] | None = None
+    # MCP 连接（同一进程里同 home_dir 的会话共用一个）；None 表示这个上下文不接 MCP（子 agent 就是）
+    mcp_manager: McpManager | None = None
 
     async def wait_for_turn_checkpoint(self) -> None:
         """工具要动工作区了，等这一轮的检查点拍完（被中断也让它拍完，git 拍到一半被杀会留下锁文件）。"""
