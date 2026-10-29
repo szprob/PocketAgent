@@ -255,6 +255,7 @@ async function startNewTask({ text, files }) {
     created = await sendJson("/api/sessions", "POST", {
       workspace: choice.workspace,
       ephemeral: choice.ephemeral,
+      worktree: choice.worktree,
       model_id: newTaskComposer.getModel(),
       mode: newTaskComposer.getMode(),
     });
@@ -376,7 +377,7 @@ function applyChatStatus(status) {
   chatComposer.setRunning(status.running, state.info?.busy_input_mode);
   chatComposer.setContext(status.context_tokens, status.context_window, status.compact_threshold);
   chatComposer.setCompacting(status.compacting);
-  chatComposer.setWorkspaceLabel(status.workspace, status.ephemeral);
+  chatComposer.setWorkspaceLabel(status.workspace, status.ephemeral, status.worktree);
   loadSkillNames(status.workspace).then((names) => chatComposer.setSkillNames(names));
   renderPendingInputs(status);
   rightPanel.updateStatus(status);

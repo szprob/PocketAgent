@@ -23,9 +23,13 @@ async def create_session(request: web.Request) -> web.Response:
     if not ephemeral:
         workspace = Path(payload.get("workspace") or manager.default_workspace()).expanduser()
     web_session = manager.create(
-        workspace, model_id=payload.get("model_id"), mode_name=payload.get("mode"), ephemeral=ephemeral
+        workspace,
+        model_id=payload.get("model_id"),
+        mode_name=payload.get("mode"),
+        ephemeral=ephemeral,
+        worktree=bool(payload.get("worktree")),
     )
-    return json_response({"id": web_session.id})
+    return json_response({"id": web_session.id, "workspace": web_session.session.workspace})
 
 
 async def get_overview(request: web.Request) -> web.Response:

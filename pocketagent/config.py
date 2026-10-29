@@ -818,6 +818,8 @@ class Settings:
     workspace: Path = field(default_factory=Path.cwd)
     # 临时任务：workspace 是 ~/.pocketagent/scratch 下自动建的目录，不是用户的某个项目
     ephemeral: bool = False
+    # 独立 worktree 任务：保存来源、分支和需要写权限的 Git 目录；普通任务为 None
+    worktree: dict | None = None
     approval_mode: ApprovalMode = ApprovalMode.ASK
     home_dir: Path = field(default_factory=default_home_dir)
 
@@ -852,14 +854,19 @@ class Settings:
         return self.home_dir / "tool_outputs"
 
     @property
+    def background_tasks_dir(self) -> Path:
+        return self.home_dir / "background_tasks"
+
+    @property
     def shadow_dir(self) -> Path:
         """影子 git 仓库放这里，一个工作区一个。"""
         return self.home_dir / "shadow"
 
     @property
     def memory_dir(self) -> Path:
-        """这个工作区的项目记忆目录。"""
-        return project_memory_dir(self.home_dir, self.workspace)
+        """worktree 和原工作区共用一份项目记忆，避免并行任务各记各的。"""
+        memory_workspace = Path(self.worktree["origin"]) if self.worktree else self.workspace
+        return project_memory_dir(self.home_dir, memory_workspace)
 
     @property
     def usage_log_path(self) -> Path:

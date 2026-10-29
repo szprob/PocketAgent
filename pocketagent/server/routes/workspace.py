@@ -10,7 +10,7 @@ from pocketagent.server.common import json_response, session_manager
 async def list_files(request: web.Request) -> web.Response:
     manager = session_manager(request)
     entries = files.list_workspace_dir(
-        manager.app_config.workspaces, request.query.get("workspace", ""), request.query.get("path", "")
+        manager.file_workspaces(), request.query.get("workspace", ""), request.query.get("path", "")
     )
     return json_response({"entries": entries})
 
@@ -18,7 +18,7 @@ async def list_files(request: web.Request) -> web.Response:
 async def read_file(request: web.Request) -> web.Response:
     manager = session_manager(request)
     preview = files.read_workspace_file(
-        manager.app_config.workspaces, request.query.get("workspace", ""), request.query.get("path", "")
+        manager.file_workspaces(), request.query.get("workspace", ""), request.query.get("path", "")
     )
     return json_response(preview)
 
@@ -26,7 +26,7 @@ async def read_file(request: web.Request) -> web.Response:
 async def raw_file(request: web.Request) -> web.StreamResponse:
     manager = session_manager(request)
     path = files.workspace_file_path(
-        manager.app_config.workspaces, request.query.get("workspace", ""), request.query.get("path", "")
+        manager.file_workspaces(), request.query.get("workspace", ""), request.query.get("path", "")
     )
     return web.FileResponse(path)
 

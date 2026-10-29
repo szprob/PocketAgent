@@ -45,7 +45,7 @@ BASE_PROMPT = """你是 PocketAgent，一个在用户本地代码仓库里工作
 - 完成后用简短的话说明改了什么（新建、修改、删除的文件都列出来）、怎么验证的；没验证就直说没验证。"""
 
 
-def _environment_section(workspace: Path, ephemeral: bool) -> str:
+def _environment_section(workspace: Path, ephemeral: bool, worktree: dict | None = None) -> str:
     is_git_repository = (workspace / ".git").exists()
     lines = [
         "运行环境：",
@@ -57,6 +57,12 @@ def _environment_section(workspace: Path, ephemeral: bool) -> str:
     if ephemeral:
         # 临时任务没有项目：产物本来就该落在这个目录里，别让它按「不要留文件」的规矩把东西都塞回聊天
         lines.append("- 这是临时任务：工作目录是自动建的临时目录，不属于任何项目；要交付的文件就放在这里。")
+    if worktree:
+        lines += [
+            f"- 这是独立 worktree，来源：{worktree['origin']}",
+            f"- 分支：{worktree['branch']}；基线：{worktree['base_commit']}",
+            "- 改动只留在当前 worktree，不要改来源工作区；完成后告诉用户分支和路径，不要擅自合并或推送。",
+        ]
     return "\n".join(lines)
 
 
@@ -99,8 +105,9 @@ def build_system_prompt(
     sandbox: SandboxPolicy | None = None,
     memory_dir: Path | None = None,
     ephemeral: bool = False,
+    worktree: dict | None = None,
 ) -> str:
-    sections = [BASE_PROMPT, _environment_section(workspace, ephemeral), _tools_section(tools)]
+    sections = [BASE_PROMPT, _environment_section(workspace, ephemeral, worktree), _tools_section(tools)]
     if "bash" in tools.names():
         sections.append(_sandbox_section(sandbox))
     if skills and "activate_skill" in tools.names():

@@ -3,6 +3,7 @@ import base64
 import json
 import shutil
 import socket
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -132,6 +133,40 @@ class WebTestBase(AioHTTPTestCase):
 
     def _connect(self, session_id: str):
         return self.client.ws_connect(f"/ws/{session_id}", params=AUTH)
+
+
+class WorktreeWebTest(WebTestBase):
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        workspace = self.directories.workspace
+        subprocess.run(["git", "-C", str(workspace), "init", "-q"], check=True)
+        (workspace / "tracked.txt").write_text("from-head\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(workspace), "add", "tracked.txt"], check=True)
+        subprocess.run(
+            ["git", "-C", str(workspace), "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-qm", "initial"],
+            check=True,
+        )
+
+    async def test_create_and_browse_worktree_session(self) -> None:
+        response = await self._send_json(
+            "POST", "/api/sessions", {"workspace": str(self.directories.workspace), "worktree": True}
+        )
+        created = await response.json()
+
+        self.assertEqual(response.status, 200)
+        snapshot = await self._get_json(f"/api/sessions/{created['id']}")
+        self.assertEqual(snapshot["workspace"], created["workspace"])
+        self.assertEqual(snapshot["worktree"]["origin"], str(self.directories.workspace))
+        files = await self._get_json(f"/api/files?workspace={created['workspace']}")
+        self.assertEqual([entry["path"] for entry in files["entries"]], ["tracked.txt"])
+
+    async def test_worktree_defaults_off_and_rejects_scratch(self) -> None:
+        session_id = await self._create_session(workspace=str(self.directories.workspace))
+        snapshot = await self._get_json(f"/api/sessions/{session_id}")
+        rejected = await self._send_json("POST", "/api/sessions", {"ephemeral": True, "worktree": True})
+
+        self.assertIsNone(snapshot["worktree"])
+        self.assertEqual(rejected.status, 400)
 
 
 class WebServerTest(WebTestBase):

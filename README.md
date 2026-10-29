@@ -3,11 +3,11 @@
 基于 [PocketFlow](https://github.com/The-Pocket/PocketFlow) 的编程 agent，目标是做成 Codex / Claude Code / WorkBuddy / Qoder 这一类：
 在本地仓库里读代码、改文件、跑命令，用户在旁边审批。
 
-已经能用的：主循环、内置工具（文件、搜索、bash（含后台命令）、联网搜索、读网页、生图 / 搜图、技能、向用户提问、子 agent）、多档权限（含 AI 自动审批）、
+已经能用的：主循环、内置工具（文件、搜索、bash（含跨重启的持久后台命令）、联网搜索、读网页、生图 / 搜图、技能、向用户提问、子 agent）、多档权限（含 AI 自动审批）、
 bash 沙箱、工作目录外的访问审批、影子 git 检查点（看变更、撤销、整体恢复）、技能（Agent Skills 标准）、项目记忆、
 流式事件、trace、会话续跑、后台自动压缩上下文、多模型配置（OpenAI 兼容 / Anthropic 两种协议，思考档位 / 上下文长度随模型走）、
 附件（图片 / 文件）、插话和排队、token 用量和缓存命中统计、定时自动化，以及命令行和 web 两套界面。
-grep / glob 优先用 ripgrep（遵守 .gitignore），没装 rg 时回退纯 Python 实现。
+新任务可选独立 git worktree，避免并行任务互改工作区。grep / glob 优先用 ripgrep（遵守 .gitignore），没装 rg 时回退纯 Python 实现。
 
 ## 设计哲学
 
@@ -181,7 +181,7 @@ KaTeX 的脚本、样式和字体都随界面本地加载，不依赖 CDN；代�
   任务改了文件会自动刷新）；最近任务（全部历史，运行中的有蓝点，等你回答 / 确认的换成琥珀色的 ? / !，
   悬停出现 × 可以删除）；两段都能点标题折叠；
   最下面是账户名和 ⚙ 设置。
-- **中间**：新任务页选工作区、模型、权限后直接说话（工作区也可以选「临时任务」，见下）；任务页是对话。输入框底下一排：📎 附件（也可以粘贴截图、拖文件进来）、
+- **中间**：新任务页选工作区、模型、权限后直接说话（工作区也可以选「临时任务」，或勾「独立 worktree」，见下）；任务页是对话。输入框底下一排：📎 附件（也可以粘贴截图、拖文件进来）、
   权限、模型（选模型的面板里直接改思考档位和上下文长度，存进配置；设置里可以让某个模型不出现在这里）、发送 / 停止；
   再下面是上下文占用和压缩阈值。鼠标移到你说过的话上会出现「恢复到这里」：删掉这句之后的全部对话，
   把原话和附件放回输入框，改完接着发；工作区里的文件不动（要连文件一起回到过去用右侧栏的检查点）。
@@ -211,6 +211,17 @@ AI 说的话永远在折叠外面：它一开口，前面那一块就收尾，�
 
 - 临时任务不读也不写项目记忆（没有项目）；沙箱照常开着，只是把这个临时目录当成可读可写的工作区
 - 删任务不会删这些文件；`~/.pocketagent/scratch` 整个可以随时清掉，重开旧任务时会重建一个空目录
+
+### 独立 worktree
+
+web 和桌面端的新任务页勾选「独立 worktree」后，服务端从当前仓库的 `HEAD` 创建
+`~/.pocketagent/worktrees/<任务 id>/` 和分支 `pocketagent/<任务 id>`，agent 只在这个目录里工作。
+并行任务可以改同一批文件而不互相覆盖，原工作区的未提交修改也不会被带进去或碰掉。
+
+- 默认不勾，普通任务行为不变；临时任务不能同时选。非 git 仓库、裸仓库、还没有 `HEAD` 的仓库会明确报错，不会退回原目录
+- 选择的是仓库子目录时，任务仍落在 worktree 里对应的子目录；任务概要看实际目录、来源、分支和基线提交
+- 项目记忆和原工作区共用；文件树、diff、检查点都针对隔离目录。沙箱额外放开 worktree 的 Git 元数据，`hooks` / `config` 仍禁止写
+- 删除任务只删对话，不自动删 worktree 和分支，避免丢掉未提交或尚未合并的成果。确认成果已经合并或不再需要后，再用 `git worktree remove` 和 `git branch -d` 手动清理
 
 ### 权限
 
@@ -264,15 +275,15 @@ bash 的输出边跑边显示：网页里工具卡片会自动展开并实时追
 
 ### 后台命令
 
-dev server、watch 这类不会自己退出的命令，bash 带上 `run_in_background=true` 就放到后台跑，立刻返回
-`bash_1` 这样的 id，不占着这一轮：
+dev server、watch 这类不会自己退出的命令，bash 带上 `run_in_background=true` 就由独立监督进程接管，
+立刻返回任务 id，不占着这一轮。stdout / stderr 合并写到 `~/.pocketagent/background_tasks/<任务 id>/output.log`，
+状态和退出码在旁边的 `meta.json`；工具调用结束、对话中断、web 服务或桌面端重启都不会把命令带走。
 
-- `bash_output` 带 id 看上次读取之后的新输出（`wait_seconds` 可以等一会儿新输出），不带 id 列出所有后台命令；
+- `bash_output` 带 id 看上次读取之后的新输出（`wait_seconds` 可以等一会儿新输出），不带 id 列出当前工作区的后台命令；
   跑完的也能取最后的输出
-- `kill_shell` 按 id 结束，连它派生的子进程一起结束
-- 后台命令不受 `timeout_seconds` 限制；输出攒在内存里，超过 20 万字符会丢掉最早的部分并提示模型
-- 后台命令表是会话级的，子 agent 共用；点停止只停当前这一轮，后台命令继续跑，删任务 / 服务退出 /
-  命令行换会话或退出时才一起结束
+- `kill_shell` 按 id 结束，先正常终止整棵进程树，宽限期后再强制结束
+- 后台命令不受 `timeout_seconds` 限制；同一个工作区的其它会话也能接管这些命令，不同工作区（包括不同 worktree）互相隔离
+- 删任务或服务退出都不会隐式停止命令或删日志；子 agent 共用主任务的管理器
 
 ### 检查点
 
@@ -489,7 +500,7 @@ cookie 在同一个主机上不分端口，桌面端或另一个 `--web` 实例�
 - 优先级：命令行参数 > 配置文件 > 环境变量 > 默认值。环境变量（`POCKETAGENT_MODEL` / `POCKETAGENT_BASE_URL` /
   `POCKETAGENT_API_KEY` / `POCKETAGENT_PROTOCOL` 等，完整列表见 `pocketagent/config.py`）只在一个模型都没配时才用
 - `-m` 可以写配置里模型的名称、id 或模型名；都对不上就用默认模型的接口、只换模型名
-- 任务记录、trace、附件、影子仓库、用量、自动化、工具输出都在 `~/.pocketagent/`（`POCKETAGENT_HOME` 可以改到别处）
+- 任务记录、trace、附件、影子仓库、后台命令、worktree、用量、自动化、工具输出都在 `~/.pocketagent/`（`POCKETAGENT_HOME` 可以改到别处）
 
 ### 模型协议
 
@@ -546,7 +557,8 @@ pocketagent/
     tool_outputs.py      工具输出落盘：超过上限的完整输出写到 ~/.pocketagent/tool_outputs
     scratch.py           临时任务的工作目录（~/.pocketagent/scratch，不指定工作区时用）
   llm/                   模型接口：openai_compat（流式、工具调用拼接、重试）、anthropic（Messages 接口转换）、scripted（测试用假模型）
-  tools/                 工具基类 + 注册表；files / search / shell / web / image / computer / skill / ask / todo / subagent
+  tools/                 工具基类 + 注册表；files / search / shell / background / web / image / computer / skill / ask / todo / subagent
+    _background_supervisor.py  独立监督进程：等待后台命令并落盘最终状态
     ripgrep.py           ripgrep 的调用和 --json 解析；rg 用不了时 search.py 回退 Python 实现
   safety/                权限和兜底
     permissions.py       权限模式、审批接口；按工具类别和这次调用碰到的地方（工作目录外、沙箱外、密钥）决定
@@ -570,6 +582,7 @@ pocketagent/
     routes/              按资源分的接口：sessions / workspace / settings / commands / automations / socket
     session.py           一个任务一个 Agent（WebSession）：插话 / 排队、审批和提问广播给所有连接
     manager.py           所有任务、工作区、配置、技能、记忆（SessionManager），自动化调度
+    worktrees.py         从 HEAD 创建任务 worktree，失败时回滚新建目录和分支
     automations.py       自动化的定义、计划计算、存储
     files.py             文件树、文件预览、选目录（只能看登记过的工作区）
     history.py           把存下来的消息转成前端渲染用的条目

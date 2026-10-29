@@ -2121,6 +2121,17 @@ code.md-inline-code {
   max-width: 220px;
 }
 
+.worktree-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.worktree-option input { margin: 0; }
+.worktree-option.disabled { opacity: 0.45; cursor: not-allowed; }
+
 .busy-hint {
   overflow: hidden;
   text-overflow: ellipsis;

@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from pocketagent.interaction.questions import Question, QuestionAnswer
-from pocketagent.safety.processes import BackgroundShells
 from pocketagent.safety.sandbox import SandboxPolicy, default_secret_dirs, is_within
 
 
@@ -109,8 +108,8 @@ class ToolContext:
     tool_state: dict[str, Any] = field(default_factory=dict)
     # 清单变了通知界面（todo_write 用）；None 表示没人听（单次执行、测试）
     on_todos_changed: Callable[[list[dict[str, Any]]], Awaitable[None]] | None = None
-    # 这个会话的后台命令（bash run_in_background）；子 agent 共用同一份，会话结束时要 kill_all
-    background: BackgroundShells = field(default_factory=BackgroundShells)
+    # 这个会话的后台命令（bash run_in_background）；由 agent 注入，独立监督进程在会话结束后继续运行
+    background_tasks: Any | None = None
 
     def __post_init__(self) -> None:
         self.trusted_dirs = resolve_trusted_dirs(self.trusted_dirs)
