@@ -10,6 +10,7 @@ from pocketagent.interaction.commands import command_specs_for
 from pocketagent.safety.permissions import WEB_APPROVAL_MODES
 from pocketagent.server.common import json_response, session_manager
 from pocketagent.server.manager import SessionManager
+from pocketagent.tools.mcp import McpError
 
 
 async def get_info(request: web.Request) -> web.Response:
@@ -115,3 +116,20 @@ async def test_config(request: web.Request) -> web.Response:
     except ConfigError as error:
         return json_response({"ok": False, "error": str(error)})
     return json_response(result)
+
+
+async def get_mcp(request: web.Request) -> web.Response:
+    return json_response(session_manager(request).mcp_overview())
+
+
+async def put_mcp(request: web.Request) -> web.Response:
+    try:
+        overview = await session_manager(request).save_mcp_config(await request.json())
+    except McpError as error:
+        return json_response({"ok": False, "error": str(error)}, status=400)
+    return json_response({"ok": True, "overview": overview})
+
+
+async def reload_mcp(request: web.Request) -> web.Response:
+    overview = await session_manager(request).reload_mcp()
+    return json_response({"ok": True, "overview": overview})

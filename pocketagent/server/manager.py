@@ -15,7 +15,8 @@ from typing import Any
 
 from pocketagent.account.usage import UsageLog
 from pocketagent.config import AppConfig, ConfigError, ModelProfile, Settings
-from pocketagent.core.agent import close_shared_mcp_managers, create_provider
+from pocketagent.core.agent import close_shared_mcp_managers, create_provider, shared_mcp_manager
+from pocketagent.tools.mcp import McpError, McpManager, save_mcp_servers
 from pocketagent.core.scratch import create_scratch_workspace, ensure_scratch_workspace
 from pocketagent.core.session import Session, SessionStore
 from pocketagent.core.tool_outputs import session_directory
@@ -37,6 +38,13 @@ CONNECTION_TEST_TIMEOUT_SECONDS = 60
 # 自动化任务没人盯着，AI 审批不放行的操作最多等用户这么久，超时就拒绝
 AUTOMATION_APPROVAL_TIMEOUT_SECONDS = 600
 SCHEDULER_TICK_SECONDS = 20
+
+
+def _overview_with_problems(overview: dict[str, Any], problems: list[str]) -> dict[str, Any]:
+    """连接问题的追加到配置问题后面，界面上一并显示。"""
+    if problems:
+        overview["problems"] = list(overview.get("problems") or []) + problems
+    return overview
 
 
 class SessionManager:
@@ -334,6 +342,29 @@ class SessionManager:
                     metadata, body = split_frontmatter(target.read_text(encoding="utf-8", errors="replace"))
                     return {"content": body.strip(), "metadata": metadata}
         raise KeyError(raw_path)
+
+    # ---- MCP ----
+
+    def mcp_manager(self) -> McpManager:
+        """MCP 连接按 PocketAgent 目录共享，和各个任务里 agent 用的是同一个。"""
+        return shared_mcp_manager(self.base_settings.home_dir)
+
+    def mcp_overview(self) -> dict[str, Any]:
+        return self.mcp_manager().public_overview()
+
+    async def save_mcp_config(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """设置里保存 MCP：写 mcp.json 后按新配置重连，返回最新状态。"""
+        manager = self.mcp_manager()
+        entries = payload.get("servers") if isinstance(payload, dict) else None
+        save_mcp_servers(self.base_settings.home_dir, entries or [], manager.load())
+        problems = await manager.reload()
+        return _overview_with_problems(manager.public_overview(), problems)
+
+    async def reload_mcp(self) -> dict[str, Any]:
+        """设置里点「重新连接」：连不上的重连，已经连着的也重连一遍。"""
+        manager = self.mcp_manager()
+        problems = await manager.reload(force=True)
+        return _overview_with_problems(manager.public_overview(), problems)
 
     # ---- 项目记忆 ----
 
