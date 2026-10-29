@@ -72,6 +72,8 @@ export function initSettings() {
     subagentReasoning: byId("subagent-reasoning-select"),
     subagentExploreMinutes: byId("subagent-explore-minutes"),
     subagentGeneralMinutes: byId("subagent-general-minutes"),
+    worktreeForeground: byId("worktree-foreground"),
+    worktreeBackground: byId("worktree-background"),
     maxSteps: byId("max-steps-input"),
     busyModeInputs: [...document.querySelectorAll('input[name="busy-input-mode"]')],
     autoCompact: byId("auto-compact-input"),
@@ -366,6 +368,8 @@ export async function openSettings(tabName) {
   renderAuxiliaryModelOptions(subagentSelects(), config.subagent_model, config.subagent_reasoning);
   elements.subagentExploreMinutes.value = config.subagent_explore_minutes;
   elements.subagentGeneralMinutes.value = config.subagent_general_minutes;
+  elements.worktreeForeground.checked = Boolean(config.worktree_foreground);
+  elements.worktreeBackground.checked = config.worktree_background !== false;
   renderDefaultWorkspaceOptions(config);
   elements.maxSteps.value = config.max_steps;
   elements.userName.value = config.user_name;
@@ -721,6 +725,8 @@ async function saveSettings() {
     subagent_reasoning: elements.subagentReasoning.value,
     subagent_explore_minutes: elements.subagentExploreMinutes.value,
     subagent_general_minutes: elements.subagentGeneralMinutes.value,
+    worktree_foreground: elements.worktreeForeground.checked,
+    worktree_background: elements.worktreeBackground.checked,
     default_workspace: elements.defaultWorkspace.value || null,
     busy_input_mode: busyInput ? busyInput.value : "interject",
     max_steps: elements.maxSteps.value,

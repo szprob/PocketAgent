@@ -279,6 +279,15 @@
                   </div>
                   <div class="field-hint">子 agent 默认和任务用同一个模型、同一档思考，派去调研时可以换快一点的模型或低一点的档位。到了时长上限会停下手上的事、写个总结交回来；等你审批的时间不算。</div>
                 </fieldset>
+                <fieldset class="radio-group">
+                  <legend>独立 worktree</legend>
+                  <label class="checkbox-field"><input type="checkbox" id="worktree-foreground" />
+                    <span>前台任务也隔离：和用户对话的任务从 HEAD 建独立 worktree（默认关，就地编辑）</span></label>
+                  <label class="checkbox-field"><input type="checkbox" id="worktree-background" />
+                    <span>并行 / 后台自动隔离：前台任务派出的、会改文件的子 agent 在自己的 worktree 里做（默认开）</span></label>
+                  <div class="field-hint">只有会改文件的 general 子 agent 隔离，只读的 explore 不隔离。子 agent 结束会把改动提交到 pocketagent/... 分支并把分支交回主 agent，需要时主 agent 自己合并。
+                    工作区不是 git 仓库或还没有提交时自动退回就地编辑，不会挡住任务。</div>
+                </fieldset>
               </div>
             </div>
 

@@ -148,9 +148,8 @@ class WorktreeWebTest(WebTestBase):
         )
 
     async def test_create_and_browse_worktree_session(self) -> None:
-        response = await self._send_json(
-            "POST", "/api/sessions", {"workspace": str(self.directories.workspace), "worktree": True}
-        )
+        await self._send_json("PUT", "/api/config", {"worktree_foreground": True})
+        response = await self._send_json("POST", "/api/sessions", {"workspace": str(self.directories.workspace)})
         created = await response.json()
 
         self.assertEqual(response.status, 200)
@@ -160,13 +159,16 @@ class WorktreeWebTest(WebTestBase):
         files = await self._get_json(f"/api/files?workspace={created['workspace']}")
         self.assertEqual([entry["path"] for entry in files["entries"]], ["tracked.txt"])
 
-    async def test_worktree_defaults_off_and_rejects_scratch(self) -> None:
+    async def test_worktree_defaults_off_and_scratch_never_isolates(self) -> None:
         session_id = await self._create_session(workspace=str(self.directories.workspace))
         snapshot = await self._get_json(f"/api/sessions/{session_id}")
-        rejected = await self._send_json("POST", "/api/sessions", {"ephemeral": True, "worktree": True})
+        scratch_id = await self._create_session(ephemeral=True)
+        scratch = await self._get_json(f"/api/sessions/{scratch_id}")
 
         self.assertIsNone(snapshot["worktree"])
-        self.assertEqual(rejected.status, 400)
+        self.assertIsNone(snapshot["worktree_fallback"])
+        self.assertIsNone(scratch["worktree"])
+        self.assertIsNone(scratch["worktree_fallback"])
 
 
 class WebServerTest(WebTestBase):

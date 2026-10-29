@@ -264,6 +264,8 @@ export class RightPanel {
         this.overviewRow("隔离分支", status.worktree.branch, `基线 ${status.worktree.base_commit}`),
         this.overviewRow("来源工作区", workspaceName(status.worktree.origin), status.worktree.origin),
       );
+    } else if (status.worktree_fallback) {
+      rows.append(this.overviewRow("隔离", "未启用，就地编辑", status.worktree_fallback));
     }
 
     if (this.usage) {

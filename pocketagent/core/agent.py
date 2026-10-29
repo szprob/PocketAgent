@@ -540,6 +540,7 @@ def create_agent(
         journal=journal,
         # MCP 工具由 run_turn 每轮开头自动接（见 _ensure_mcp_tools）
         mcp_manager=shared_mcp_manager(settings.home_dir),
+        skills=skills,
     )
     attach_subagent_runner(context)
     # 审批 / 子 agent 用别的模型时按同样的方式造 provider（web 端传 SessionManager.build_provider，测试里能换成假模型）

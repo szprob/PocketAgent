@@ -1049,9 +1049,6 @@ pre code { padding: 0; background: none; font-size: inherit; }
 }
 
 .workspace-select:hover { background: var(--surface-muted); }
-.worktree-option { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; cursor: pointer; }
-.worktree-option input { margin: 0; }
-.worktree-option.disabled { opacity: 0.45; cursor: not-allowed; }
 .busy-hint { color: var(--info); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .context-meter { display: inline-flex; align-items: center; gap: 6px; flex: none; }

@@ -97,6 +97,20 @@ class AppConfigTest(unittest.TestCase):
         self.assertFalse(AppConfig.from_dict(folded_off.to_dict()).fold_tool_calls)
         self.assertFalse(folded_off.public_dict()["fold_tool_calls"])
 
+    def test_worktree_isolation_defaults_off_for_foreground_and_on_for_background(self) -> None:
+        default = AppConfig.from_dict({})
+        flipped = AppConfig.from_dict({"worktree_foreground": True, "worktree_background": False})
+
+        self.assertFalse(default.worktree_foreground)
+        self.assertTrue(default.worktree_background)
+        self.assertTrue(default.public_dict()["worktree_background"])
+        self.assertTrue(flipped.worktree_foreground)
+        self.assertFalse(flipped.worktree_background)
+        reloaded = AppConfig.from_dict(flipped.to_dict())
+        self.assertTrue(reloaded.worktree_foreground)
+        self.assertFalse(reloaded.worktree_background)
+        self.assertTrue(flipped.public_dict()["worktree_foreground"])
+
     def test_ripgrep_path_round_trips(self) -> None:
         config = AppConfig.from_dict({"ripgrep_path": "/opt/homebrew/bin/rg"})
 
