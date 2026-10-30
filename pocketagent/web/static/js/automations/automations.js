@@ -3,9 +3,8 @@
 import { requestJson, sendJson } from "../core/api.js";
 import { button, el, formatClock, icon, show, workspaceName } from "../ui/dom.js";
 import { MODE_LABELS, findModel, state } from "../core/state.js";
-
+import { emptyTrigger, formValuesOf, triggerFromForm, visibleFields } from "./trigger-form.js";
 const WEEKDAY_NAMES = ["一", "二", "三", "四", "五", "六", "日"];
-const TRIGGER_KINDS = ["clock", "task_end", "webhook", "poll"];
 const STATUS_LABELS = {
   running: "运行中",
   done: "完成",
@@ -203,9 +202,8 @@ function fillSelect(select, options, selectedValue) {
 function openEditor(automation) {
   editing = automation;
   const form = elements.form;
-  const trigger = automation?.trigger || { source: { kind: "clock", mode: "daily" }, condition: { kind: "always" } };
-  const source = trigger.source || { kind: "clock", mode: "daily" };
-  const condition = trigger.condition || { kind: "always" };
+  const trigger = automation?.trigger || emptyTrigger();
+  const values = formValuesOf(trigger);
 
   elements.title.textContent = automation ? "编辑自动化" : "新建自动化";
   elements.message.textContent = "";
@@ -222,23 +220,21 @@ function openEditor(automation) {
   const modeOptions = ["ai_auto", "full_auto"].map((mode) => ({ value: mode, label: MODE_LABELS[mode] }));
   fillSelect(form.elements.approval_mode, modeOptions, automation?.approval_mode || "ai_auto");
 
-  form.elements.trigger_kind.value = TRIGGER_KINDS.includes(source.kind) ? source.kind : "clock";
-  const clockMode = source.mode === "interval" ? "interval" : "daily";
-  form.querySelector(`input[name="clock_mode"][value="${clockMode}"]`).checked = true;
-  form.elements.daily_time.value = source.daily_time || "09:00";
-  form.elements.interval_minutes.value = source.interval_minutes || 60;
-  const weekdays = source.weekdays || [0, 1, 2, 3, 4, 5, 6];
+  form.elements.trigger_kind.value = values.triggerKind;
+  form.querySelector(`input[name="clock_mode"][value="${values.clockMode}"]`).checked = true;
+  form.elements.daily_time.value = values.dailyTime;
+  form.elements.interval_minutes.value = values.clockIntervalMinutes;
+  form.elements.poll_interval_minutes.value = values.pollIntervalMinutes;
+  form.elements.poll_command.value = values.pollCommand;
   for (const toggle of elements.weekdays.children) {
-    toggle.classList.toggle("active", weekdays.includes(Number(toggle.dataset.day)));
+    toggle.classList.toggle("active", values.weekdays.includes(Number(toggle.dataset.day)));
   }
-  fillWatchOptions(automation?.id, source.automation_id || "");
-  form.elements.poll_command.value = source.command || "";
-  form.elements.poll_interval_minutes.value = source.interval_minutes || 5;
+  fillWatchOptions(automation?.id, values.watchAutomation);
 
-  form.elements.condition_kind.value = condition.kind || "always";
-  form.elements.condition_pattern.value = condition.pattern || "";
-  form.elements.condition_command.value = condition.command || "";
-  elements.webhookFields.textContent = webhookHint(automation, source);
+  form.elements.condition_kind.value = values.conditionKind;
+  form.elements.condition_pattern.value = values.conditionPattern;
+  form.elements.condition_command.value = values.conditionCommand;
+  elements.webhookFields.textContent = webhookHint(automation, trigger.source || {});
 
   form.elements.enabled.checked = automation ? automation.enabled : true;
   syncTriggerFields();
@@ -272,14 +268,15 @@ function fillWatchOptions(currentAutomationId, selectedValue) {
 function syncTriggerFields() {
   const form = elements.form;
   const kind = form.elements.trigger_kind.value;
+  const visible = visibleFields(kind);
   const clockMode = form.querySelector('input[name="clock_mode"]:checked')?.value || "daily";
-  show(elements.clockFields, kind === "clock");
-  show(elements.dailyFields, kind === "clock" && clockMode === "daily");
-  show(elements.intervalFields, kind === "clock" && clockMode === "interval");
-  show(elements.watchField, kind === "task_end");
-  show(elements.pollFields, kind === "poll");
-  show(elements.pollIntervalField, kind === "poll");
-  show(elements.webhookFields, kind === "webhook");
+  show(elements.clockFields, visible.clock);
+  show(elements.dailyFields, visible.clock && clockMode === "daily");
+  show(elements.intervalFields, visible.clock && clockMode === "interval");
+  show(elements.watchField, visible.watch);
+  show(elements.pollFields, visible.poll);
+  show(elements.pollIntervalField, visible.poll);
+  show(elements.webhookFields, visible.webhook);
 
   const conditionKind = form.elements.condition_kind.value;
   show(elements.conditionPatternField, conditionKind === "match");
@@ -292,39 +289,22 @@ function activeWeekdays() {
     .map((toggle) => Number(toggle.dataset.day));
 }
 
-function readSource(kind) {
+// 控件里的值先收成一个扁平对象，怎么变成后端 JSON 由 trigger-form.js 决定
+function currentFormValues() {
   const form = elements.form;
-  if (kind === "clock") {
-    const mode = form.querySelector('input[name="clock_mode"]:checked').value;
-    if (mode === "interval") {
-      return { kind, mode, interval_minutes: Number(form.elements.interval_minutes.value) || 60 };
-    }
-    return { kind, mode, daily_time: form.elements.daily_time.value, weekdays: activeWeekdays() };
-  }
-  if (kind === "task_end") {
-    return { kind, automation_id: form.elements.watch_automation.value };
-  }
-  if (kind === "poll") {
-    return {
-      kind,
-      interval_minutes: Number(form.elements.poll_interval_minutes.value) || 5,
-      command: form.elements.poll_command.value,
-    };
-  }
-  // webhook 的密钥在服务端生成：编辑时这里不带 secret，服务端会沿用原来的
-  return { kind };
-}
-
-function readCondition() {
-  const form = elements.form;
-  const kind = form.elements.condition_kind.value;
-  if (kind === "match") {
-    return { kind, pattern: form.elements.condition_pattern.value };
-  }
-  if (kind === "shell") {
-    return { kind, command: form.elements.condition_command.value };
-  }
-  return { kind };
+  return {
+    triggerKind: form.elements.trigger_kind.value,
+    clockMode: form.querySelector('input[name="clock_mode"]:checked').value,
+    dailyTime: form.elements.daily_time.value,
+    clockIntervalMinutes: form.elements.interval_minutes.value,
+    weekdays: activeWeekdays(),
+    watchAutomation: form.elements.watch_automation.value,
+    pollIntervalMinutes: form.elements.poll_interval_minutes.value,
+    pollCommand: form.elements.poll_command.value,
+    conditionKind: form.elements.condition_kind.value,
+    conditionPattern: form.elements.condition_pattern.value,
+    conditionCommand: form.elements.condition_command.value,
+  };
 }
 
 function readForm() {
@@ -335,7 +315,7 @@ function readForm() {
     workspace: form.elements.workspace.value,
     model_id: form.elements.model_id.value,
     approval_mode: form.elements.approval_mode.value,
-    trigger: { source: readSource(form.elements.trigger_kind.value), condition: readCondition() },
+    trigger: triggerFromForm(currentFormValues()),
     enabled: form.elements.enabled.checked,
   };
 }
