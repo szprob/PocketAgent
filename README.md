@@ -6,7 +6,8 @@
 已经能用的：主循环、内置工具（文件、搜索、bash（含跨重启的持久后台命令）、联网搜索、读网页、生图 / 搜图、技能、向用户提问、子 agent）、多档权限（含 AI 自动审批）、
 bash 沙箱、工作目录外的访问审批、影子 git 检查点（看变更、撤销、整体恢复）、技能（Agent Skills 标准）、项目记忆、
 流式事件、trace、会话续跑、后台自动压缩上下文、多模型配置（OpenAI 兼容 / Anthropic 两种协议，思考档位 / 上下文长度随模型走）、
-MCP、钩子（几个固定时机跑你自己的脚本，能拦住工具调用）、附件（图片 / 文件）、插话和排队、token 用量和缓存命中统计、定时自动化，
+MCP、钩子（几个固定时机跑你自己的脚本，能拦住工具调用）、附件（图片 / 文件）、插话和排队、token 用量和缓存命中统计、
+自动化（到点 / 上一个任务跑完 / 外部 POST / 轮询检查都能当触发），
 以及命令行 REPL、全屏 TUI 和 web 三套界面。
 新任务默认就地编辑；前台任务派出的、会改文件的子 agent 自动在独立 git worktree 里做，互不干扰。grep / glob 优先用 ripgrep（遵守 .gitignore），没装 rg 时回退纯 Python 实现。
 
@@ -60,7 +61,8 @@ py -3.12 -m pocketagent --web -C D:\SZ\git\foo
 |---|---|
 | [设计哲学](docs/design.md) | 八条设计原则、对扩展的约束、设计边界 |
 | [架构](docs/architecture.md) | 主循环、代码分层、几条设计约定 |
-| [界面与交互](docs/interfaces.md) | 命令行 / TUI / web 三套界面、斜杠命令、插话排队、向你提问、附件、自动化、访问控制 |
+| [界面与交互](docs/interfaces.md) | 命令行 / TUI / web 三套界面、斜杠命令、插话排队、向你提问、附件、访问控制 |
+| [自动化与触发器](docs/triggers.md) | 什么时候跑（四种事件源 + 条件）、跑什么、去重和环路保护 |
 | [权限与安全](docs/safety.md) | 权限模式、AI 审批、免问目录、沙箱、独立 worktree、检查点 |
 | [内置工具](docs/tools.md) | 后台命令、联网、图片、本机屏幕、ripgrep 搜索、MCP、子 agent |
 | [技能与项目记忆](docs/knowledge.md) | Agent Skills 标准的技能、跨会话项目记忆 |
@@ -81,10 +83,9 @@ py -3.12 -m pocketagent --web -C D:\SZ\git\foo
 
 对照 Codex / Claude Code / WorkBuddy / Qoder，还缺这些，大致按优先级排：
 
-1. **plan 模式**：todo 清单已经有了，缺「先出方案、人确认再执行」
-2. **trace 回放和评测**：拿 JSONL trace 重放、对比不同模型或提示词
-3. **界面**：IDE 插件；web 里搜索任务
-4. **更多协议**：Anthropic 已经接上，Gemini 等其他原生协议按 `LLMProvider` 再加
+1. **trace 回放和评测**：拿 JSONL trace 重放、对比不同模型或提示词
+2. **界面**：IDE 插件；web 里搜索任务；一条自动化的触发时间线（什么时候被谁拉起来、条件卡在哪一步）
+3. **更多协议**：Anthropic 已经接上，Gemini 等其他原生协议按 `LLMProvider` 再加
 
 ## 测试
 

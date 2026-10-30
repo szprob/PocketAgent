@@ -39,6 +39,8 @@ REST（都在 /api 下）：
   usage / usage/balance                  本机 token 用量 / 各家账户余额
   config              GET / PUT          设置；config/test 测试模型连接
   automations         GET / POST         自动化列表 / 新建；automations/{id} PUT / DELETE；.../run 立即运行
+  triggers/{id}/hook  POST               外部系统触发：HMAC 签名（X-PocketAgent-Signature）+ 去重 id（X-PocketAgent-Delivery），
+                                         这条不走主 token，密钥在每条自动化上
 
 页面里所有地址都是相对路径，挂在网关子路径下（如 /web-xxx/pocketagent/）也能用。
 """

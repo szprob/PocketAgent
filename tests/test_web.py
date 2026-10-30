@@ -23,6 +23,7 @@ from pocketagent.llm import LLMResponse, ScriptedProvider, Usage
 from pocketagent.safety.permissions import ApprovalMode
 from pocketagent.server import app as server
 from pocketagent.server.app import MANAGER_KEY, create_app
+from pocketagent.server.triggers.engine import sign_webhook
 from tests.helpers import TemporaryDirectories, tool_call
 
 TOKEN = "test-token"
@@ -737,6 +738,87 @@ class WebServerTest(WebTestBase):
         self.assertEqual(automations[0]["last_status"], "done")
         self.assertEqual(snapshot["title"], "日报")
         self.assertEqual(snapshot["items"][-1]["text"], "日报写好了")
+
+    async def _create_automation(self, **payload) -> dict[str, Any]:
+        form = {
+            "name": "自动化",
+            "workspace": str(self.directories.workspace),
+            "prompt": "干活",
+            "approval_mode": "full_auto",
+            **payload,
+        }
+        response = await self._send_json("POST", "/api/automations", form)
+        self.assertEqual(response.status, 200)
+        return (await response.json())["automations"][0]
+
+    async def _wait_until_idle(self, session_id: str) -> None:
+        web_session = self.app[MANAGER_KEY].sessions[session_id]
+        for _ in range(200):
+            if not web_session.running:
+                break
+            await asyncio.sleep(0.02)
+        else:
+            self.fail(f"任务 {session_id} 一直没停下来")
+        # 检查点是后台任务，等它落完盘：不然清临时目录时会撞上还没写完的文件
+        await web_session.agent.context.wait_for_turn_checkpoint()
+
+    async def test_webhook_route_needs_signature_and_runs_once(self) -> None:
+        automation = await self._create_automation(
+            name="接构建",
+            trigger={"source": {"kind": "webhook"}, "condition": {"kind": "always"}},
+        )
+        secret = automation["trigger"]["source"]["secret"]
+        body = json.dumps({"build": 42}).encode("utf-8")
+        url = f"/api/triggers/{automation['id']}/hook"
+
+        refused = await self.client.post(url, data=body)
+        wrong = await self.client.post(url, data=body, headers={"X-PocketAgent-Signature": "nope"})
+        accepted = await self.client.post(
+            url,
+            data=body,
+            headers={"X-PocketAgent-Signature": sign_webhook(secret, body), "X-PocketAgent-Delivery": "d-1"},
+        )
+        accepted_body = await accepted.json()
+        retried = await self.client.post(
+            url,
+            data=body,
+            headers={"X-PocketAgent-Signature": sign_webhook(secret, body), "X-PocketAgent-Delivery": "d-1"},
+        )
+
+        self.assertEqual(refused.status, 401)
+        self.assertEqual(wrong.status, 401)
+        self.assertEqual(accepted.status, 200)
+        self.assertTrue(accepted_body["fired"])
+        self.assertFalse((await retried.json())["fired"])
+        await self._wait_until_idle(accepted_body["session_id"])
+
+    async def test_task_end_trigger_starts_the_next_automation(self) -> None:
+        # 两个任务用同一个 provider：ScriptedProvider 会复制剧本，换一个 provider 会从头再念一遍
+        self.provider_override = ScriptedProvider([LLMResponse(text="上游做完了"), LLMResponse(text="下游也做完了")])
+        upstream = await self._create_automation(name="上游")
+        await self._create_automation(
+            name="下游",
+            trigger={
+                "source": {"kind": "task_end", "automation_id": upstream["id"]},
+                "condition": {"kind": "status", "status": "done"},
+            },
+        )
+
+        run = await (await self._send_json("POST", f"/api/automations/{upstream['id']}/run", {})).json()
+        await self._wait_until_idle(run["session_id"])
+
+        for _ in range(200):
+            automations = (await self._get_json("/api/automations"))["automations"]
+            downstream = next(item for item in automations if item["name"] == "下游")
+            if downstream["last_session_id"] and downstream["last_status"] == "done":
+                break
+            await asyncio.sleep(0.02)
+        else:
+            self.fail("下游没有被上游的结束事件拉起来")
+
+        await self._wait_until_idle(downstream["last_session_id"])
+        snapshot = await self._get_json(f"/api/sessions/{downstream['last_session_id']}")
+        self.assertEqual(snapshot["items"][-1]["text"], "下游也做完了")
 
 
 class WebScratchTaskTest(WebTestBase):

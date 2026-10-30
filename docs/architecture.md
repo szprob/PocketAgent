@@ -77,7 +77,10 @@ pocketagent/
     session.py           一个任务一个 Agent（WebSession）：插话 / 排队、审批和提问广播给所有连接
     manager.py           所有任务、工作区、配置、技能、记忆（SessionManager），自动化调度
     worktrees.py         从 HEAD 创建任务 worktree、把隔离任务 / 子 agent 的改动提交到分支，失败时回滚新建目录和分支
-    automations.py       自动化的定义、计划计算、存储
+    automations.py       自动化：跑什么（工作区 / 提示词 / 模型 / 权限）+ 运行记录 + 存储
+    triggers/
+      model.py           什么时候跑：四种事件源、四种条件、Occurrence、校验和老格式归一
+      engine.py          唯一入口：匹配 → 去重 → 环路频次 → 并发 → 条件 → 开任务
     files.py             文件树、文件预览、选目录（只能看登记过的工作区）
     history.py           把存下来的消息转成前端渲染用的条目
   web/                   浏览器前端（ES 模块，不用构建、不依赖 CDN），由 server 一起服务

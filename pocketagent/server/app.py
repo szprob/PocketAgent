@@ -33,10 +33,17 @@ Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
 # ---- 鉴权：和 Jupyter 一样，第一次用 ?token= 打开，之后靠 cookie ----
 
 
+def _is_webhook_path(path: str) -> bool:
+    """外部触发自己验签（密钥在每条自动化上），不能用主 token 拦。"""
+    return path.startswith("/api/triggers/") and path.endswith("/hook")
+
+
 @web.middleware
 async def token_middleware(request: web.Request, handler: Handler) -> web.StreamResponse:
     expected_token = request.app[TOKEN_KEY]
     if not expected_token:
+        return await handler(request)
+    if _is_webhook_path(request.path):
         return await handler(request)
     query_token = request.query.get("token", "")
     supplied_token = query_token or request.cookies.get(TOKEN_COOKIE_NAME, "")
