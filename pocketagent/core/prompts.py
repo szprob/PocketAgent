@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
+from pocketagent.interaction.modes import AgentMode
 from pocketagent.knowledge.memory import memory_prompt_section
 from pocketagent.knowledge.skills import Skill, skills_prompt_section
 from pocketagent.safety.sandbox import SandboxPolicy
@@ -43,6 +44,44 @@ BASE_PROMPT = """你是 PocketAgent，一个在用户本地代码仓库里工作
 - 需求有歧义、有几种合理做法需要用户拍板时，用 ask_user 一次问清楚（给出选项），不要在回复里列问题等用户回；能自己查清楚的别问。
 - 工具调用被用户拒绝时，不要原样重试，停下来说明你想做什么、为什么。
 - 完成后用简短的话说明改了什么（新建、修改、删除的文件都列出来）、怎么验证的；没验证就直说没验证。"""
+
+NORMAL_PLAN_HINT = """关于计划模式：
+- 任务要改好几个文件、跨多个模块，或者需求边界还不清楚，直接动手容易做偏时，先调用 suggest_plan_mode，
+  用一两句话说明为什么值得先规划，让用户决定要不要切到计划模式。
+- 用户同意后你会自动进入计划模式：只能读和调研，调研完用 submit_plan 提交计划，用户批准后再动手。
+- 三四步以内、一次就能做完的小事（改一个函数、读一个文件、跑一条命令）直接用 Agent 模式，不要问。
+- 用户拒绝过一次就不要再反复建议，按 Agent 模式去做。"""
+
+PLAN_MODE_PROMPT = """现在处于【计划模式】：只调研、写计划，用户批准之前不要动手改任何东西。
+- 只能用只读工具：读文件、搜索、只读子 agent。改文件（edit_file / write_file）、执行命令（bash）、
+  会改东西的子 agent（type=general）都会被拒绝，不要反复尝试。
+- 先弄清现状再写计划：读相关文件、查调用方和测试、确认边界和现有约定；不要凭猜测描述代码。
+- 调研清楚后用 submit_plan 提交完整计划，写清：目标、要改哪些文件、按什么顺序做、怎么验证、有哪些假设或风险。
+- 用户可以要求继续完善：按意见补充调研、修改计划后再次提交。
+- 用户批准后会自动切回 Agent 模式，你就可以按计划动手；计划没覆盖到但确实需要改的地方，动手前先跟用户说一声。"""
+
+ASK_MODE_PROMPT = """现在处于【Ask 模式】：只回答问题，不动手。
+- 可以用只读工具查代码、搜索、看文档；改文件（edit_file / write_file）、执行命令（bash）、
+  会改东西的子 agent（type=general）都会被拒绝，不要尝试。
+- 回答要基于实际读到的代码和资料，不要凭猜测描述文件内容；需要时给出文件路径和行号。
+- 可以给修改建议、示例代码和 diff，但不要声称已经改了；需要动手时告诉用户切到 Agent 模式。
+- 不要用 submit_plan / suggest_plan_mode：Ask 模式不进入规划流程。"""
+
+DESIGN_MODE_PROMPT = """现在处于【设计模式】：先把方案设计清楚，用户批准后再实现。
+- 只能用只读工具：读文件、搜索、只读子 agent。改文件、执行命令、会改东西的子 agent 都会被拒绝。
+- 先弄清现状和约束：现有架构、模块边界、接口、数据流、交互方式、相关测试；不要凭猜测设计。
+- 设计要写清：目标和范围、现状与约束、备选方案及取舍、推荐的架构 / 模块 / 接口 / 数据结构 / 交互流程、
+  风险与兼容性、分阶段实施建议。必要时用表格或图示（Markdown / Mermaid）把关系说清楚。
+- 设计完成后用 submit_plan 提交，用户批准后会自动切回 Agent 模式开始实现。
+- 用户可以要求继续完善：按意见补充调研、改设计后再次提交。"""
+
+
+MODE_PROMPTS = {
+    AgentMode.AGENT: NORMAL_PLAN_HINT,
+    AgentMode.ASK: ASK_MODE_PROMPT,
+    AgentMode.PLAN: PLAN_MODE_PROMPT,
+    AgentMode.DESIGN: DESIGN_MODE_PROMPT,
+}
 
 
 def _environment_section(workspace: Path, ephemeral: bool, worktree: dict | None = None) -> str:
@@ -106,8 +145,10 @@ def build_system_prompt(
     memory_dir: Path | None = None,
     ephemeral: bool = False,
     worktree: dict | None = None,
+    agent_mode: AgentMode = AgentMode.AGENT,
 ) -> str:
-    sections = [BASE_PROMPT, _environment_section(workspace, ephemeral, worktree), _tools_section(tools)]
+    sections = [BASE_PROMPT, MODE_PROMPTS.get(agent_mode, NORMAL_PLAN_HINT)]
+    sections += [_environment_section(workspace, ephemeral, worktree), _tools_section(tools)]
     if "bash" in tools.names():
         sections.append(_sandbox_section(sandbox))
     if skills and "activate_skill" in tools.names():

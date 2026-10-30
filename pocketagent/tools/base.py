@@ -11,6 +11,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from pocketagent.interaction.modes import AgentMode, PlanDecision
 from pocketagent.interaction.questions import Question, QuestionAnswer
 from pocketagent.safety.sandbox import SandboxPolicy, default_secret_dirs, is_within
 
@@ -100,6 +101,12 @@ class ToolContext:
     history: Callable[[], list[dict[str, Any]]] = field(default=lambda: [])
     # 向用户提问（ask_user 用）；None 表示没人能回答（单次执行、测试）。返回 None 表示用户跳过
     ask_user: Callable[[list[Question]], Awaitable[list[QuestionAnswer] | None]] | None = None
+    # 当前工作模式（agent / ask / plan / design）
+    agent_mode: Callable[[], AgentMode] = field(default=lambda: AgentMode.AGENT)
+    # 问用户要不要切到计划模式（suggest_plan_mode 用）；None 表示没人能回答
+    suggest_plan_mode: Callable[[str], Awaitable[bool]] | None = None
+    # 把计划 / 设计方案交给用户批准（submit_plan 用）；None 表示没人能批准
+    submit_plan: Callable[[str], Awaitable[PlanDecision]] | None = None
     # 派子 agent（subagent 工具用）；子 agent 自己的工具上下文里是 None，不能再派
     spawn_subagent: Callable[[Any], Awaitable[Any]] | None = None
     # 任务计划清单（todo_write 用的），和会话落盘的是同一个 list，原地改

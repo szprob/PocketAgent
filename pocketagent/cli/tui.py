@@ -22,6 +22,7 @@ from pocketagent.core.events import Event, EventType
 from pocketagent.core.session import Session
 from pocketagent.interaction.attachments import message_display
 from pocketagent.interaction.commands import CommandResult
+from pocketagent.interaction.modes import AgentMode, PlanApprovalRequest, PlanDecision, PlanSwitchRequest
 from pocketagent.interaction.questions import Question, QuestionAnswer
 from pocketagent.safety.permissions import ApprovalAnswer, ApprovalRequest
 
@@ -127,6 +128,12 @@ class TuiApprover:
 
     async def ask_questions(self, questions: list[Question]) -> list[QuestionAnswer] | None:
         return await self._ask(QuestionScreen(questions), None)
+
+    async def request_plan_switch(self, request: PlanSwitchRequest) -> bool:
+        return await self._ask(PlanSwitchScreen(request), False)
+
+    async def request_plan_approval(self, request: PlanApprovalRequest) -> PlanDecision:
+        return await self._ask(PlanApprovalScreen(request), PlanDecision(approve=False))
 
     async def _ask(self, screen: ModalScreen[Any], default: Any) -> Any:
         future: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
@@ -259,6 +266,75 @@ class QuestionScreen(ModalScreen[list[QuestionAnswer] | None]):
             self.dismiss(None)
 
 
+class PlanSwitchScreen(ModalScreen[bool]):
+    """普通模式下建议切到计划模式。"""
+
+    def __init__(self, request: PlanSwitchRequest) -> None:
+        super().__init__()
+        self.request = request
+
+    def compose(self) -> ComposeResult:
+        with Container(classes="dialog plan-dialog"):
+            yield Label("这个任务也许适合先用计划模式", classes="dialog-title")
+            yield Static(self.request.reason, classes="dialog-summary")
+            with Horizontal(classes="dialog-buttons"):
+                yield Button("用计划模式 [y]", id="use-plan", variant="primary")
+                yield Button("直接开始 [n]", id="skip-plan")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(event.button.id == "use-plan")
+
+    def on_key(self, event: Key) -> None:
+        if event.key in ("y", "enter"):
+            event.stop()
+            self.dismiss(True)
+        elif event.key in ("n", "escape"):
+            event.stop()
+            self.dismiss(False)
+
+
+class PlanApprovalScreen(ModalScreen[PlanDecision]):
+    """计划 / 设计模式下把方案交给用户批准；可以写意见让它继续完善。"""
+
+    def __init__(self, request: PlanApprovalRequest) -> None:
+        super().__init__()
+        self.request = request
+
+    def compose(self) -> ComposeResult:
+        design = self.request.mode == AgentMode.DESIGN.value
+        with Container(classes="dialog plan-dialog"):
+            yield Label("设计方案做好了" if design else "计划做好了", classes="dialog-title")
+            yield VerticalScroll(Static(self.request.plan), classes="dialog-body")
+            yield Input(placeholder="要继续完善的话，写下你的意见（可空）", id="plan-feedback")
+            with Horizontal(classes="dialog-buttons"):
+                yield Button("按设计开始实现 [e]" if design else "按计划执行 [e]", id="execute-plan", variant="primary")
+                yield Button("继续完善 [r]", id="revise-plan")
+                yield Button("先不做 [n]", id="cancel-plan")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self._answer(event.button.id)
+
+    def on_key(self, event: Key) -> None:
+        # 正在意见框里打字时不要被 e / r / n 抢走
+        if isinstance(self.focused, Input) and event.key != "escape":
+            return
+        shortcuts = {"e": "execute-plan", "r": "revise-plan", "n": "cancel-plan", "escape": "cancel-plan"}
+        button_id = shortcuts.get(event.key)
+        if button_id is None:
+            return
+        event.stop()
+        self._answer(button_id)
+
+    def _answer(self, button_id: str) -> None:
+        feedback = self.query_one("#plan-feedback", Input).value.strip()
+        if button_id == "execute-plan":
+            self.dismiss(PlanDecision(approve=True))
+        elif button_id == "revise-plan":
+            self.dismiss(PlanDecision(approve=False, feedback=feedback))
+        else:
+            self.dismiss(PlanDecision(approve=False))
+
+
 class PocketAgentTui(App[None]):
     """全屏交互终端；原有 line-based REPL 仍是无额外依赖的默认界面。"""
 
@@ -282,6 +358,7 @@ class PocketAgentTui(App[None]):
     .dialog { width: 90%; max-width: 110; height: 85%; padding: 1 2; background: $surface; border: thick $primary; }
     .approval-dialog { align: center middle; }
     .question-dialog { align: center middle; }
+    .plan-dialog { align: center middle; height: auto; max-height: 85%; }
     .dialog-title { text-style: bold; margin-bottom: 1; }
     .dialog-summary { margin-bottom: 1; }
     .dialog-body { height: 1fr; margin: 1 0; }
@@ -289,7 +366,7 @@ class PocketAgentTui(App[None]):
     .dialog-buttons Button { margin-right: 1; }
     .question-title { margin-top: 1; text-style: bold; }
     .question-dialog SelectionList { height: auto; max-height: 8; }
-    ApprovalScreen, QuestionScreen { background: $background 70%; }
+    ApprovalScreen, QuestionScreen, PlanSwitchScreen, PlanApprovalScreen { background: $background 70%; }
     """
     BINDINGS = [
         ("ctrl+c", "interrupt", "中断本轮"),
@@ -390,6 +467,8 @@ class PocketAgentTui(App[None]):
                 self.set_busy(False)
         elif result.action == "switch_mode":
             self.controller.switch_mode(result.argument)
+        elif result.action == "switch_agent_mode":
+            await self.agent.set_agent_mode(result.argument)
         elif result.action == "switch_model":
             self.controller.switch_model(result.argument)
         elif result.action == "open_session":
@@ -448,11 +527,12 @@ class PocketAgentTui(App[None]):
         except NoMatches:
             return
         mode = self.agent.context.permissions.mode.value
+        agent_mode = f" · {self.agent.agent_mode.label} 模式"
         directory = "临时目录" if self.settings.ephemeral else str(Path(self.settings.workspace))
         current_state = state or ("正在运行 · Ctrl-C 中断" if self.busy else "就绪")
         text = (
             f"PocketAgent  ·  {current_state}\n"
-            f"{self.settings.display_model()} · {mode} · {directory} · 会话 {self.agent.session.id}"
+            f"{self.settings.display_model()} · {mode}{agent_mode} · {directory} · 会话 {self.agent.session.id}"
         )
         status.update(text)
     def add_entry(self, text: str, classes: str = "entry system") -> Static:
@@ -531,6 +611,15 @@ class PocketAgentTui(App[None]):
                     f"上下文已压缩：约 {event.data['tokens_before']} → {event.data['tokens_after']} tokens",
                     "entry system",
                 )
+            case EventType.AGENT_MODE:
+                mode = AgentMode(event.data["mode"])
+                note = {
+                    AgentMode.AGENT: "已切回 Agent 模式：可以动手了",
+                    AgentMode.ASK: "进入 Ask 模式：只回答问题，不改动",
+                    AgentMode.PLAN: "进入计划模式：只读调研，计划批准后再动手",
+                    AgentMode.DESIGN: "进入设计模式：只读调研，设计方案批准后再实现",
+                }[mode]
+                self.add_entry(note, "entry system")
             case EventType.STEP_LIMIT:
                 self.add_entry(f"这一轮已调用模型 {event.data['max_steps']} 次，达到上限，先停下", "entry warning")
             case EventType.ERROR:

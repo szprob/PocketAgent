@@ -17,6 +17,7 @@ from pocketagent.core.agent import Agent, create_agent
 from pocketagent.core.events import Event, EventType, json_default
 from pocketagent.core.session import Session
 from pocketagent.interaction.attachments import AttachmentStore, build_user_message, message_display
+from pocketagent.interaction.modes import AgentMode, PlanApprovalRequest, PlanDecision, PlanSwitchRequest, parse_agent_mode
 from pocketagent.interaction.questions import Question, QuestionAnswer
 from pocketagent.llm.base import LLMProvider
 from pocketagent.safety.checkpoints import TaskCheckpoints
@@ -32,6 +33,8 @@ STATE_CHANGING_EVENTS = {
     EventType.COMPACTION,
     EventType.COMPACTION_FAILED,
     EventType.INTERJECTION_APPLIED,
+    EventType.AGENT_MODE,
+    EventType.PROPOSAL_UPDATED,
 }
 
 
@@ -95,6 +98,29 @@ class PendingQuestions:
         }
 
 
+@dataclass
+class PendingPlan:
+    """模式相关的一张卡：问要不要切换（kind=switch）或者批准计划 / 设计方案（kind=approval）。"""
+
+    request_id: str
+    kind: str
+    reason: str
+    plan: str
+    # 提交方案时的模式：plan / design；切换建议是 agent
+    mode: str
+    answer: asyncio.Future
+
+    def to_message(self) -> dict[str, Any]:
+        return {
+            "type": "plan_request",
+            "request_id": self.request_id,
+            "kind": self.kind,
+            "reason": self.reason,
+            "plan": self.plan,
+            "mode": self.mode,
+        }
+
+
 class WebApprover:
     """Approver 的 web 实现：把审批请求和问题推给浏览器，等用户点按钮。"""
 
@@ -110,6 +136,12 @@ class WebApprover:
 
     async def ask_questions(self, questions: list[Question]) -> list[QuestionAnswer] | None:
         return await self.web_session.wait_for_answers(questions)
+
+    async def request_plan_switch(self, request: PlanSwitchRequest) -> bool:
+        return await self.web_session.wait_for_plan("switch", mode=AgentMode.AGENT.value, reason=request.reason)
+
+    async def request_plan_approval(self, request: PlanApprovalRequest) -> PlanDecision:
+        return await self.web_session.wait_for_plan("approval", mode=request.mode, plan=request.plan)
 
 
 class WebSession:
@@ -128,6 +160,7 @@ class WebSession:
         self.clients: set[web.WebSocketResponse] = set()
         self.pending_approvals: dict[str, PendingApproval] = {}
         self.pending_questions: dict[str, PendingQuestions] = {}
+        self.pending_plans: dict[str, PendingPlan] = {}
         self.background_task: asyncio.Task | None = None
         # 排队等这一轮结束后再跑的 user 消息
         self.queued_messages: list[dict[str, Any]] = []
@@ -161,11 +194,17 @@ class WebSession:
             return "question"
         if self.pending_approvals:
             return "approval"
+        if self.pending_plans:
+            return "plan"
         return None
 
     @property
     def mode(self) -> ApprovalMode:
         return self.agent.context.permissions.mode
+
+    @property
+    def agent_mode(self) -> AgentMode:
+        return self.agent.agent_mode
 
     @property
     def checkpoints(self) -> TaskCheckpoints:
@@ -197,6 +236,9 @@ class WebSession:
             "running": self.running,
             "waiting": self.waiting_for,
             "mode": self.mode.value,
+            "agent_mode": self.agent_mode.value,
+            "plan_status": self.session.plan_status,
+            "plan_kind": self.session.plan_kind,
             "model_id": self.settings.model_profile_id,
             "model": self.settings.display_model(),
             "title": self.session.display_title(),
@@ -222,10 +264,13 @@ class WebSession:
             "type": "snapshot",
             "session_id": self.id,
             **self.status_fields(),
+            # 方案正文只在快照里带：state 推得很频繁，别每条都拖一份长方案
+            "plan": self.session.plan,
             "items": history_items(self.agent.context.messages, self.agent.context.tools),
             "todos": self.session.todos,
             "pending_approvals": [pending.to_message() for pending in self.pending_approvals.values()],
             "pending_questions": [pending.to_message() for pending in self.pending_questions.values()],
+            "pending_plans": [pending.to_message() for pending in self.pending_plans.values()],
         }
 
     async def broadcast_state(self) -> None:
@@ -342,6 +387,10 @@ class WebSession:
         self.session.approval_mode = mode.value
         await self.broadcast_state()
 
+    async def set_agent_mode(self, mode_name: str) -> None:
+        await self.agent.set_agent_mode(parse_agent_mode(mode_name))
+        await self.broadcast_state()
+
     async def use_model(self, profile: ModelProfile, build_provider: ProviderFactory) -> None:
         """换模型。跑到一半也能换，下一次调用模型时生效。"""
         self.settings.use_profile(profile)
@@ -410,3 +459,55 @@ class WebSession:
             pending.answer.set_result(None)
             return
         pending.answer.set_result([QuestionAnswer.from_dict(item) for item in answers])
+
+    async def wait_for_plan(
+        self, kind: str, mode: str = AgentMode.PLAN.value, reason: str = "", plan: str = ""
+    ) -> bool | PlanDecision:
+        """推一张模式卡给所有标签页，等任意一个答复。
+
+        kind=switch 返回用户想不想切到计划模式；kind=approval 返回批不批准、要不要继续完善。
+        自动化任务有超时，没人答就当不同意。
+        """
+        pending = PendingPlan(
+            request_id=uuid.uuid4().hex,
+            kind=kind,
+            reason=reason,
+            plan=plan,
+            mode=mode,
+            answer=asyncio.get_running_loop().create_future(),
+        )
+        self.pending_plans[pending.request_id] = pending
+        await self.broadcast(pending.to_message())
+        result: bool | PlanDecision = PlanDecision(approve=False) if kind == "approval" else False
+        try:
+            if self.approval_timeout_seconds is None:
+                result = await pending.answer
+            else:
+                result = await asyncio.wait_for(pending.answer, timeout=self.approval_timeout_seconds)
+        except asyncio.TimeoutError:
+            pass
+        finally:
+            self.pending_plans.pop(pending.request_id, None)
+            approved = result.approve if isinstance(result, PlanDecision) else result
+            feedback = result.feedback if isinstance(result, PlanDecision) else ""
+            await self.broadcast(
+                {
+                    "type": "plan_resolved",
+                    "request_id": pending.request_id,
+                    "kind": kind,
+                    "mode": pending.mode,
+                    "approved": approved,
+                    "feedback": feedback,
+                }
+            )
+        return result
+
+    def answer_plan(self, request_id: str, approve: bool, feedback: str = "") -> None:
+        """plan_request 的答复：switch 回 approve；approval 还能带一句「继续完善」的意见。"""
+        pending = self.pending_plans.get(request_id)
+        if pending is None or pending.answer.done():
+            return
+        if pending.kind == "switch":
+            pending.answer.set_result(bool(approve))
+            return
+        pending.answer.set_result(PlanDecision(approve=bool(approve), feedback=str(feedback or "").strip()))

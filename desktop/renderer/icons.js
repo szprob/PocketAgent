@@ -33,6 +33,8 @@ const PATHS = {
   search: '<circle cx="11" cy="11" r="6"/><line x1="16" y1="16" x2="21" y2="21"/>',
   listCheck:
     '<path d="m3.5 6 1 1L7 4.5"/><path d="m3.5 12.5 1 1L7 11"/><path d="M11 6.5h10M11 13h10"/><path d="M11 19h10"/><path d="m3.5 18.5 1 1L7 17"/>',
+  message: '<path d="M21 12a8 8 0 0 1-8 8H5l-2 2V12a8 8 0 0 1 8-8h2a8 8 0 0 1 8 8z"/>',
+  compass: '<circle cx="12" cy="12" r="9"/><path d="m15.5 8.5-2 5-5 2 2-5z"/>',
 };
 
 export function icon(name, className = "") {

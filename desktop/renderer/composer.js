@@ -21,6 +21,15 @@ const MODE_LABELS = {
   auto_edit: "自动改文件",
 };
 
+const AGENT_MODE_LABELS = { agent: "Agent", ask: "Ask", plan: "计划", design: "设计" };
+const AGENT_MODE_ICONS = { agent: "sparkle", ask: "message", plan: "listCheck", design: "compass" };
+const AGENT_MODE_HINTS = {
+  agent: "Agent 模式：正常干活，可以改文件、执行命令",
+  ask: "Ask 模式：只回答问题，不改文件、不执行命令",
+  plan: "计划模式：只读调研，计划批准后再动手",
+  design: "设计模式：只读调研，先出设计方案，批准后再实现",
+};
+
 export class Composer {
   constructor(container, options) {
     this.kind = options.kind;
@@ -29,11 +38,13 @@ export class Composer {
     this.onModeChange = options.onModeChange;
     this.onModelChange = options.onModelChange;
     this.onWorkspaceChange = options.onWorkspaceChange;
+    this.onAgentModeChange = options.onAgentModeChange;
 
     this.pendingFiles = [];
     // 从对话里「恢复到这里」带回来的附件：服务端已经有了，重发时只传 id
     this.pendingAttachments = [];
     this.running = false;
+    this.agentMode = "agent";
     this.commands = [];
     this.skillNames = [];
     this.commandSelection = 0;
@@ -82,6 +93,24 @@ export class Composer {
 
     this.modelPicker = new ModelPicker({ onSelectModel: (modelId) => this.onModelChange?.(modelId) });
 
+    this.agentModePill = el("label", "pill agent-mode-pill");
+    this.agentModeIcon = el("span", "pill-icon");
+    this.agentModeSelect = el("select");
+    this.agentModeSelect.title = "工作模式";
+    for (const [value, label] of Object.entries(AGENT_MODE_LABELS)) {
+      const option = el("option", "", label);
+      option.value = value;
+      option.title = AGENT_MODE_HINTS[value] || "";
+      this.agentModeSelect.append(option);
+    }
+    this.agentModeSelect.addEventListener("change", () => {
+      this.agentMode = this.agentModeSelect.value;
+      this.paintAgentMode();
+      this.onAgentModeChange?.(this.agentMode);
+    });
+    this.agentModePill.append(this.agentModeIcon, this.agentModeSelect, icon("chevronDown", "pill-chevron"));
+    this.paintAgentMode();
+
     this.stopButton = button("stop-button hidden", "停止", "stop", "停止（Esc）");
     this.stopButton.addEventListener("click", () => this.onStop?.());
     this.sendButton = button("send-button", "发送", "arrowUp", "发送（Enter）");
@@ -92,6 +121,7 @@ export class Composer {
       attachButton,
       this.fileInput,
       this.permissionPill,
+      this.agentModePill,
       this.modelPicker.root,
       el("div", "toolbar-spacer"),
       this.stopButton,
@@ -447,6 +477,24 @@ export class Composer {
 
   getMode() {
     return this.permissionSelect.value;
+  }
+
+  setAgentMode(mode) {
+    const wanted = AGENT_MODE_LABELS[mode] ? mode : "agent";
+    this.agentMode = wanted;
+    this.agentModeSelect.value = wanted;
+    this.paintAgentMode();
+  }
+
+  getAgentMode() {
+    return this.agentModeSelect.value || this.agentMode || "agent";
+  }
+
+  paintAgentMode() {
+    const mode = this.agentModeSelect.value || "agent";
+    this.agentModeIcon.replaceChildren(icon(AGENT_MODE_ICONS[mode] || "sparkle"));
+    this.agentModePill.classList.toggle("accent", mode !== "agent");
+    this.agentModePill.title = AGENT_MODE_HINTS[mode] || "";
   }
 
   paintPermission() {

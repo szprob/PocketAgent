@@ -19,6 +19,7 @@ from pocketagent.core.events import Event, EventType
 from pocketagent.core.scratch import create_scratch_workspace
 from pocketagent.core.session import Session, SessionStore
 from pocketagent.interaction.commands import CommandContext, CommandResult, handle_command_line
+from pocketagent.interaction.modes import AgentMode, PlanApprovalRequest, PlanDecision, PlanSwitchRequest
 from pocketagent.interaction.questions import Question, QuestionAnswer
 from pocketagent.safety.permissions import (
     AllowAllApprover,
@@ -97,6 +98,15 @@ class ConsoleRenderer:
                 tokens_before = event.data["tokens_before"]
                 tokens_after = event.data["tokens_after"]
                 self._print_line(self.style.dim(f"[上下文已压缩：约 {tokens_before} → {tokens_after} tokens]"))
+            case EventType.AGENT_MODE:
+                mode = AgentMode(event.data["mode"])
+                note = {
+                    AgentMode.AGENT: "已切回 Agent 模式：可以动手了",
+                    AgentMode.ASK: "进入 Ask 模式：只回答问题，不改动",
+                    AgentMode.PLAN: "进入计划模式：只读调研，计划批准后再动手",
+                    AgentMode.DESIGN: "进入设计模式：只读调研，设计方案批准后再实现",
+                }[mode]
+                self._print_line(self.style.cyan(f"[{note}]"))
             case EventType.SUBAGENT_PROGRESS:
                 mark = "✗ " if event.data["step"] == "tool_error" else ""
                 self._print_line(self.style.dim(f"    ↳ 子 agent {mark}{event.data['name']} {event.data['summary']}"))
@@ -219,6 +229,31 @@ class ConsoleApprover:
             return None
         return answers
 
+    async def request_plan_switch(self, request: PlanSwitchRequest) -> bool:
+        print(self.style.cyan("\n这个任务也许适合先用计划模式："))
+        print(self.style.dim(request.reason))
+        try:
+            answer = input("[y] 用计划模式  [n] 直接开始（默认）> ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            return False
+        return answer in ("y", "yes")
+
+    async def request_plan_approval(self, request: PlanApprovalRequest) -> PlanDecision:
+        design = request.mode == AgentMode.DESIGN.value
+        print(self.style.cyan("\n设计方案做好了：" if design else "\n计划做好了："))
+        print(request.plan)
+        execute = "[e] 按设计开始实现" if design else "[e] 按计划执行"
+        try:
+            answer = input(f"\n{execute}  [r] 继续完善  [n] 先不做（默认）> ").strip().lower()
+            if answer in ("e", "execute", "y", "yes"):
+                return PlanDecision(approve=True)
+            if answer in ("r", "revise"):
+                feedback = input("想让你怎么改（直接回车表示没具体意见）：").strip()
+                return PlanDecision(approve=False, feedback=feedback)
+        except (EOFError, KeyboardInterrupt):
+            pass
+        return PlanDecision(approve=False)
+
     def _ask_one(self, index: int, question: Question) -> QuestionAnswer:
         header = f"〔{question.header}〕" if question.header else ""
         print(f"\n{index}. {header}{question.question}" + ("（可多选，用逗号隔开）" if question.multi_select else ""))
@@ -302,8 +337,9 @@ class Repl:
         settings = self.settings
         print(self.style.bold("PocketAgent"))
         mode = self.agent.context.permissions.mode.value
+        agent_mode = f" · {self.agent.agent_mode.label} 模式"
         directory = f"临时目录 {settings.workspace}" if settings.ephemeral else f"目录 {settings.workspace}"
-        print(self.style.dim(f"模型 {settings.display_model()} · {directory} · 审批 {mode}"))
+        print(self.style.dim(f"模型 {settings.display_model()} · {directory} · 审批 {mode}{agent_mode}"))
         print(self.style.dim(f"会话 {self.agent.session.id} · /help 查看命令 · Ctrl-C 中断 · Ctrl-D 退出"))
 
     def _read_input(self) -> str | None:
@@ -367,6 +403,8 @@ class Repl:
             self.loop.run_until_complete(self.agent.compact())
         elif result.action == "switch_mode":
             self._switch_mode(result.argument)
+        elif result.action == "switch_agent_mode":
+            self.loop.run_until_complete(self.agent.set_agent_mode(result.argument))
         elif result.action == "switch_model":
             self._switch_model(result.argument)
         elif result.action == "open_session":
@@ -404,6 +442,8 @@ def run_once(settings: Settings, session: Session | None, prompt: str, show_reas
             mode = ApprovalMode(outcome.argument)
             agent.context.permissions.mode = mode
             settings.approval_mode = mode
+        elif outcome.action == "switch_agent_mode":
+            asyncio.run(agent.set_agent_mode(outcome.argument))
         elif outcome.action == "switch_model":
             profile = AppConfig.load(settings.config_path).find_model(outcome.argument)
             if profile is not None:

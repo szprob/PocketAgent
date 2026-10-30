@@ -3,6 +3,12 @@
 工具在 `pocketagent/tools/` 里，基类 + 注册表；新增工具见 README「怎么扩展」。
 这里只写几个有独立机制的：文件读写、grep / glob、edit_file 等常规工具不展开。
 
+## 工作模式
+
+- `suggest_plan_mode`：Agent 模式下遇到值得先规划的任务，问用户要不要切到计划模式；同意后只读调研，拒绝就不再反复问
+- `submit_plan`：计划 / 设计模式下把方案交给用户批准；批准后自动切回 Agent 模式开始执行或实现，用户也可以要求继续完善
+- Ask / 计划 / 设计模式下权限门禁只放行只读工具，`bash`、写文件、`type=general` 的子 agent 都会被拒绝（见[权限与安全](safety.md)）
+
 ## 后台命令
 
 dev server、watch 这类不会自己退出的命令，bash 带上 `run_in_background=true` 就由独立监督进程接管，

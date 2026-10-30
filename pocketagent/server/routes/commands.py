@@ -60,6 +60,8 @@ async def _apply_command_action(
         return
     if result.action == "switch_mode":
         await web_session.set_mode(result.argument)
+    elif result.action == "switch_agent_mode":
+        await web_session.set_agent_mode(result.argument)
     elif result.action == "switch_model":
         await manager.switch_model(web_session, result.argument)
     elif result.action == "compact":

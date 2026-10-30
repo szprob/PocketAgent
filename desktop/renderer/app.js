@@ -90,6 +90,8 @@ const chat = new ChatView({
     onApprovals: (requestId, answers) => runtime.socket?.send({ type: "approval", request_id: requestId, answers }),
     onQuestionAnswer: (requestId, answers) =>
       runtime.socket?.send({ type: "question_answer", request_id: requestId, answers }),
+    onPlanAnswer: (requestId, approve, feedback) =>
+      runtime.socket?.send({ type: "plan_answer", request_id: requestId, approve, feedback }),
     onReturnedInputs: (inputs) => chatComposer.restoreTexts(inputs.map((input) => input.text)),
     onRewind: (message) => chatComposer.restoreMessage(message),
     onOpenAttachment: (attachment) => openAttachment(attachment),
@@ -109,6 +111,7 @@ const chatComposer = new Composer(elements.chatComposer, {
   onStop: interrupt,
   onModeChange: (mode) => runtime.socket?.send({ type: "set_mode", mode }),
   onModelChange: (modelId) => runtime.socket?.send({ type: "set_model", model_id: modelId }),
+  onAgentModeChange: (mode) => runtime.socket?.send({ type: "set_agent_mode", mode }),
 });
 
 const newTaskComposer = new Composer(elements.newTaskComposer, {
@@ -257,6 +260,7 @@ async function startNewTask({ text, files }) {
       ephemeral: choice.ephemeral,
       model_id: newTaskComposer.getModel(),
       mode: newTaskComposer.getMode(),
+      agent_mode: newTaskComposer.getAgentMode(),
     });
   } catch (error) {
     window.alert(`新建任务失败：${error.message}`);
@@ -279,6 +283,9 @@ function showNewTaskCommandOutput(outcome) {
   }
   if (outcome.action === "switch_mode" && outcome.argument) {
     newTaskComposer.setMode(outcome.argument);
+  }
+  if (outcome.action === "switch_agent_mode" && outcome.argument) {
+    newTaskComposer.setAgentMode(outcome.argument);
   }
 }
 
@@ -373,6 +380,7 @@ function applyChatStatus(status) {
   document.title = `${status.title || "PocketAgent"} · PocketAgent`;
   chatComposer.setMode(status.mode);
   chatComposer.setModel(status.model_id);
+  chatComposer.setAgentMode(status.agent_mode || "agent");
   chatComposer.setRunning(status.running, state.info?.busy_input_mode);
   chatComposer.setContext(status.context_tokens, status.context_window, status.compact_threshold);
   chatComposer.setCompacting(status.compacting);
@@ -462,6 +470,9 @@ function handleCommandOutcome(outcome) {
   }
   if (outcome.action === "open_session" && outcome.argument) {
     navigate(`#/task/${encodeURIComponent(outcome.argument)}`);
+  }
+  if (outcome.action === "switch_agent_mode" && outcome.argument) {
+    chatComposer.setAgentMode(outcome.argument);
   }
 }
 

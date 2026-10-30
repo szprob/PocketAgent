@@ -18,6 +18,7 @@ from pocketagent.account.usage import UsageLog
 from pocketagent.config import ModelProfile, Settings
 from pocketagent.core.agent import Agent, enabled_skills
 from pocketagent.core.session import SessionStore
+from pocketagent.interaction.modes import AgentMode
 from pocketagent.knowledge.memory import list_memories, read_index
 from pocketagent.knowledge.skills import Skill
 from pocketagent.safety.permissions import ApprovalMode
@@ -47,6 +48,10 @@ COMMANDS: list[CommandSpec] = [
     CommandSpec("new", "开新会话", aliases=("clear",)),
     CommandSpec("compact", "压缩上下文", needs_session=True),
     CommandSpec("mode", "查看或切换审批模式", usage="[模式]"),
+    CommandSpec("agent", "切换到 Agent 模式（正常干活，默认）"),
+    CommandSpec("ask", "切换到 Ask 模式（只回答问题，不改动）"),
+    CommandSpec("plan", "查看或切换计划模式", usage="[on|off]"),
+    CommandSpec("design", "切换到设计模式（先出设计方案）"),
     CommandSpec("model", "查看或切换模型", usage="[模型]"),
     CommandSpec("skills", "列出可用的技能", usage="[技能名]"),
     CommandSpec("status", "查看模型、目录、会话、上下文占用"),
@@ -74,7 +79,7 @@ class CommandResult:
 
     text: str = ""
     kind: str = "info"  # info / warning / error
-    action: str | None = None  # exit / new_session / compact / switch_mode / switch_model / open_session
+    action: str | None = None  # exit / new_session / compact / switch_mode / switch_agent_mode / switch_model / open_session
     argument: str = ""
 
 
@@ -197,6 +202,39 @@ async def _run_mode(argument: str, context: CommandContext) -> CommandResult:
     return CommandResult(f"审批模式已切换为 {mode.value}", action="switch_mode", argument=mode.value)
 
 
+async def _run_plan(argument: str, context: CommandContext) -> CommandResult:
+    current = context.agent.agent_mode if context.agent is not None else AgentMode.AGENT
+    if not argument:
+        state = "开" if current is AgentMode.PLAN else "关"
+        return CommandResult(
+            f"计划模式：{state}\n切换：/plan on、/plan off\n当前工作模式：{current.label}（/agent、/ask、/design 也能切）"
+        )
+    choice = argument.strip().lower()
+    if choice in ("on", "true", "1", "开"):
+        target = AgentMode.PLAN
+    elif choice in ("off", "false", "0", "关"):
+        target = AgentMode.AGENT
+    else:
+        return CommandResult("用法：/plan on 或 /plan off", kind="error")
+    return CommandResult(f"工作模式已切换为 {target.label}", action="switch_agent_mode", argument=target.value)
+
+
+async def _run_agent(argument: str, context: CommandContext) -> CommandResult:
+    return CommandResult("工作模式已切换为 Agent", action="switch_agent_mode", argument=AgentMode.AGENT.value)
+
+
+async def _run_ask(argument: str, context: CommandContext) -> CommandResult:
+    return CommandResult("工作模式已切换为 Ask（只回答问题，不改动）", action="switch_agent_mode", argument=AgentMode.ASK.value)
+
+
+async def _run_design(argument: str, context: CommandContext) -> CommandResult:
+    return CommandResult(
+        "工作模式已切换为设计（只读调研，出设计方案，批准后实现）",
+        action="switch_agent_mode",
+        argument=AgentMode.DESIGN.value,
+    )
+
+
 async def _run_model(argument: str, context: CommandContext) -> CommandResult:
     if not argument:
         return CommandResult(_model_listing(context))
@@ -232,6 +270,7 @@ async def _run_status(argument: str, context: CommandContext) -> CommandResult:
         session = context.agent.session
         lines.append(f"会话  {session.id}")
         lines.append(f"审批  {context.agent.context.permissions.mode.value}")
+        lines.append(f"工作模式  {context.agent.agent_mode.label}")
         tokens = context.agent.context.estimated_context_tokens()
         lines.append(f"上下文 约 {tokens} / {settings.context_window_tokens} tokens")
     else:
@@ -372,6 +411,10 @@ _HANDLERS: dict[str, Handler] = {
     "new": _run_new,
     "compact": _run_compact,
     "mode": _run_mode,
+    "agent": _run_agent,
+    "ask": _run_ask,
+    "plan": _run_plan,
+    "design": _run_design,
     "model": _run_model,
     "skills": _run_skills,
     "status": _run_status,

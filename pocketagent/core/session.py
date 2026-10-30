@@ -34,6 +34,13 @@ class Session:
     model_profile: str | None = None
     # 审批模式，续跑时接着用
     approval_mode: str | None = None
+    # 工作模式：agent（默认）/ ask / plan / design，续跑时接着用
+    agent_mode: str = "agent"
+    # 最近一次提交的方案（计划 / 设计方案）和状态（pending 等批准 / approved 已批准），刷新页面时照着恢复卡片
+    plan: str | None = None
+    plan_status: str | None = None
+    # 方案是哪一种：plan / design
+    plan_kind: str | None = None
     # 用户改过的标题；没改就用第一句话
     title: str | None = None
     # 谁建的：空是用户，"automation:<id>" 是定时任务
@@ -136,6 +143,12 @@ class SessionStore:
     def load(self, session_id: str, recover: bool = True) -> Session:
         """recover=True 时把进行中那一轮的日志重放到消息里；只看列表/标题时传 False，省得读大文件。"""
         data = json.loads(self.path_for(session_id).read_text(encoding="utf-8"))
+        # 早期版本只有布尔值的 plan_mode，读旧会话时换成 agent_mode
+        if "plan_mode" in data:
+            legacy_plan_mode = bool(data.pop("plan_mode"))
+            data.setdefault("agent_mode", "plan" if legacy_plan_mode else "agent")
+        if data.get("plan") and not data.get("plan_kind"):
+            data["plan_kind"] = "plan"
         session = Session(**data)
         if recover:
             self._replay_journal(session)

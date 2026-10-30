@@ -795,6 +795,19 @@ pre code { padding: 0; background: none; font-size: inherit; }
 .todo-item.in_progress .todo-mark { color: var(--info); animation: pulse 1.2s ease-in-out infinite; }
 .todo-item.pending .todo-mark { color: var(--text-muted); }
 
+/* 工作模式：输入框上的模式选择 + 对话里的切换建议 / 计划·设计批准卡 */
+.agent-mode-pill { cursor: pointer; }
+.plan-card { padding: 12px 14px; border: 1px solid var(--info); border-radius: 12px; background: var(--surface); box-shadow: var(--shadow); }
+.plan-card.plan-switch { border-color: var(--accent); }
+.plan-title { display: flex; align-items: center; gap: 6px; font-weight: 600; }
+.plan-title .icon { color: var(--accent); }
+.plan-reason { margin-top: 6px; color: var(--text-secondary); font-size: calc(13px * var(--font-scale)); overflow-wrap: anywhere; }
+.plan-body { margin-top: 8px; max-height: 460px; overflow: auto; }
+.plan-feedback { margin-top: 10px; width: 100%; padding: 7px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-muted); color: var(--text); font: inherit; font-size: calc(13px * var(--font-scale)); }
+.plan-feedback:focus { outline: none; border-color: var(--accent); }
+.plan-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.plan-status { margin-top: 8px; color: var(--text-muted); font-size: calc(13px * var(--font-scale)); }
+
 .approval-card { padding: 12px 14px; border: 1px solid var(--warning); border-radius: 12px; background: var(--warning-soft); }
 .approval-title { display: flex; align-items: center; gap: 6px; font-weight: 600; }
 .approval-note { margin-top: 4px; color: var(--warning); font-size: calc(13px * var(--font-scale)); overflow-wrap: anywhere; }

@@ -18,6 +18,7 @@ from pocketagent.tools.image import (
     ImageGenSettings,
     SearchImagesTool,
 )
+from pocketagent.tools.plan import SuggestPlanModeTool, SubmitPlanTool
 from pocketagent.tools.search import GlobTool, GrepTool
 from pocketagent.tools.shell import BashOutputTool, BashTool, KillShellTool
 from pocketagent.tools.skill import ActivateSkillTool
@@ -51,6 +52,8 @@ def default_tool_registry(
         KillShellTool(),
         AskUserTool(),
         TodoWriteTool(),
+        SuggestPlanModeTool(),
+        SubmitPlanTool(),
         SubagentTool(),
     ]
     if web_search is not None:

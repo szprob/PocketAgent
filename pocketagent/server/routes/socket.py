@@ -43,6 +43,10 @@ async def _handle_client_message(
             web_session.answer_approval(message["request_id"], message.get("answer"), message.get("answers"))
         elif message_type == "question_answer":
             web_session.answer_questions(message["request_id"], message.get("answers"))
+        elif message_type == "plan_answer":
+            web_session.answer_plan(
+                message["request_id"], bool(message.get("approve")), str(message.get("feedback") or "")
+            )
         elif message_type == "interrupt":
             await web_session.interrupt()
         elif message_type == "compact":
@@ -52,6 +56,8 @@ async def _handle_client_message(
             await web_session.broadcast_state()
         elif message_type == "set_mode":
             await web_session.set_mode(message["mode"])
+        elif message_type == "set_agent_mode":
+            await web_session.set_agent_mode(str(message.get("mode") or "agent"))
         elif message_type == "set_model":
             await manager.switch_model(web_session, message["model_id"])
         else:
