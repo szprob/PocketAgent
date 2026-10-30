@@ -626,6 +626,31 @@ class WebServerTest(WebTestBase):
         self.assertEqual(usage["periods"][0]["total"], 42)
         self.assertEqual(usage["by_model"][0]["model"], "DS")
 
+    async def test_balance_endpoint_returns_account_reports(self) -> None:
+        reports = [
+            {"provider": "OpenRouter", "models": ["DS"], "ok": True, "lines": ["已用 $0.0000"], "error": ""}
+        ]
+        with mock.patch(
+            "pocketagent.server.routes.settings.query_all_balances", new=mock.AsyncMock(return_value=reports)
+        ) as query:
+            balances = await self._get_json("/api/usage/balance")
+
+        query.assert_awaited_once()
+        self.assertEqual(balances["balances"], reports)
+
+    async def test_mcp_config_is_read_saved_and_reloaded(self) -> None:
+        initial = await self._get_json("/api/mcp")
+        self.assertEqual(initial["servers"], [])
+        self.assertTrue(initial["config_path"].endswith("mcp.json"))
+
+        saved = await (await self._send_json("PUT", "/api/mcp", {"servers": []})).json()
+        reloaded = await (await self._send_json("POST", "/api/mcp/reload", {})).json()
+
+        self.assertTrue(saved["ok"])
+        self.assertEqual(saved["overview"]["servers"], [])
+        self.assertTrue(reloaded["ok"])
+        self.assertEqual(reloaded["overview"]["servers"], [])
+
     # ---- 设置 ----
 
     async def test_config_hides_key_and_keeps_it_when_left_blank(self) -> None:
