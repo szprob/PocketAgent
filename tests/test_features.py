@@ -156,8 +156,26 @@ class AutomationTest(unittest.TestCase):
 
         self.assertEqual(automation.describe_schedule(), "周一、周三 09:30")
         self.assertEqual(automation.next_run_at(), datetime(2026, 10, 26, 9, 30))
-        self.assertTrue(automation.is_due(datetime(2026, 10, 26, 9, 31)))
-        self.assertFalse(automation.is_due(datetime(2026, 10, 26, 9, 0)))
+
+    def test_legacy_schedule_fields_become_a_clock_trigger(self) -> None:
+        """老 automations.json 里的扁平写法读进来就是 clock 源，不需要手动迁移。"""
+        automation = Automation.from_dict(
+            {
+                "id": "old-1",
+                "name": "日报",
+                "workspace": str(self.directories.workspace),
+                "prompt": "总结今天",
+                "schedule_kind": "interval",
+                "interval_minutes": 120,
+                "created_at": "2026-10-26T08:00:00",
+            }
+        )
+
+        self.assertEqual(automation.trigger.source.kind, "clock")
+        self.assertEqual(automation.trigger.source.mode, "interval")
+        self.assertEqual(automation.describe_schedule(), "每 2 小时")
+        # 存回去只有新形状，老的四个字段不再出现
+        self.assertNotIn("schedule_kind", automation.to_dict())
 
     def test_interval_schedule_counts_from_last_run(self) -> None:
         automation = Automation.from_form(self.form(schedule_kind="interval", interval_minutes=120))

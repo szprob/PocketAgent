@@ -1,6 +1,7 @@
-"""SessionManager：这个服务里的所有任务、工作区、配置、用量，以及自动化（定时任务）的调度。
+"""SessionManager：这个服务里的所有任务、工作区、配置、用量，以及自动化的调度。
 
 任务可以属于不同的工作区，各有一份 Settings；单个任务的运行时见 session.py（WebSession）。
+「什么时候跑」交给 TriggerEngine（triggers/engine.py），这里只负责被它叫起来开任务。
 """
 
 import asyncio
@@ -16,6 +17,7 @@ from typing import Any
 from pocketagent.account.usage import UsageLog
 from pocketagent.config import AppConfig, ConfigError, ModelProfile, Settings
 from pocketagent.core.agent import close_shared_mcp_managers, create_provider, shared_mcp_manager
+from pocketagent.core.events import Event, EventType
 from pocketagent.tools.mcp import McpError, McpManager, save_mcp_servers
 from pocketagent.core.scratch import create_scratch_workspace, ensure_scratch_workspace
 from pocketagent.core.session import Session, SessionStore
@@ -32,6 +34,8 @@ from pocketagent.server.session import (
     SessionBusyError,
     WebSession,
 )
+from pocketagent.server.triggers.engine import TriggerEngine
+from pocketagent.server.triggers.model import Occurrence, SOURCE_TASK_END
 from pocketagent.server.worktrees import create_worktree
 
 CONNECTION_TEST_PROMPT = "这是一次连通性测试，请只回复两个字：收到"
@@ -48,6 +52,13 @@ def _overview_with_problems(overview: dict[str, Any], problems: list[str]) -> di
     return overview
 
 
+def _automation_id_from_source(source: str | None) -> str:
+    """任务的 source 是 automation:<id> 时把 id 取出来；普通任务是空串。"""
+    if not source or not source.startswith("automation:"):
+        return ""
+    return source.split(":", 1)[1]
+
+
 class SessionManager:
     """这个服务里的所有任务、工作区、配置和用量。任务在内存里有就直接用，没有就从磁盘加载。"""
 
@@ -60,7 +71,14 @@ class SessionManager:
         self.store = SessionStore(base_settings.sessions_dir)
         self.usage_log = UsageLog(base_settings.usage_log_path)
         self.automations = AutomationStore(base_settings.home_dir / "automations.json")
+        self.triggers = TriggerEngine(
+            automations=self.automations,
+            start_run=self._start_triggered_run,
+            is_running=self._automation_is_running,
+        )
         self.sessions: dict[str, WebSession] = {}
+        # 触发器开出来的后台任务：留着引用，别让它们在半路被回收
+        self.trigger_tasks: set[asyncio.Task] = set()
 
     # ---- provider 和设置 ----
 
@@ -94,6 +112,8 @@ class SessionManager:
             settings, session=session, provider=self.build_provider(settings), provider_builder=self.build_provider
         )
         self.sessions[web_session.id] = web_session
+        # 每一轮结束时问一次触发器：有人配了「某个任务跑完就跑另一个」，就在这里接上
+        web_session.agent.context.events.subscribe(functools.partial(self._on_agent_event, web_session))
         return web_session
 
     # ---- 工作区 ----
@@ -449,24 +469,31 @@ class SessionManager:
     # ---- 自动化 ----
 
     def automation_summaries(self) -> list[dict[str, Any]]:
+        automation_names = self.automations.name_map()
         summaries = []
         for automation in self.automations.list_all():
             status = automation.last_status
             live = self.sessions.get(automation.last_session_id or "")
             if live is not None and live.running:
                 status = "running"
+            next_run_at = automation.next_run_at() if automation.enabled else None
             summaries.append(
                 {
                     **automation.to_dict(),
-                    "schedule_text": automation.describe_schedule(),
-                    "next_run_at": automation.next_run_at().isoformat(timespec="minutes") if automation.enabled else None,
+                    "schedule_text": automation.describe_schedule(automation_names),
+                    "trigger_kind": automation.trigger.source.kind,
+                    "next_run_at": next_run_at.isoformat(timespec="minutes") if next_run_at else None,
                     "last_status": status,
+                    "problem": self.triggers.problem_for(automation.id),
                 }
             )
         return summaries
 
-    def run_automation(self, automation_id: str) -> WebSession:
-        automation = self.automations.get(automation_id)
+    def run_automation(self, automation_id: str, occurrence: Occurrence | None = None) -> WebSession:
+        """开一个任务把这条自动化跑起来。occurrence 为空表示用户手点的「立即运行」。"""
+        return self._start_triggered_run(self.automations.get(automation_id), occurrence)
+
+    def _start_triggered_run(self, automation: Automation, occurrence: Occurrence | None) -> WebSession:
         web_session = self.create(
             Path(automation.workspace),
             model_id=automation.model_id,
@@ -475,6 +502,8 @@ class SessionManager:
             source=f"automation:{automation.id}",
         )
         web_session.approval_timeout_seconds = AUTOMATION_APPROVAL_TIMEOUT_SECONDS
+        # 这次任务是被触发的第几层：它自己再触发别人的时候，深度接着往下传
+        web_session.trigger_depth = occurrence.depth + 1 if occurrence is not None else 0
         web_session.start_turn(automation.prompt)
         automation.last_run_at = datetime.now().isoformat(timespec="seconds")
         automation.last_session_id = web_session.id
@@ -497,15 +526,42 @@ class SessionManager:
         live = self.sessions.get(automation.last_session_id or "")
         return live is not None and live.running
 
-    async def run_due_automations(self, now: datetime) -> None:
-        for automation in self.automations.list_all():
-            if automation.is_due(now) and not self._automation_is_running(automation):
-                try:
-                    self.run_automation(automation.id)
-                except (ConfigError, KeyError) as error:
-                    automation.last_run_at = now.isoformat(timespec="seconds")
-                    automation.last_status = f"error: {error}"
-                    self.automations.save(automation)
+    # ---- 触发器的两个入口 ----
+
+    def _on_agent_event(self, web_session: WebSession, event: Event) -> None:
+        """每一轮结束时问一次触发器。扔到后台任务里，别让条件脚本拖慢这一轮的收尾。"""
+        if event.type != EventType.TURN_END:
+            return
+        if not self.automations.path.is_file():
+            # 一条自动化都没配：别为了每一轮去读一次文件
+            return
+        occurrence = self._task_end_occurrence(web_session, event.data)
+        task = asyncio.create_task(self.triggers.fire(occurrence))
+        self.trigger_tasks.add(task)
+        task.add_done_callback(self.trigger_tasks.discard)
+
+    def _task_end_occurrence(self, web_session: WebSession, data: dict[str, Any]) -> Occurrence:
+        automation_id = _automation_id_from_source(web_session.session.source)
+        return Occurrence(
+            kind=SOURCE_TASK_END,
+            # 同一个任务的第几轮：轮数在会话上，重启也接着数
+            key=f"task_end:{web_session.id}:{web_session.session.turns}",
+            at=datetime.now(),
+            automation_id=automation_id,
+            automation_name=self._automation_name(automation_id),
+            session_id=web_session.id,
+            status=str(data.get("stop_reason") or ""),
+            text=str(data.get("final_text") or ""),
+            depth=web_session.trigger_depth,
+        )
+
+    def _automation_name(self, automation_id: str) -> str:
+        if not automation_id:
+            return ""
+        return self.automations.name_map().get(automation_id, "")
+
+    async def run_due_automations(self, now: datetime) -> list[Any]:
+        return await self.triggers.tick(now)
 
     async def run_scheduler(self) -> None:
         while True:

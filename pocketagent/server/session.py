@@ -166,6 +166,8 @@ class WebSession:
         self.queued_messages: list[dict[str, Any]] = []
         # 自动化任务设一个超时，没人审批就拒绝
         self.approval_timeout_seconds: float | None = None
+        # 这个任务是被触发器拉起来的第几层：0 是手动 / 到点，1 是别人跑完带出来的
+        self.trigger_depth = 0
         self.attachments = AttachmentStore(settings.attachments_dir, self.id)
 
     @property

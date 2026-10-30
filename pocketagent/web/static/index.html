@@ -559,11 +559,24 @@
           <label class="field"><span>模型</span><select name="model_id"></select></label>
           <label class="field"><span>权限</span><select name="approval_mode"></select></label>
         </div>
-        <fieldset class="radio-group">
-          <legend>计划</legend>
-          <label class="radio-option inline"><input type="radio" name="schedule_kind"
+        <div class="field-row">
+          <label class="field"><span>什么时候跑</span>
+            <select name="trigger_kind">
+              <option value="clock">到点</option>
+              <option value="task_end">某个任务跑完后</option>
+              <option value="webhook">外部 POST 进来</option>
+              <option value="poll">轮询检查</option>
+            </select></label>
+          <label class="field hidden" id="watch-field"><span>等哪个自动化</span>
+            <select name="watch_automation"></select></label>
+          <label class="field hidden" id="poll-interval-field"><span>每隔（分钟）</span>
+            <input name="poll_interval_minutes" type="number" min="5" step="5"></label>
+        </div>
+        <fieldset class="radio-group" id="clock-fields">
+          <legend>时间</legend>
+          <label class="radio-option inline"><input type="radio" name="clock_mode"
               value="daily"><span>每天定时</span></label>
-          <label class="radio-option inline"><input type="radio" name="schedule_kind"
+          <label class="radio-option inline"><input type="radio" name="clock_mode"
               value="interval"><span>每隔一段时间</span></label>
           <div class="schedule-fields" id="daily-fields">
             <input name="daily_time" type="time">
@@ -573,6 +586,22 @@
             <span>每</span><input name="interval_minutes" type="number" min="5" step="5"><span>分钟</span>
           </div>
         </fieldset>
+        <label class="field hidden" id="poll-fields"><span>检查命令（退出码 0 表示该跑了，1 表示还没有）</span>
+          <input name="poll_command" type="text" placeholder="如：git fetch -q &amp;&amp; git rev-list HEAD..@{u} --count | grep -qv '^0$'"></label>
+        <div class="field-hint hidden" id="webhook-fields"></div>
+        <div class="field-row">
+          <label class="field"><span>条件</span>
+            <select name="condition_kind">
+              <option value="always">无条件</option>
+              <option value="status">上一轮正常结束</option>
+              <option value="match">最后一段话匹配</option>
+              <option value="shell">检查脚本通过</option>
+            </select></label>
+          <label class="field hidden" id="condition-pattern-field"><span>正则</span>
+            <input name="condition_pattern" type="text" placeholder="如：已完成|DONE"></label>
+          <label class="field hidden" id="condition-shell-field"><span>条件命令（退出码 0 才算数）</span>
+            <input name="condition_command" type="text" placeholder="如：grep -q FAILED report.txt"></label>
+        </div>
         <label class="checkbox-field"><input type="checkbox" name="enabled"><span>启用</span></label>
         <div class="field-hint">没人在场审批：AI 自动审批不放行的操作会等你 10 分钟，没人处理就拒绝。</div>
       </form>

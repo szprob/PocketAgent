@@ -50,4 +50,6 @@ def add_routes(router: web.UrlDispatcher) -> None:
     router.add_put("/api/automations/{automation_id}", automations.update_automation)
     router.add_delete("/api/automations/{automation_id}", automations.delete_automation)
     router.add_post("/api/automations/{automation_id}/run", automations.run_automation_now)
+    # 外部系统的入口，用每条自动化自己的密钥验签，不走 token
+    router.add_post("/api/triggers/{automation_id}/hook", automations.automation_hook)
     router.add_get("/ws/{session_id}", socket.session_socket)
