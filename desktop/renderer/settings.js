@@ -85,6 +85,7 @@ export function initSettings(handlers) {
   elements.computerUseHint = document.getElementById("computer-use-hint");
   elements.sandboxEnabled = document.getElementById("sandbox-enabled");
   elements.sandboxNetwork = document.getElementById("sandbox-network");
+  elements.sandboxNetworkAllowlist = document.getElementById("sandbox-network-allowlist");
   elements.sandboxHint = document.getElementById("sandbox-hint");
   elements.allowOutsideWorkspace = document.getElementById("allow-outside-workspace");
   elements.trustedDirs = document.getElementById("trusted-dirs-input");
@@ -348,6 +349,7 @@ function fillGeneral() {
 
   elements.sandboxEnabled.checked = Boolean(config.sandbox_enabled);
   elements.sandboxNetwork.checked = Boolean(config.sandbox_network);
+  elements.sandboxNetworkAllowlist.value = (config.sandbox_network_allowlist || []).join("\n");
   elements.sandboxHint.textContent = config.sandbox_available
     ? "沙箱可用：bash 命令在沙箱里跑，写不到工作目录和临时目录以外的地方"
     : "这台机器上用不了沙箱（需要 sandbox-exec 或 bubblewrap），命令会直接跑";
@@ -426,6 +428,7 @@ function paintImageGenFields() {
 
 function paintSandboxFields() {
   elements.sandboxNetwork.disabled = !elements.sandboxEnabled.checked;
+  elements.sandboxNetworkAllowlist.disabled = !elements.sandboxEnabled.checked;
 }
 
 // ---- 模型表单 ----
@@ -844,6 +847,7 @@ async function saveConfig() {
     computer_use_enabled: elements.computerUseEnabled.checked,
     sandbox_enabled: elements.sandboxEnabled.checked,
     sandbox_network: elements.sandboxNetwork.checked,
+    sandbox_network_allowlist: linesOf(elements.sandboxNetworkAllowlist.value),
     allow_outside_workspace: elements.allowOutsideWorkspace.checked,
     skills_enabled: elements.skillsEnabled.checked,
     skill_dirs: linesOf(elements.skillDirs.value),

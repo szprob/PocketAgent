@@ -15,11 +15,12 @@ HAS_BASH = bash_executable() is not None
 @unittest.skipUnless(HAS_BASH, "这台机器上没有 bash")
 class BashExecutableTest(unittest.TestCase):
     def test_wrap_command_uses_found_bash(self) -> None:
-        arguments, note = wrap_command("echo hi", None)
+        prepared = wrap_command("echo hi", None)
 
-        self.assertIn(Path(arguments[0]).name.lower(), ("bash", "bash.exe"))
-        self.assertEqual(arguments[1:], ["-c", "echo hi"])
-        self.assertEqual(note, "")
+        self.assertIn(Path(prepared.command_line[0]).name.lower(), ("bash", "bash.exe"))
+        self.assertEqual(prepared.command_line[1:], ["-c", "echo hi"])
+        self.assertEqual(prepared.note, "")
+        self.assertEqual(prepared.environment, {})
 
 
 class MissingBashTest(unittest.TestCase):

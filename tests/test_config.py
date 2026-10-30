@@ -72,6 +72,20 @@ class AppConfigTest(unittest.TestCase):
         self.assertTrue(enabled.public_dict()["allow_outside_workspace"])
         self.assertIn("computer_use_available", enabled.public_dict())
 
+    def test_sandbox_network_allowlist_round_trips(self) -> None:
+        default = AppConfig.from_dict({})
+        configured = AppConfig.from_dict({"sandbox_network_allowlist": ["pypi.org", "*.github.com"]})
+        from_text = AppConfig.from_dict({"sandbox_network_allowlist": "pypi.org, *.github.com"})
+        settings = Settings()
+        settings.apply_app_config(configured)
+
+        self.assertEqual(default.sandbox_network_allowlist, [])
+        self.assertEqual(configured.sandbox_network_allowlist, ["pypi.org", "*.github.com"])
+        self.assertEqual(from_text.sandbox_network_allowlist, ["pypi.org", "*.github.com"])
+        self.assertEqual(configured.to_dict()["sandbox_network_allowlist"], ["pypi.org", "*.github.com"])
+        self.assertEqual(configured.public_dict()["sandbox_network_allowlist"], ["pypi.org", "*.github.com"])
+        self.assertEqual(settings.sandbox_network_allowlist, ["pypi.org", "*.github.com"])
+
     def test_appearance_and_font_size(self) -> None:
         default = AppConfig.from_dict({})
         chosen = AppConfig.from_dict({"appearance": "dark", "font_size": "large"})

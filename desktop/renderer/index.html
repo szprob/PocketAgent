@@ -321,6 +321,11 @@
                     <span>把 bash 关进沙箱：只能写工作目录、临时目录和缓存目录，读不到密钥</span></label>
                   <label class="checkbox-field"><input type="checkbox" id="sandbox-network" />
                     <span>沙箱里允许联网</span></label>
+                  <label class="field"><span>联网白名单：不勾「允许联网」时，沙箱里只放行这些域名（一行一个）</span>
+                    <textarea id="sandbox-network-allowlist" rows="3" placeholder="pypi.org&#10;*.github.com"></textarea></label>
+                  <div class="field-hint">「*.example.com」连 example.com 和子域名一起放行；不写端口表示任何端口。命令通过本地代理访问，
+                    只认 HTTP(S)：git push 走 HTTPS 可以，SSH 不行；其它协议要联网就用沙箱外执行。
+                    目前只有 macOS 的沙箱支持白名单，Linux 上配了也只当不能联网。</div>
                   <div class="field-hint" id="sandbox-hint"></div>
                 </fieldset>
               </div>

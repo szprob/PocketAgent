@@ -53,7 +53,17 @@ bash 默认关在沙箱里（macOS 用系统自带的 `sandbox-exec`，Linux 用
 
 - 能读大部分文件，读不到 `~/.ssh`、`~/.aws`、`~/.gnupg`、`~/.netrc`、`~/.config/gh` 和 PocketAgent 自己的目录（有 API Key）
 - 只能写工作目录、临时目录、`~/.cache`、`~/Library/Caches` 和设置里的免问目录；工作目录里的 `.git/hooks`、`.git/config` 也不能写
-- 默认不能联网（⚙ 设置 → 权限与安全里可以打开）
+- 联网有三档：默认不能联网；⚙ 设置 → 权限与安全里可以整个打开；也可以只配「联网白名单」
+  （配置文件里的 `sandbox_network_allowlist`），沙箱里只放行这些域名
+
+白名单条目写域名，大小写不敏感，不写端口表示任何端口：`pypi.org` 只匹配这个域名，`*.github.com` 连
+`github.com` 和它的子域名一起放行，`registry.npmjs.org:443` 限定端口。
+
+macOS 的 Seatbelt 不接受具体域名 / IP 的规则，所以白名单靠本地代理实现：沙箱只允许连
+`localhost:<代理端口>`，命令的 HTTP(S) 请求转给 PocketAgent 进程里的代理，代理看 CONNECT 的目标域名再决定连不连。
+因此只覆盖走代理的 HTTP(S)：curl、pip、npm、`git push`（HTTPS 地址）可以，SSH、rsync 这类协议不行，要联网只能
+`outside_sandbox=true`。代理只监听 `127.0.0.1`；后台命令也用这个代理，PocketAgent 退出后后台命令还在跑，但联网会断。
+Linux 的 bubblewrap 没有按域名放行的能力，配了白名单也只当不能联网（工具结果里会说明）。
 
 被拦下时工具结果会提示模型；它确实需要时（装依赖、`git push`、写别处）会带 `outside_sandbox=true` 重新执行，
 这一次要你确认，界面上的工具卡片标着「沙箱外」。机器上没有可用的沙箱时命令直接执行，设置里会说明。

@@ -145,8 +145,8 @@ class WorktreeSandboxTest(unittest.TestCase):
             secret_dirs=[self.directories.home_dir],
             worktree_git_dirs=[Path(path) for path in self.info.git_dirs],
         )
-        arguments, _ = wrap_command(command, policy)
-        return subprocess.run(arguments, cwd=self.info.path, capture_output=True, text=True, timeout=30)
+        prepared = wrap_command(command, policy)
+        return subprocess.run(prepared.command_line, cwd=self.info.path, capture_output=True, text=True, timeout=30)
 
     def test_git_commit_works_but_hooks_and_config_stay_protected(self) -> None:
         commit = self.run_sandboxed(

@@ -5,6 +5,10 @@
 - Windows：还没有沙箱实现，命令直接执行
 - 都没有：照常执行，但在结果里写明「没有隔离」
 
+联网可以全开（allow_network）、全关，或者只放行白名单里的域名：Seatbelt 只允许连
+本地代理的端口，代理再按域名决定放不放行（见 network_proxy.py）。bubblewrap 没有这个能力，
+Linux 上配了白名单也只当「不能联网」。
+
 真需要在笼子外跑（装依赖要联网、写工作目录外的文件），bash 带上 outside_sandbox=true，
 这种调用一定要用户确认（「完全访问」模式除外）。
 """
@@ -16,6 +20,7 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from pocketagent.safety.network_proxy import network_proxy
 from pocketagent.safety.processes import bash_executable
 
 # 不管怎样都不让命令读的地方：密钥、凭据
@@ -58,9 +63,20 @@ def is_within(path: Path, root: Path) -> bool:
 
 
 @dataclass
+class SandboxCommand:
+    """要执行的命令、给模型看的说明，以及要额外注入的环境变量（联网白名单的代理地址）。"""
+
+    command_line: list[str]
+    note: str = ""
+    environment: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
 class SandboxPolicy:
     workspace: Path
     allow_network: bool = False
+    # 只放行这些域名（写法见 network_proxy.py）；allow_network 为 True 时不起作用
+    network_allowlist: list[str] = field(default_factory=list)
     # 读不到的地方：密钥、凭据，再加上 PocketAgent 自己的目录（放着 API Key）
     secret_dirs: list[Path] = field(default_factory=default_secret_dirs)
     # 上面这些目录里例外能读的，例如这个会话的附件目录
@@ -89,6 +105,13 @@ class SandboxPolicy:
         for git_dir in self.worktree_git_dirs:
             protected += [git_dir.resolve() / "hooks", git_dir.resolve() / "config"]
         return protected
+
+    def network_summary(self) -> str:
+        if self.allow_network:
+            return "可以联网"
+        if self.network_allowlist:
+            return "只能联网访问白名单里的域名（" + "、".join(self.network_allowlist) + "）"
+        return "不能联网"
 
 
 def _unique_real_paths(paths: list[Path]) -> list[Path]:
@@ -153,6 +176,10 @@ def seatbelt_profile(policy: SandboxPolicy) -> str:
     ]
     if policy.allow_network:
         lines.append("(allow network*)")
+    elif policy.network_allowlist:
+        # 只放行本地代理；域名由代理判断（Seatbelt 不接受具体域名 / IP 的规则）
+        proxy = network_proxy(policy.network_allowlist)
+        lines.append(f'(allow network-outbound (remote tcp "localhost:{proxy.port}"))')
     return "\n".join(line for line in lines if line)
 
 
@@ -188,8 +215,8 @@ def bubblewrap_arguments(policy: SandboxPolicy) -> list[str]:
     return arguments
 
 
-def wrap_command(command: str, policy: SandboxPolicy | None) -> tuple[list[str], str]:
-    """返回 (要执行的参数, 说明)；说明非空时附在工具结果里告诉模型。"""
+def wrap_command(command: str, policy: SandboxPolicy | None) -> SandboxCommand:
+    """返回要执行的命令、说明和额外的环境变量；说明非空时附在工具结果里告诉模型。"""
     bash = bash_executable()
     if bash is None:
         raise BashUnavailable(
@@ -198,20 +225,28 @@ def wrap_command(command: str, policy: SandboxPolicy | None) -> tuple[list[str],
         )
     plain = [bash, "-c", command]
     if policy is None:
-        return plain, ""
+        return SandboxCommand(plain)
     kind = available_sandbox()
     if kind == "seatbelt":
-        return ["sandbox-exec", "-p", seatbelt_profile(policy), *plain], ""
+        environment: dict[str, str] = {}
+        if not policy.allow_network and policy.network_allowlist:
+            environment = network_proxy(policy.network_allowlist).environment()
+        return SandboxCommand(["sandbox-exec", "-p", seatbelt_profile(policy), *plain], "", environment)
     if kind == "bubblewrap":
-        return [*bubblewrap_arguments(policy), *plain], ""
-    return plain, "（这台机器没有可用的沙箱：macOS 需要 sandbox-exec，Linux 需要 bubblewrap，Windows 还没有沙箱实现；这条命令没有隔离）"
+        note = ""
+        if not policy.allow_network and policy.network_allowlist:
+            note = "（Linux 的 bubblewrap 还不支持按域名放行，联网白名单只当不能联网；需要联网请用 outside_sandbox=true）"
+        return SandboxCommand([*bubblewrap_arguments(policy), *plain], note)
+    return SandboxCommand(
+        plain,
+        "（这台机器没有可用的沙箱：macOS 需要 sandbox-exec，Linux 需要 bubblewrap，Windows 还没有沙箱实现；这条命令没有隔离）",
+    )
 
 
 def denial_hint(output: str, policy: SandboxPolicy | None) -> str:
     if policy is None or not any(hint in output for hint in DENIAL_HINTS):
         return ""
-    network = "可以联网" if policy.allow_network else "不能联网"
     return (
-        f"\n（可能是被沙箱拦了：命令只能写工作目录、临时目录和缓存目录，{network}，读不到密钥目录。"
+        f"\n（可能是被沙箱拦了：命令只能写工作目录、临时目录和缓存目录，{policy.network_summary()}，读不到密钥目录。"
         "确实需要的话，用 outside_sandbox=true 再执行一次，会请用户确认。）"
     )

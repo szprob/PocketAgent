@@ -83,7 +83,13 @@ class BackgroundTaskManager:
             record["output_bytes"] = 0
         return record
 
-    async def start(self, command: str, command_line: list[str], sandbox_note: str = "") -> dict[str, Any]:
+    async def start(
+        self,
+        command: str,
+        command_line: list[str],
+        sandbox_note: str = "",
+        environment: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
         task_id = datetime.now().strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:8]
         directory = self._directory(task_id)
         directory.mkdir(parents=True, mode=0o700)
@@ -117,6 +123,7 @@ class BackgroundTaskManager:
             "output_path": str(output_path),
             "stop_request_path": str(stop_request_path),
             "sandbox_note": sandbox_note,
+            "environment": environment or {},
         }
         config_path = directory / "config.json"
         _write_json(config_path, config)

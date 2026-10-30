@@ -8,6 +8,7 @@
 
 import asyncio
 import codecs
+import os
 from typing import Any
 
 from pocketagent.safety.processes import terminate_process_tree
@@ -33,8 +34,8 @@ BASE_DESCRIPTION = (
     "拿到 id 后用 bash_output 看输出、用 kill_shell 结束。"
 )
 SANDBOX_DESCRIPTION = (
-    "命令默认在沙箱里跑：只能写工作目录和临时目录，读不到密钥目录，不能联网。"
-    "确实需要联网（装依赖、git push）或写工作目录以外的地方时，设 outside_sandbox=true，会请用户确认。"
+    "命令默认在沙箱里跑：只能写工作目录和临时目录，读不到密钥目录，{network}。"
+    "要跳出沙箱（访问受限的网络、写工作目录以外的地方）时，设 outside_sandbox=true，会请用户确认。"
 )
 
 
@@ -42,9 +43,10 @@ class BashTool(Tool):
     name = "bash"
     kind = ToolKind.EXECUTE
 
-    def __init__(self, sandboxed: bool = False) -> None:
+    def __init__(self, sandboxed: bool = False, network_note: str = "沙箱里不能联网") -> None:
         """sandboxed 只决定告诉模型什么（说明文字、有没有 outside_sandbox 参数）；真正隔离看 ToolContext.sandbox。"""
-        self.description = BASE_DESCRIPTION + (SANDBOX_DESCRIPTION if sandboxed else "")
+        description = SANDBOX_DESCRIPTION.format(network=network_note) if sandboxed else ""
+        self.description = BASE_DESCRIPTION + description
         properties: dict[str, Any] = {
             "command": {"type": "string", "description": "要执行的命令"},
             "timeout_seconds": {"type": "integer", "description": f"超时秒数，最长 {MAX_TIMEOUT_SECONDS}"},
@@ -76,13 +78,16 @@ class BashTool(Tool):
     async def run(self, arguments: dict[str, Any], context: ToolContext) -> ToolResult:
         timeout_seconds = min(int(arguments.get("timeout_seconds", context.shell_timeout_seconds)), MAX_TIMEOUT_SECONDS)
         policy = None if arguments.get("outside_sandbox") else context.sandbox
-        command_line, sandbox_note = wrap_command(arguments["command"], policy)
+        prepared = wrap_command(arguments["command"], policy)
+        sandbox_note = prepared.note
         if arguments.get("run_in_background"):
             manager = _background_manager(context)
             if manager is None:
                 return ToolResult("当前上下文没有配置后台命令管理器", is_error=True)
             try:
-                record = await manager.start(arguments["command"], command_line, sandbox_note)
+                record = await manager.start(
+                    arguments["command"], prepared.command_line, sandbox_note, prepared.environment
+                )
             except (OSError, TimeoutError) as error:
                 return ToolResult(f"后台命令启动失败：{error}", is_error=True)
             note = f"\n{sandbox_note}" if sandbox_note else ""
@@ -95,8 +100,9 @@ class BashTool(Tool):
                 text += f"\n{record['error']}"
             return ToolResult(text, is_error=record["status"] == "error")
         process = await asyncio.create_subprocess_exec(
-            *command_line,
+            *prepared.command_line,
             cwd=context.workspace,
+            env={**os.environ, **prepared.environment},
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,

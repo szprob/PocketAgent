@@ -111,6 +111,15 @@ def sandbox_active(settings: Settings) -> bool:
     return settings.sandbox_enabled and available_sandbox() is not None
 
 
+def sandbox_network_text(settings: Settings) -> str:
+    if settings.sandbox_network:
+        return "沙箱里可以联网"
+    if settings.sandbox_network_allowlist:
+        names = "、".join(settings.sandbox_network_allowlist)
+        return f"沙箱里只能联网访问白名单里的域名（{names}）"
+    return "沙箱里不能联网"
+
+
 def build_tool_context(
     settings: Settings,
     session: Session,
@@ -139,6 +148,7 @@ def build_tool_context(
         sandbox = SandboxPolicy(
             workspace=settings.workspace,
             allow_network=settings.sandbox_network,
+            network_allowlist=list(settings.sandbox_network_allowlist),
             secret_dirs=secret_dirs,
             readable_exceptions=extra_read_dirs,
             # 免问目录和密钥目录重叠时不进沙箱的可写范围：bash 在沙箱里照旧碰不到密钥
@@ -172,6 +182,7 @@ def build_tool_registry(settings: Settings, skills: list[Skill]) -> ToolRegistry
         web_search=settings.web_search,
         web_fetch=settings.web_fetch,
         sandboxed=sandbox_active(settings),
+        sandbox_network_note=sandbox_network_text(settings),
         skills=skills,
         ripgrep_path=settings.ripgrep_path,
         image_gen=settings.image_gen,
