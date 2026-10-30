@@ -264,6 +264,8 @@ async def run_subagent(parent: AgentContext, request: SubagentRequest, call_id: 
         attachments_root=parent.attachments_root,
         # 子 agent 里的调用也按设置里的审批模型 / 档位做 AI 审批
         review_provider=parent.review_provider,
+        # 钩子照跑：它看的是「这个任务里发生了什么」，子 agent 调的工具也算
+        hooks=parent.hooks,
         skills=parent.skills,
     )
     context.turn = TurnState()

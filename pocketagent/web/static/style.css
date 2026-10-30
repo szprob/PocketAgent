@@ -1266,6 +1266,38 @@ pre code { padding: 0; background: none; font-size: inherit; }
 .test-result.ok { color: var(--success); }
 .test-result.error { color: var(--danger); }
 
+/* ---------- 钩子 ---------- */
+
+.hook-list { display: flex; flex-direction: column; gap: 10px; }
+.hook-item { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+.hook-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.hook-head select, .hook-head input[type="text"], .hook-head input[type="number"] {
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: calc(13px * var(--font-scale));
+}
+.hook-head select:focus, .hook-head input:focus, .hook-command:focus { outline: none; border-color: var(--accent); }
+.hook-matcher { flex: 1; min-width: 180px; }
+.hook-matcher:disabled { opacity: 0.5; }
+.hook-timeout { width: 72px; flex: none; }
+.hook-unit { color: var(--text-muted); font-size: calc(12px * var(--font-scale)); }
+.hook-enabled { flex: none; align-items: center; gap: 6px; }
+.hook-enabled input { margin-top: 0; }
+.hook-command {
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: calc(13px * var(--font-scale));
+  resize: vertical;
+}
+
 /* ---------- 用量 ---------- */
 
 .usage-tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }

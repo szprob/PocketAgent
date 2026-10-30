@@ -39,6 +39,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from pocketagent.knowledge.memory import project_memory_dir
+from pocketagent.safety.hooks import HookDefinition
 from pocketagent.safety.permissions import ApprovalMode
 from pocketagent.safety.sandbox import available_sandbox
 from pocketagent.tools.image import (
@@ -246,6 +247,21 @@ def _name_list(value: Any) -> list[str]:
     return names
 
 
+def _hook_list(value: Any) -> list[HookDefinition]:
+    """钩子的校验放在 hooks.py 里，这里只把它的报错换成配置报错（界面上一并显示）。"""
+    if value in (None, ""):
+        return []
+    if not isinstance(value, list):
+        raise ConfigError("钩子必须是 JSON 数组（[...]）")
+    hooks: list[HookDefinition] = []
+    for item in value:
+        try:
+            hooks.append(HookDefinition.from_dict(item))
+        except ValueError as error:
+            raise ConfigError(str(error))
+    return hooks
+
+
 def _approval_mode(value: Any) -> ApprovalMode:
     try:
         return ApprovalMode(value or ApprovalMode.ASK.value)
@@ -444,6 +460,8 @@ class AppConfig:
     image_search_enabled: bool = True
     # computer use（截屏 + 键鼠，只有 macOS）：能操作整台电脑，默认关，用户在设置里勾了才给模型
     computer_use_enabled: bool = False
+    # 钩子：在几个固定时机跑用户自己的脚本（见 safety/hooks.py），默认一条都没有
+    hooks: list[HookDefinition] = field(default_factory=list)
     # bash 沙箱：只能写工作目录和临时目录、读不到密钥；sandbox_network 决定沙箱里能不能联网
     sandbox_enabled: bool = True
     sandbox_network: bool = False
@@ -520,6 +538,7 @@ class AppConfig:
             image_gen_api_key=_optional_text(data, "image_gen_api_key"),
             image_search_enabled=_boolean_with_default(data, "image_search_enabled", True),
             computer_use_enabled=_boolean_with_default(data, "computer_use_enabled", False),
+            hooks=_hook_list(data.get("hooks")),
             sandbox_enabled=_boolean_with_default(data, "sandbox_enabled", True),
             sandbox_network=_boolean_with_default(data, "sandbox_network", False),
             allow_outside_workspace=_boolean_with_default(data, "allow_outside_workspace", False),
@@ -578,6 +597,7 @@ class AppConfig:
             "image_gen_api_key": self.image_gen_api_key,
             "image_search_enabled": self.image_search_enabled,
             "computer_use_enabled": self.computer_use_enabled,
+            "hooks": [hook.to_dict() for hook in self.hooks],
             "sandbox_enabled": self.sandbox_enabled,
             "sandbox_network": self.sandbox_network,
             "allow_outside_workspace": self.allow_outside_workspace,
@@ -629,6 +649,7 @@ class AppConfig:
             "image_search_enabled": self.image_search_enabled,
             "computer_use_enabled": self.computer_use_enabled,
             "computer_use_available": sys.platform == "darwin",
+            "hooks": [hook.to_dict() for hook in self.hooks],
             "sandbox_enabled": self.sandbox_enabled,
             "sandbox_network": self.sandbox_network,
             "sandbox_available": available_sandbox(),
@@ -814,6 +835,8 @@ class Settings:
     image_gen: ImageGenSettings | None = None
     image_search: bool = True
     computer_use: bool = False
+    # 钩子：在固定时机跑用户自己的脚本（见 safety/hooks.py）
+    hooks: list[HookDefinition] = field(default_factory=list)
     sandbox_enabled: bool = True
     sandbox_network: bool = False
     allow_outside_workspace: bool = False
@@ -921,6 +944,7 @@ class Settings:
         self.image_gen = app_config.image_gen_settings()
         self.image_search = app_config.image_search_enabled
         self.computer_use = app_config.computer_use_enabled
+        self.hooks = list(app_config.hooks)
         self.sandbox_enabled = app_config.sandbox_enabled
         self.sandbox_network = app_config.sandbox_network
         self.allow_outside_workspace = app_config.allow_outside_workspace

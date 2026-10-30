@@ -6,7 +6,7 @@
 已经能用的：主循环、内置工具（文件、搜索、bash（含跨重启的持久后台命令）、联网搜索、读网页、生图 / 搜图、技能、向用户提问、子 agent）、多档权限（含 AI 自动审批）、
 bash 沙箱、工作目录外的访问审批、影子 git 检查点（看变更、撤销、整体恢复）、技能（Agent Skills 标准）、项目记忆、
 流式事件、trace、会话续跑、后台自动压缩上下文、多模型配置（OpenAI 兼容 / Anthropic 两种协议，思考档位 / 上下文长度随模型走）、
-MCP、附件（图片 / 文件）、插话和排队、token 用量和缓存命中统计、定时自动化，
+MCP、钩子（几个固定时机跑你自己的脚本，能拦住工具调用）、附件（图片 / 文件）、插话和排队、token 用量和缓存命中统计、定时自动化，
 以及命令行 REPL、全屏 TUI 和 web 三套界面。
 新任务默认就地编辑；前台任务派出的、会改文件的子 agent 自动在独立 git worktree 里做，互不干扰。grep / glob 优先用 ripgrep（遵守 .gitignore），没装 rg 时回退纯 Python 实现。
 
@@ -81,12 +81,11 @@ py -3.12 -m pocketagent --web -C D:\SZ\git\foo
 
 对照 Codex / Claude Code / WorkBuddy / Qoder，还缺这些，大致按优先级排：
 
-1. **hooks**（工具调用前后跑用户脚本）
-2. **plan 模式**：todo 清单已经有了，缺「先出方案、人确认再执行」
-3. **沙箱联网白名单**：现在只有开 / 关，可以像 Claude Code 那样走代理按域名放行；Linux bubblewrap 要在真机上验证
-4. **trace 回放和评测**：拿 JSONL trace 重放、对比不同模型或提示词
-5. **界面**：IDE 插件；web 里搜索任务
-6. **更多协议**：Anthropic 已经接上，Gemini 等其他原生协议按 `LLMProvider` 再加
+1. **plan 模式**：todo 清单已经有了，缺「先出方案、人确认再执行」
+2. **沙箱联网白名单**：现在只有开 / 关，可以像 Claude Code 那样走代理按域名放行；Linux bubblewrap 要在真机上验证
+3. **trace 回放和评测**：拿 JSONL trace 重放、对比不同模型或提示词
+4. **界面**：IDE 插件；web 里搜索任务
+5. **更多协议**：Anthropic 已经接上，Gemini 等其他原生协议按 `LLMProvider` 再加
 
 ## 测试
 

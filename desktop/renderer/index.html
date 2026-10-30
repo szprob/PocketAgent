@@ -159,6 +159,7 @@
             <button class="settings-tab" type="button" data-tab="permissions">权限与安全</button>
             <button class="settings-tab" type="button" data-tab="tools">工具</button>
             <button class="settings-tab" type="button" data-tab="mcp">MCP</button>
+            <button class="settings-tab" type="button" data-tab="hooks">钩子</button>
             <button class="settings-tab" type="button" data-tab="skills">技能</button>
             <button class="settings-tab" type="button" data-tab="memory">记忆</button>
             <button class="settings-tab" type="button" data-tab="usage">用量</button>
@@ -429,6 +430,22 @@
                     <div class="field-hint" id="mcp-status"></div>
                   </div>
                 </form>
+              </div>
+            </div>
+
+            <div class="settings-page hidden" data-page="hooks">
+              <div class="form-fields">
+                <div class="field-hint">钩子是在几个固定时机跑你自己脚本的地方：拦住危险命令、改完文件顺手跑格式化或 lint、
+                  给模型补一段上下文、一轮结束时发通知。脚本按你的权限跑，不进沙箱、也不用审批。</div>
+                <div id="hook-list" class="hook-list"></div>
+                <div>
+                  <button id="add-hook" class="ghost-button" type="button"><span>添加钩子</span></button>
+                </div>
+                <div class="field-hint">
+                  脚本从 stdin 拿到一份 JSON：event、session_id、workspace，工具事件另有 tool_name、tool_input、
+                  tool_result、is_error，一句话事件有 prompt，收尾有 stop_reason、final_text。
+                  退出码 0 表示通过，2 表示拦住（stderr 是原因），其他值只提示、不拦。
+                </div>
               </div>
             </div>
 

@@ -41,6 +41,7 @@ from pocketagent.interaction.attachments import DISPLAY_KEY, message_display
 from pocketagent.knowledge.skills import Skill, discover_skills, find_skill_command, skill_content, skill_directories
 from pocketagent.llm.base import LLMProvider
 from pocketagent.safety.checkpoints import TaskCheckpoints
+from pocketagent.safety.hooks import HookOutcome, HookRunner
 from pocketagent.safety.permissions import Approver, PermissionGate
 from pocketagent.safety.sandbox import SandboxPolicy, available_sandbox, default_secret_dirs
 from pocketagent.tools import default_tool_registry
@@ -280,15 +281,23 @@ class Agent:
             user_text=display["text"],
             attachments=display["attachments"],
         )
-        # 拍检查点要读一遍工作区（大工作区要几百毫秒），和第一次调用模型同时做，不让用户干等
-        context.pending_checkpoint = asyncio.create_task(self._checkpoint_turn_start(display["text"]))
-        # MCP 工具每次开跑前确认一遍：连上了、或者用户刚改了 mcp.json，都下一轮生效
-        await self._ensure_mcp_tools()
+        # 钩子先看这句话：可以补一段上下文（当前分支、相关工单），也可以直接拦住这一轮。
+        # 放在 TURN_START 之后：界面先把用户的话画出来，再等脚本跑完
+        submitted = await self._run_hook("user_prompt_submit", {"prompt": display["text"]})
         self.turn_running = True
         try:
-            await self.flow.run_async(context)
-            await context.wait_for_turn_checkpoint()
-            await apply_finished_compaction(context)
+            if submitted.blocked:
+                await self._block_turn(submitted.reason)
+            else:
+                if submitted.additional_context:
+                    context.messages.append(_hook_context_message(submitted.additional_context))
+                # 拍检查点要读一遍工作区（大工作区要几百毫秒），和第一次调用模型同时做，不让用户干等
+                context.pending_checkpoint = asyncio.create_task(self._checkpoint_turn_start(display["text"]))
+                # MCP 工具每次开跑前确认一遍：连上了、或者用户刚改了 mcp.json，都下一轮生效
+                await self._ensure_mcp_tools()
+                await self.flow.run_async(context)
+                await context.wait_for_turn_checkpoint()
+                await apply_finished_compaction(context)
         except (asyncio.CancelledError, KeyboardInterrupt):
             context.turn.stop_reason = "interrupted"
             close_dangling_tool_calls(context.messages)
@@ -304,7 +313,26 @@ class Agent:
             await context.events.emit(
                 EventType.TURN_END, stop_reason=context.turn.stop_reason, final_text=context.turn.final_text
             )
+            # 收尾动作（发通知、记审计）放在「这一轮结束了」之后，不让它拖慢界面；
+            # 被中断的那一轮不跑，不然 Ctrl-C 还要等脚本跑完
+            if context.turn.stop_reason != "interrupted":
+                await self._run_hook(
+                    "turn_end",
+                    {"stop_reason": context.turn.stop_reason, "final_text": context.turn.final_text},
+                )
         return context.turn.final_text
+
+    async def _run_hook(self, event: str, payload: dict[str, Any]) -> HookOutcome:
+        if self.context.hooks is None:
+            return HookOutcome()
+        return await self.context.hooks.run(event, payload)
+
+    async def _block_turn(self, reason: str) -> None:
+        """user_prompt_submit 的钩子把这句话拦住了：不调模型，给用户和下一轮的模型各留一条说明。"""
+        text = f"钩子拦住了这句话，这一轮没有执行：{reason or '钩子没有说明原因'}"
+        self.context.messages.append({"role": "user", "content": text, "_kind": "notice"})
+        self.context.turn.stop_reason = "hook_blocked"
+        await self.context.events.emit(EventType.ERROR, message=text)
 
     def _save_session(self) -> None:
         """全量存一次，并清掉进行中的日志：日志里的内容已经进 JSON 了。"""
@@ -435,6 +463,11 @@ def _as_user_message(user_input: str | dict[str, Any]) -> dict[str, Any]:
     return message
 
 
+def _hook_context_message(text: str) -> dict[str, Any]:
+    """钩子补的上下文单独一条，不改用户的原话；界面重放历史时显示成提示行。"""
+    return {"role": "user", "content": f"（钩子补充的上下文：{text}）", "_kind": "notice"}
+
+
 def _with_usage_recording(
     provider: LLMProvider, usage_log: UsageLog | None, settings: Settings, session: Session
 ) -> LLMProvider:
@@ -540,6 +573,7 @@ def create_agent(
         journal=journal,
         # MCP 工具由 run_turn 每轮开头自动接（见 _ensure_mcp_tools）
         mcp_manager=shared_mcp_manager(settings.home_dir),
+        hooks=HookRunner(settings, session.id, events),
         skills=skills,
     )
     attach_subagent_runner(context)
