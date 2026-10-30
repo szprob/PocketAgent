@@ -322,6 +322,8 @@ class Repl:
                     continue
                 self._run_turn(user_text)
         finally:
+            # 退出前跑一次 session_end 钩子（归档、清理临时文件这类收尾）
+            self.loop.run_until_complete(self.agent.close())
             self._close_loop()
 
     def _close_loop(self) -> None:
@@ -449,8 +451,10 @@ def run_once(settings: Settings, session: Session | None, prompt: str, show_reas
             if profile is not None:
                 settings.use_profile(profile)
                 agent.replace_provider(create_provider(settings))
+        asyncio.run(agent.close())
         return 0
     asyncio.run(agent.run_turn(prompt))
+    asyncio.run(agent.close())
     return 1 if agent.context.turn.stop_reason == "error" else 0
 
 

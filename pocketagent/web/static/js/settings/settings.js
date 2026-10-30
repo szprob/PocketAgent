@@ -1068,12 +1068,17 @@ function setMcpResult(text, kind) {
 
 // ---- 钩子 ----
 
-// 和后端 safety/hooks.py 的 HOOK_EVENTS 一一对应
+// 和后端 safety/hooks.py 的 HOOK_EVENTS 一一对应（按发生顺序排）
 const HOOK_EVENTS = [
+  { value: "session_start", label: "任务开始（第一轮之前）" },
   { value: "user_prompt_submit", label: "用户发来一句话（这一轮开始前）" },
   { value: "pre_tool_use", label: "工具调用之前（可以拦住）" },
   { value: "post_tool_use", label: "工具调用之后（可以补充提示）" },
+  { value: "subagent_stop", label: "子 agent 交回结论之前" },
+  { value: "pre_compact", label: "上下文压缩之前" },
+  { value: "notification", label: "要你审批 / 回答之前" },
   { value: "turn_end", label: "一轮结束（答完 / 被拒绝 / 出错）" },
+  { value: "session_end", label: "任务结束（删任务 / 退出）" },
 ];
 // 只有这两个时机按工具名匹配
 const TOOL_HOOK_EVENTS = ["pre_tool_use", "post_tool_use"];

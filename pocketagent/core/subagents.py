@@ -300,7 +300,7 @@ async def run_subagent(parent: AgentContext, request: SubagentRequest, call_id: 
         close_dangling_tool_calls(session.messages)
         context.turn.stop_reason = "time_limit"
         context.turn.final_text = await _summarize_after_time_up(context, limit_minutes)
-    return SubagentResult(
+    result = SubagentResult(
         text=context.turn.final_text or _last_assistant_text(session.messages),
         stop_reason=context.turn.stop_reason or "done",
         tool_calls=forwarder.tool_calls,
@@ -309,6 +309,29 @@ async def run_subagent(parent: AgentContext, request: SubagentRequest, call_id: 
         worktree_committed=_commit_isolated(worktree, request),
         isolation_note=isolation_note,
     )
+    await _run_subagent_stop_hook(parent, request, result)
+    return result
+
+
+async def _run_subagent_stop_hook(
+    parent: AgentContext, request: SubagentRequest, result: SubagentResult
+) -> None:
+    """subagent_stop：子 agent 交回结论之前跑一次，钩子补的话接在结论后面一起交回主 agent。"""
+    if parent.hooks is None:
+        return
+    hook = await parent.hooks.run(
+        "subagent_stop",
+        {
+            "subagent_type": request.kind,
+            "description": request.description,
+            "stop_reason": result.stop_reason,
+            "result": result.text,
+            "tool_calls": result.tool_calls,
+            "seconds": round(result.seconds, 1),
+        },
+    )
+    if hook.additional_context:
+        result.text = f"{result.text}\n\n（钩子补充：{hook.additional_context}）"
 
 
 def time_limit_minutes(parent: AgentContext, kind: str) -> int:

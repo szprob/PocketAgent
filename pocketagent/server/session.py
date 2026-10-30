@@ -364,8 +364,9 @@ class WebSession:
             self.agent.context.pending_compaction = None
 
     async def close(self) -> None:
-        """删任务或服务退出时停掉压缩；后台命令由独立监督进程继续运行。"""
+        """删任务或服务退出时停掉压缩、跑 session_end 钩子；后台命令由独立监督进程继续运行。"""
         self.cancel_background_work()
+        await self.agent.close()
 
     async def interrupt(self) -> None:
         """停止这一轮。还没用上的插话和排队的消息退回给浏览器，放回输入框。"""

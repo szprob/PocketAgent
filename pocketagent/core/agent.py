@@ -50,7 +50,7 @@ from pocketagent.interaction.modes import (
 from pocketagent.knowledge.skills import Skill, discover_skills, find_skill_command, skill_content, skill_directories
 from pocketagent.llm.base import LLMProvider
 from pocketagent.safety.checkpoints import TaskCheckpoints
-from pocketagent.safety.hooks import HookOutcome, HookRunner
+from pocketagent.safety.hooks import HookOutcome, HookRunner, NotifyingApprover
 from pocketagent.safety.permissions import Approver, PermissionGate
 from pocketagent.safety.sandbox import SandboxPolicy, available_sandbox, default_secret_dirs
 from pocketagent.tools import default_tool_registry
@@ -216,6 +216,8 @@ class Agent:
         self.turn_running = False
         # MCP 的问题只报一次（每轮都会确认连接，连不上会重复报同样的话）
         self._mcp_problems_reported: set[str] = set()
+        # session_end 钩子只跑一次（删任务和服务退出可能都会调 close）
+        self._closed = False
         # 影子 git 检查点：每轮开始前给工作区拍一张
         self.checkpoints = TaskCheckpoints(context.settings.shadow_dir, context.settings.workspace, context.session)
         # 工作模式跟着会话走：续跑时接着上次的模式
@@ -337,6 +339,8 @@ class Agent:
         # 上一次进程可能崩在工具执行中间：先把没拿到结果的 tool_call 补上，不然请求会 400
         close_dangling_tool_calls(context.messages)
         context.turn = TurnState()
+        # 续跑的会话 turns 不是 0，不算新任务：session_start 只在第一次开跑时出现
+        first_turn = context.session.turns == 0
         context.session.turns += 1
         message = self._expand_skill_command(_as_user_message(user_input))
         context.messages.append(message)
@@ -349,16 +353,18 @@ class Agent:
             user_text=display["text"],
             attachments=display["attachments"],
         )
-        # 钩子先看这句话：可以补一段上下文（当前分支、相关工单），也可以直接拦住这一轮。
-        # 放在 TURN_START 之后：界面先把用户的话画出来，再等脚本跑完
+        # 钩子先看这句话：session_start 用来准备环境（开服务、写日志头），user_prompt_submit 可以补一段上下文
+        # （当前分支、相关工单），也可以直接拦住这一轮。都放在 TURN_START 之后：界面先把用户的话画出来
+        started = await self._run_hook("session_start", {"session_id": self.session.id}) if first_turn else HookOutcome()
         submitted = await self._run_hook("user_prompt_submit", {"prompt": display["text"]})
         self.turn_running = True
         try:
-            if submitted.blocked:
-                await self._block_turn(submitted.reason)
+            if started.blocked or submitted.blocked:
+                await self._block_turn(started.reason or submitted.reason)
             else:
-                if submitted.additional_context:
-                    context.messages.append(_hook_context_message(submitted.additional_context))
+                for extra_context in (started.additional_context, submitted.additional_context):
+                    if extra_context:
+                        context.messages.append(_hook_context_message(extra_context))
                 # 拍检查点要读一遍工作区（大工作区要几百毫秒），和第一次调用模型同时做，不让用户干等
                 context.pending_checkpoint = asyncio.create_task(self._checkpoint_turn_start(display["text"]))
                 # MCP 工具每次开跑前确认一遍：连上了、或者用户刚改了 mcp.json，都下一轮生效
@@ -401,6 +407,19 @@ class Agent:
         self.context.messages.append({"role": "user", "content": text, "_kind": "notice"})
         self.context.turn.stop_reason = "hook_blocked"
         await self.context.events.emit(EventType.ERROR, message=text)
+
+    async def close(self) -> None:
+        """任务结束（删任务、服务退出、命令行退出）时跑一次 session_end 钩子。
+
+        前端自己决定什么时候算结束，所以放在这里：删任务、服务退出、命令行退出都会调；
+        重复调用只跑第一次。进程被强杀时不会跑，这是脚本钩子躲不掉的。
+        """
+        if self._closed:
+            return
+        self._closed = True
+        await self._run_hook(
+            "session_end", {"turns": self.session.turns, "tool_calls": self.session.tool_calls}
+        )
 
     def _save_session(self) -> None:
         """全量存一次，并清掉进行中的日志：日志里的内容已经进 JSON 了。"""
@@ -628,6 +647,9 @@ def create_agent(
         events.subscribe(JsonlTracer(settings.traces_dir / f"{session.id}.jsonl"))
 
     skills = enabled_skills(settings)
+    # 审批 / 提问之前先跑 notification 钩子：包在审批通道外面，各个前端和子 agent 都走这一层
+    hooks = HookRunner(settings, session.id, events)
+    approver = NotifyingApprover(approver, hooks)
     context = AgentContext(
         settings=settings,
         provider=_with_usage_recording(provider, usage_log, settings, session),
@@ -642,7 +664,7 @@ def create_agent(
         journal=journal,
         # MCP 工具由 run_turn 每轮开头自动接（见 _ensure_mcp_tools）
         mcp_manager=shared_mcp_manager(settings.home_dir),
-        hooks=HookRunner(settings, session.id, events),
+        hooks=hooks,
         skills=skills,
     )
     attach_subagent_runner(context)

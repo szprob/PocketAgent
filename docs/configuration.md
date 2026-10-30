@@ -57,8 +57,8 @@
 
 ## 钩子
 
-在几个固定时机跑你自己的脚本：拦住危险操作、改完文件顺手格式化、给模型补一段上下文、一轮结束时发通知。
-配置在 `config.json` 的 `hooks` 里，或者在 ⚙ 设置 → 钩子里增删：
+在几个固定时机跑你自己的脚本：拦住危险操作、改完文件顺手格式化、给模型补一段上下文、压缩前把结论落盘、
+等你审批时推手机、任务结束归档。配置在 `config.json` 的 `hooks` 里，或者在 ⚙ 设置 → 钩子里增删：
 
 ```json
 {
@@ -66,13 +66,22 @@
     {"event": "pre_tool_use", "matcher": "bash", "command": "~/bin/guard.sh", "timeout_seconds": 30},
     {"event": "post_tool_use", "matcher": "edit_file|write_file", "command": "npx prettier --write ."},
     {"event": "user_prompt_submit", "command": "~/bin/git-context.sh"},
+    {"event": "notification", "command": "~/bin/push-me.sh"},
     {"event": "turn_end", "command": "~/bin/notify.sh", "enabled": false}
   ]
 }
 ```
 
-- `event`：`user_prompt_submit`（用户发来一句话，这一轮开始之前）、`pre_tool_use`（工具审批通过、真正执行之前）、
-  `post_tool_use`（工具执行完、结果截断之后）、`turn_end`（这一轮结束：答完 / 被拒绝 / 出错 / 达到步数上限）
+- `event`，按发生顺序：
+  - `session_start`：一个任务的第一轮开始之前（续跑的会话不算）
+  - `user_prompt_submit`：用户发来一句话，这一轮开始之前
+  - `pre_tool_use`：工具审批通过、真正执行之前
+  - `post_tool_use`：工具执行完、结果截断之后
+  - `subagent_stop`：子 agent 干完、把结论交回主 agent 之前
+  - `pre_compact`：上下文要压缩之前
+  - `notification`：agent 要请你审批、或者要你回答问题之前
+  - `turn_end`：这一轮结束（答完 / 被拒绝 / 出错 / 达到步数上限）
+  - `session_end`：任务结束（删任务、服务退出、命令行退出；进程被强杀时不会跑）
 - `matcher`：工具名，支持 `*` 通配，也可以用 `|` 或 `,` 分隔多个（`bash`、`edit_*`、`mcp__*`）；留空表示全部。
   只对 `pre_tool_use` / `post_tool_use` 有意义
 - `command`：交给 `bash -c` 的命令，工作目录是任务的工作区；`timeout_seconds` 默认 30 秒，最长 600
@@ -82,10 +91,15 @@
 
 | 时机 | 另外的字段 |
 |---|---|
+| `session_start` | （公共字段就够） |
 | `user_prompt_submit` | `prompt` |
 | `pre_tool_use` | `tool_name`、`tool_input`、`tool_call_id`、`summary` |
 | `post_tool_use` | `tool_name`、`tool_input`、`tool_call_id`、`tool_result`、`is_error` |
+| `subagent_stop` | `subagent_type`、`description`、`stop_reason`、`result`、`tool_calls`、`seconds` |
+| `pre_compact` | `reason`（auto / overflow / manual）、`tokens_before`、`messages` |
+| `notification` | `kind`（approval / question）、`tools` 或 `questions`、`summary` |
 | `turn_end` | `stop_reason`、`final_text` |
+| `session_end` | `turns`、`tool_calls` |
 
 环境变量里有 `POCKETAGENT_EVENT` / `POCKETAGENT_SESSION_ID` / `POCKETAGENT_WORKSPACE` / `POCKETAGENT_HOME`，
 工具事件还有 `POCKETAGENT_TOOL_NAME`，简单脚本不用去解析 JSON。
@@ -93,12 +107,16 @@
 退出码和输出：
 
 - `0`：通过。stdout 可以写 `{"decision": "block", "reason": "…", "additional_context": "…"}`
-- `2`：拦住。stderr（没有就用 stdout）是原因：`pre_tool_use` 不执行这次调用，`user_prompt_submit` 不跑这一轮；
-  `post_tool_use` 拦不住已经跑完的调用，只把原因标成错误
+- `2`：拦住。stderr（没有就用 stdout）是原因
 - 其他：钩子自己出错了（超时、脚本报错），只在界面上提示，不影响这一轮
 
-`additional_context` 会作为一条提示接在用户消息或工具结果后面，模型下一步就看得到；`pre_tool_use` 被拦住时，
-模型拿到的是错误结果，可以换个做法接着做，这一轮不用停。钩子对子 agent 调用的工具同样生效；
+拦住只对三个时机有效：`pre_tool_use` 不执行这次调用，`user_prompt_submit` 不跑这一轮，`session_start` 也是这一轮不跑。
+其余时机是「已经发生了，拦不住」：`post_tool_use` 的 `block` 只把原因标成错误，`subagent_stop` / `pre_compact` /
+`notification` / `turn_end` / `session_end` 的 `block` 不生效。
+
+`additional_context` 会作为一条提示接在用户消息、工具结果或子 agent 结论后面，模型下一步就看得到
+（`session_start` 和 `user_prompt_submit` 接在用户消息后面，`post_tool_use` 接在工具结果后面，`subagent_stop` 接在结论后面）。
+`pre_tool_use` 被拦住时，模型拿到的是错误结果，可以换个做法接着做，这一轮不用停。钩子对子 agent 调用的工具同样生效；
 一轮被中断时不跑 `turn_end`，免得 Ctrl-C 还要等脚本跑完。
 
 ## 模型协议
