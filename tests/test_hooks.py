@@ -1,4 +1,4 @@
-"""钩子：配置校验、工具名匹配、四个时机的行为。"""
+"""钩子：配置校验、工具名匹配、九个时机的行为。"""
 
 import json
 import unittest
@@ -8,11 +8,26 @@ from pocketagent.config import AppConfig, ConfigError, Settings
 from pocketagent.core.events import EventBus, EventType
 from pocketagent.llm import LLMResponse
 from pocketagent.safety.hooks import HookDefinition, HookRunner
-from pocketagent.safety.permissions import ApprovalMode, DenyAllApprover
+from pocketagent.safety.permissions import ApprovalAnswer, ApprovalMode, DenyAllApprover
 from pocketagent.safety.processes import bash_executable
 from tests.helpers import TemporaryDirectories, build_harness, tool_call
+from tests.test_subagents import TwoLevelProvider, spawn
 
 HAS_BASH = bash_executable() is not None
+
+
+class RecordingApprover:
+    """记下每次审批请求；一律允许一次。"""
+
+    def __init__(self) -> None:
+        self.requests = []
+
+    async def request_approval(self, request):
+        self.requests.append(request)
+        return ApprovalAnswer.ALLOW_ONCE
+
+    async def ask_questions(self, questions):
+        return None
 
 
 def write_script(directory: Path, name: str, body: str) -> str:
@@ -323,3 +338,101 @@ class HookAgentTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse((self.workspace / "mark.txt").exists())
         self.assertEqual(harness.recorder.of_type(EventType.HOOK), [])
+
+    async def test_session_start_runs_once_and_adds_context(self) -> None:
+        command = write_script(
+            self.workspace,
+            "start.sh",
+            "cat > /dev/null\nprintf '%s' '{\"additional_context\": \"今天是周五\"}'\n",
+        )
+        harness = build_harness(
+            self.directories,
+            [LLMResponse(text="第一轮"), LLMResponse(text="第二轮")],
+            hooks=[HookDefinition(event="session_start", command=command)],
+        )
+
+        await harness.agent.run_turn("第一句")
+        await harness.agent.run_turn("第二句")
+
+        # 只有第一轮跑，续跑 / 第二轮都不算新任务
+        self.assertEqual(len(harness.recorder.of_type(EventType.HOOK)), 1)
+        messages = harness.agent.context.messages
+        self.assertEqual(messages[2]["_kind"], "notice")
+        self.assertIn("今天是周五", messages[2]["content"])
+        self.assertIn("今天是周五", json.dumps(harness.provider.received_messages[0], ensure_ascii=False))
+
+    async def test_session_end_runs_on_close_only_once(self) -> None:
+        record_path = self.workspace / "session-end.json"
+        command = write_script(self.workspace, "end.sh", f'cat > "{record_path}"\n')
+        harness = build_harness(
+            self.directories,
+            [LLMResponse(text="做完了")],
+            hooks=[HookDefinition(event="session_end", command=command)],
+        )
+
+        await harness.agent.run_turn("做点事")
+        await harness.agent.close()
+        await harness.agent.close()
+
+        payload = json.loads(record_path.read_text(encoding="utf-8"))
+        self.assertEqual(payload["turns"], 1)
+        self.assertEqual(len(harness.recorder.of_type(EventType.HOOK)), 1)
+
+    async def test_notification_fires_before_approval(self) -> None:
+        record_path = self.workspace / "notification.json"
+        command = write_script(self.workspace, "notify.sh", f'cat > "{record_path}"\n')
+        approver = RecordingApprover()
+        harness = build_harness(
+            self.directories,
+            [LLMResponse(tool_calls=[tool_call("call_1", "bash", '{"command": "echo hi"}')]), LLMResponse(text="好了")],
+            mode=ApprovalMode.ASK,
+            approver=approver,
+            hooks=[HookDefinition(event="notification", command=command)],
+        )
+
+        await harness.agent.run_turn("跑一下")
+
+        payload = json.loads(record_path.read_text(encoding="utf-8"))
+        self.assertEqual(payload["kind"], "approval")
+        self.assertEqual(payload["tools"], ["bash"])
+        self.assertEqual(len(approver.requests), 1)
+
+    async def test_pre_compact_runs_before_summary(self) -> None:
+        record_path = self.workspace / "pre-compact.json"
+        command = write_script(self.workspace, "compact.sh", f'cat > "{record_path}"\n')
+        harness = build_harness(
+            self.directories,
+            [LLMResponse(text="第一轮"), LLMResponse(text="这是摘要")],
+            hooks=[HookDefinition(event="pre_compact", command=command)],
+        )
+
+        await harness.agent.run_turn("说句话")
+        await harness.agent.compact()
+
+        payload = json.loads(record_path.read_text(encoding="utf-8"))
+        self.assertEqual(payload["reason"], "manual")
+        self.assertGreater(payload["tokens_before"], 0)
+        self.assertEqual(len(harness.recorder.of_type(EventType.HOOK)), 1)
+
+    async def test_subagent_stop_can_add_to_the_result(self) -> None:
+        command = write_script(
+            self.workspace,
+            "subagent.sh",
+            "cat > /dev/null\nprintf '%s' '{\"additional_context\": \"记得跑测试\"}'\n",
+        )
+        provider = TwoLevelProvider(
+            [LLMResponse(tool_calls=[spawn("call_1", "调研", "看看")]), LLMResponse(text="收到")],
+            {"调研": [LLMResponse(text="子 agent 的结论")]},
+        )
+        harness = build_harness(
+            self.directories,
+            [],
+            provider=provider,
+            hooks=[HookDefinition(event="subagent_stop", command=command)],
+        )
+
+        await harness.agent.run_turn("派个活")
+
+        tool_messages = [message for message in harness.agent.context.messages if message.get("role") == "tool"]
+        self.assertIn("子 agent 的结论", tool_messages[0]["content"])
+        self.assertIn("记得跑测试", tool_messages[0]["content"])

@@ -1,10 +1,15 @@
 """钩子：在几个固定时机跑用户自己的脚本。
 
 时机（配置里的 event）：
+- session_start：一个任务的第一轮开始之前（续跑不算）
 - user_prompt_submit：用户发来一句话，这一轮开始之前；可以补上下文，也可以拦住这一轮
 - pre_tool_use：工具调用审批通过、真正执行之前；可以拦住这次调用
 - post_tool_use：工具执行完、结果截断之后；可以给模型补一句话，或者指出问题
+- subagent_stop：子 agent 干完、把结论交回主 agent 之前
+- pre_compact：上下文要压缩之前；脚本可以先把重要结论落盘
+- notification：agent 要请你审批、或者要你回答问题之前；适合推手机、响一声
 - turn_end：这一轮结束（答完 / 被拒绝 / 出错 / 达到步数上限）
+- session_end：任务结束（删任务、服务退出、命令行退出）
 
 脚本从 stdin 拿到一份 JSON（event、session_id、workspace 和各时机自己的字段），环境变量里也有常用的几个，
 工作目录就是任务的工作区。退出码 0 表示通过，stdout 是 JSON 时读 decision / reason / additional_context；
@@ -24,12 +29,24 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from pocketagent.core.events import EventBus, EventType
+from pocketagent.interaction.questions import Question, QuestionAnswer
+from pocketagent.safety.permissions import ApprovalAnswer, ApprovalRequest, ask_approvals
 from pocketagent.safety.processes import bash_executable, terminate_process_tree
 
 if TYPE_CHECKING:
     from pocketagent.config import Settings
 
-HOOK_EVENTS = ("user_prompt_submit", "pre_tool_use", "post_tool_use", "turn_end")
+HOOK_EVENTS = (
+    "session_start",
+    "user_prompt_submit",
+    "pre_tool_use",
+    "post_tool_use",
+    "subagent_stop",
+    "pre_compact",
+    "notification",
+    "turn_end",
+    "session_end",
+)
 # 只有这两个时机按工具名匹配；其余时机 matcher 没有意义
 TOOL_EVENTS = ("pre_tool_use", "post_tool_use")
 DEFAULT_HOOK_TIMEOUT_SECONDS = 30
@@ -144,7 +161,11 @@ class HookRunner:
             "workspace": str(self.settings.workspace),
         }
         for definition in definitions:
-            result = await self._run_one(definition, body, tool_name)
+            try:
+                result = await self._run_one(definition, body, tool_name)
+            except Exception as error:
+                # 钩子出什么错都不能把 agent 带崩：记成问题，界面上提示一下
+                result = HookOutcome(problems=[f"{type(error).__name__}: {error}"])
             outcome.problems.extend(result.problems)
             if result.additional_context:
                 outcome.additional_context = "\n".join(
@@ -246,3 +267,36 @@ def _clip(text: str, limit: int = MAX_HOOK_TEXT_CHARS) -> str:
     if len(text) <= limit:
         return text
     return text[:limit] + "…（截断）"
+
+
+class NotifyingApprover:
+    """在请你审批 / 回答之前跑一次 notification 钩子：界面马上要等你了，可以推手机、响一声。
+
+    通知本身不改变审批结论——钩子拦不住也放行不了，只是让别的渠道知道你在被等。
+    包在审批通道外面，命令行、TUI、web、桌面端和子 agent 的审批都走这一层。
+    """
+
+    def __init__(self, approver: Any, hooks: HookRunner) -> None:
+        self.approver = approver
+        self.hooks = hooks
+
+    async def request_approval(self, request: ApprovalRequest) -> ApprovalAnswer:
+        await self._notify("approval", tools=[request.tool_name], summary=request.summary)
+        return await self.approver.request_approval(request)
+
+    async def request_approvals(self, requests: list[ApprovalRequest]) -> list[ApprovalAnswer]:
+        # 一批合成一张卡片时只通知一次，别一次弹五条
+        await self._notify(
+            "approval",
+            tools=[request.tool_name for request in requests],
+            summary=requests[0].summary if requests else "",
+        )
+        return list(await ask_approvals(self.approver, requests))
+
+    async def ask_questions(self, questions: list[Question]) -> list[QuestionAnswer] | None:
+        await self._notify("question", questions=[question.question for question in questions])
+        return await self.approver.ask_questions(questions)
+
+    async def _notify(self, kind: str, **payload: Any) -> None:
+        # 通知失败不能挡住审批：这里的问题已经由 HookRunner 收进 outcome，不用再管
+        await self.hooks.run("notification", {"kind": kind, **payload})

@@ -425,6 +425,8 @@ class PocketAgentTui(App[None]):
             task.cancel()
             with suppress(asyncio.CancelledError):
                 await task
+        # 退出前跑一次 session_end 钩子（归档、清理临时文件这类收尾）
+        await self.agent.close()
 
     async def submit_text(self, text: str) -> None:
         """普通消息启动后台轮次；斜杠命令先在 UI 事件循环里处理。"""

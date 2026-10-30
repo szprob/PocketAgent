@@ -142,6 +142,7 @@ async def start_background_compaction(context: AgentContext, reason: str) -> boo
     """拍下当前历史，在后台做摘要。已经有一个在做了就不再开。返回是否开了新的。"""
     if context.pending_compaction is not None or len(context.messages) <= 2:
         return False
+    await _run_pre_compact_hook(context, reason)
     task = asyncio.create_task(summarize_history(context.provider, _summary_request_messages(context)))
     context.pending_compaction = PendingCompaction(
         task=task,
@@ -152,6 +153,20 @@ async def start_background_compaction(context: AgentContext, reason: str) -> boo
     )
     await context.events.emit(EventType.COMPACTION_STARTED, reason=reason, tokens_before=context.estimated_context_tokens())
     return True
+
+
+async def _run_pre_compact_hook(context: AgentContext, reason: str) -> None:
+    """pre_compact：压缩之前跑一次。摘要会丢掉细节，脚本可以趁现在把重要结论落盘。"""
+    if context.hooks is None:
+        return
+    await context.hooks.run(
+        "pre_compact",
+        {
+            "reason": reason,
+            "tokens_before": context.estimated_context_tokens(),
+            "messages": len(context.messages),
+        },
+    )
 
 
 async def apply_finished_compaction(context: AgentContext) -> bool:
@@ -798,7 +813,11 @@ class CompactNode(AgentNode):
 
     async def prep_async(self, context: AgentContext) -> CompactRequest:
         # 要当场压缩了，后台那份（如果有）不要了，免得两份摘要先后换掉历史
+        had_pending = context.pending_compaction is not None
         cancel_background_compaction(context)
+        # 后台那份已经通知过 pre_compact 了，同一场压缩不重复跑
+        if not had_pending:
+            await _run_pre_compact_hook(context, context.turn.compact_reason or "manual")
         return CompactRequest(provider=context.provider, messages=_summary_request_messages(context))
 
     async def exec_async(self, request: CompactRequest) -> str:

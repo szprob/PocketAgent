@@ -442,9 +442,10 @@
                   <button id="add-hook" class="ghost-button" type="button"><span>添加钩子</span></button>
                 </div>
                 <div class="field-hint">
-                  脚本从 stdin 拿到一份 JSON：event、session_id、workspace，工具事件另有 tool_name、tool_input、
-                  tool_result、is_error，一句话事件有 prompt，收尾有 stop_reason、final_text。
-                  退出码 0 表示通过，2 表示拦住（stderr 是原因），其他值只提示、不拦。
+                  脚本从 stdin 拿到一份 JSON：公共字段 event、session_id、workspace，再加这个时机的字段
+                  （发话有 prompt，工具事件有 tool_name / tool_input / tool_result，子 agent 有 result，
+                  压缩有 tokens_before，通知有 kind，收尾有 stop_reason / final_text）。
+                  退出码 0 通过，2 拦住（stderr 是原因），其他只提示、不拦。
                 </div>
               </div>
             </div>
