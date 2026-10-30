@@ -38,6 +38,15 @@ from pocketagent.core.subagents import attach_subagent_runner
 from pocketagent.core.tool_outputs import session_directory
 from pocketagent.core.trace import JsonlTracer
 from pocketagent.interaction.attachments import DISPLAY_KEY, message_display
+from pocketagent.interaction.modes import (
+    AgentMode,
+    PlanApprovalRequest,
+    PlanDecision,
+    PlanSwitchRequest,
+    ask_plan_approval,
+    ask_plan_switch,
+    parse_agent_mode,
+)
 from pocketagent.knowledge.skills import Skill, discover_skills, find_skill_command, skill_content, skill_directories
 from pocketagent.llm.base import LLMProvider
 from pocketagent.safety.checkpoints import TaskCheckpoints
@@ -209,12 +218,70 @@ class Agent:
         self._mcp_problems_reported: set[str] = set()
         # 影子 git 检查点：每轮开始前给工作区拍一张
         self.checkpoints = TaskCheckpoints(context.settings.shadow_dir, context.settings.workspace, context.session)
+        # 工作模式跟着会话走：续跑时接着上次的模式
+        self.context.permissions.agent_mode = self.agent_mode
         self.flow = build_agent_flow()
+        self._attach_plan_callbacks()
         self.refresh_system_prompt()
 
     @property
     def session(self) -> Session:
         return self.context.session
+
+    @property
+    def agent_mode(self) -> AgentMode:
+        return parse_agent_mode(self.session.agent_mode)
+
+    def _attach_plan_callbacks(self) -> None:
+        """模式相关的工具通过工具上下文和 Agent 打交道；reload_tools 换掉上下文后要重新接。"""
+        tool_context = self.context.tool_context
+        tool_context.agent_mode = lambda: self.agent_mode
+        tool_context.suggest_plan_mode = self.suggest_plan_mode
+        tool_context.submit_plan = self.submit_plan
+
+    async def set_agent_mode(self, mode: AgentMode | str) -> None:
+        """切换工作模式：换系统提示、改权限门禁、落盘，然后通知界面。"""
+        target = parse_agent_mode(mode)
+        if self.agent_mode is target:
+            return
+        self.session.agent_mode = target.value
+        self.context.permissions.agent_mode = target
+        self.session_store.save(self.session)
+        self.refresh_system_prompt()
+        await self.context.events.emit(EventType.AGENT_MODE, mode=target.value)
+
+    async def suggest_plan_mode(self, reason: str) -> bool:
+        """Agent 模式下问用户要不要切到计划模式；用户同意就切，返回是否切了。"""
+        if self.agent_mode is not AgentMode.AGENT:
+            return False
+        approved = await ask_plan_switch(self.context.permissions.approver, PlanSwitchRequest(reason=reason))
+        if approved:
+            await self.set_agent_mode(AgentMode.PLAN)
+        return approved
+
+    async def submit_plan(self, plan: str) -> PlanDecision:
+        """计划 / 设计模式下把方案交给用户批准；批准了就切回 Agent 模式，把决定回给工具。"""
+        mode = self.agent_mode
+        self.session.plan = plan
+        self.session.plan_status = "pending"
+        self.session.plan_kind = mode.value
+        self.session_store.save(self.session)
+        await self.context.events.emit(EventType.PROPOSAL_UPDATED, plan=plan, status="pending", kind=mode.value)
+        decision = await ask_plan_approval(
+            self.context.permissions.approver, PlanApprovalRequest(plan=plan, mode=mode.value)
+        )
+        self.session.plan_status = "approved" if decision.approve else "pending"
+        self.session_store.save(self.session)
+        await self.context.events.emit(
+            EventType.PROPOSAL_UPDATED,
+            plan=plan,
+            status=self.session.plan_status,
+            kind=mode.value,
+            approved=decision.approve,
+        )
+        if decision.approve:
+            await self.set_agent_mode(AgentMode.AGENT)
+        return decision
 
     def refresh_system_prompt(self) -> None:
         """续跑旧会话时也重建系统提示：日期、AGENTS.md 可能已经变了。"""
@@ -230,6 +297,7 @@ class Agent:
                 memory_dir=self.context.tool_context.memory_dir,
                 ephemeral=settings.ephemeral,
                 worktree=settings.worktree,
+                agent_mode=self.agent_mode,
             ),
         }
         messages = self.context.messages
@@ -434,6 +502,7 @@ class Agent:
             background=self.context.tool_context.background_tasks,
         )
         attach_subagent_runner(self.context)
+        self._attach_plan_callbacks()
         if self.context.mcp_manager is not None:
             self.context.mcp_manager.register_tools(self.context.tools)
         self.refresh_system_prompt()

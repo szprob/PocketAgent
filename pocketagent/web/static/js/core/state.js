@@ -16,6 +16,27 @@ export const MODE_ICONS = {
   full_auto: "alert",
 };
 
+export const AGENT_MODE_LABELS = {
+  agent: "Agent",
+  ask: "Ask",
+  plan: "计划",
+  design: "设计",
+};
+
+export const AGENT_MODE_ICONS = {
+  agent: "sparkle",
+  ask: "message",
+  plan: "listCheck",
+  design: "compass",
+};
+
+export const AGENT_MODE_HINTS = {
+  agent: "Agent 模式：正常干活，可以改文件、执行命令",
+  ask: "Ask 模式：只回答问题，不改文件、不执行命令",
+  plan: "计划模式：只读调研，计划批准后再动手",
+  design: "设计模式：只读调研，先出设计方案，批准后再实现",
+};
+
 export const state = {
   // /api/info：用户名、工作区、模型、审批模式
   info: null,

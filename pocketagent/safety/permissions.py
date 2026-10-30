@@ -23,6 +23,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Protocol
 
+from pocketagent.interaction.modes import AgentMode
 from pocketagent.interaction.questions import Question, QuestionAnswer
 from pocketagent.tools.base import Tool, ToolAccess, ToolKind
 
@@ -200,14 +201,20 @@ class PermissionGate:
 
     mode: ApprovalMode
     approver: Approver
+    # 工作模式：ask / plan / design 都只读；和审批模式互不影响
+    agent_mode: AgentMode = AgentMode.AGENT
     # 用户选了「本任务总是允许」的工具名、工作目录外的目录、沙箱外的命令
     always_allowed_tools: set[str] = field(default_factory=set)
     always_allowed_dirs: set[Path] = field(default_factory=set)
     always_allowed_commands: set[str] = field(default_factory=set)
 
-    def check(self, tool: Tool, access: ToolAccess | None = None) -> PermissionCheck:
+    def check(self, tool: Tool, access: ToolAccess | None = None, kind: ToolKind | None = None) -> PermissionCheck:
         access = access or ToolAccess()
-        by_mode = decide_by_mode(self.mode, tool.kind)
+        # 子 agent 的 general 这类按参数决定类别的工具，调用方把实际类别传进来
+        actual_kind = kind or tool.kind
+        if self.agent_mode.read_only and actual_kind != ToolKind.READ:
+            return PermissionCheck(Decision.DENY)
+        by_mode = decide_by_mode(self.mode, actual_kind)
         if by_mode == Decision.DENY:
             return PermissionCheck(Decision.DENY)
         if access.memory_only:
@@ -225,7 +232,11 @@ class PermissionGate:
         if outside:
             check.notes.append("要访问工作目录以外的路径：" + "、".join(str(path) for path in outside))
             check.remember_dirs = sorted({_directory_of(path) for path in outside})
-            wanted = Decision.AI_REVIEW if tool.kind == ToolKind.READ and self.mode == ApprovalMode.AI_AUTO else Decision.ASK
+            wanted = (
+                Decision.AI_REVIEW
+                if actual_kind == ToolKind.READ and self.mode == ApprovalMode.AI_AUTO
+                else Decision.ASK
+            )
             check.decision = stricter(check.decision, self._unless_full_auto(wanted))
         if access.secret_paths:
             check.notes.append("要碰的是密钥 / 凭据：" + "、".join(str(path) for path in access.secret_paths))
@@ -233,8 +244,8 @@ class PermissionGate:
             check.decision = stricter(check.decision, Decision.ASK)
         return check
 
-    def decide(self, tool: Tool, access: ToolAccess | None = None) -> Decision:
-        return self.check(tool, access).decision
+    def decide(self, tool: Tool, access: ToolAccess | None = None, kind: ToolKind | None = None) -> Decision:
+        return self.check(tool, access, kind).decision
 
     def _unless_full_auto(self, decision: Decision) -> Decision:
         return Decision.ALLOW if self.mode == ApprovalMode.FULL_AUTO else decision
@@ -242,7 +253,19 @@ class PermissionGate:
     def _directory_allowed(self, path: Path) -> bool:
         return any(path == directory or directory in path.parents for directory in self.always_allowed_dirs)
 
-    def denial_reason(self, tool: Tool) -> str:
+    def denial_reason(self, tool: Tool, kind: ToolKind | None = None) -> str:
+        if self.agent_mode.read_only and (kind or tool.kind) != ToolKind.READ:
+            if self.agent_mode is AgentMode.ASK:
+                return "当前是 Ask 模式：只回答问题，不改文件、不执行命令、也不提交方案；需要动手时让用户切到 Agent 模式"
+            if self.agent_mode is AgentMode.DESIGN:
+                return (
+                    "当前是设计模式：只能读文件和调研，改文件、执行命令、会改东西的子 agent 都不允许。"
+                    "调研清楚后用 submit_plan 提交设计方案，用户批准后再实现"
+                )
+            return (
+                "当前是计划模式：只能读文件和调研，改文件、执行命令、会改东西的子 agent 都不允许。"
+                "先调研清楚，用 submit_plan 把计划交给用户批准"
+            )
         return f"当前是 {self.mode.value} 模式，不允许调用 {tool.kind.value} 类工具 {tool.name}"
 
     async def ask(self, request: ApprovalRequest, check: PermissionCheck | None = None) -> bool:

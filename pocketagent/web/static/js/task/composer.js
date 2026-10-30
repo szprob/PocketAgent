@@ -4,7 +4,7 @@
 
 import { button, el, formatBytes, icon, show, workspaceName } from "../ui/dom.js";
 import { ModelPicker } from "./modelpicker.js";
-import { MODE_ICONS, MODE_LABELS } from "../core/state.js";
+import { AGENT_MODE_HINTS, AGENT_MODE_ICONS, AGENT_MODE_LABELS, MODE_ICONS, MODE_LABELS } from "../core/state.js";
 
 const MAX_TEXTAREA_HEIGHT = 240;
 
@@ -18,17 +18,20 @@ export class Composer {
    * kind: "new"（新任务页，底下能选工作区）或 "chat"（任务页，底下显示任务所在的工作区）
    * onSubmit({text, files}) 返回 true 表示已经发出去了，输入框可以清空
    */
-  constructor(container, { kind, placeholder, onSubmit, onStop, onModeChange, onModelChange, onWorkspaceChange }) {
+  constructor(container, { kind, placeholder, onSubmit, onStop, onModeChange, onModelChange, onWorkspaceChange, onAgentModeChange }) {
     this.kind = kind;
     this.onSubmit = onSubmit;
     this.onStop = onStop;
     this.onModeChange = onModeChange;
     this.onModelChange = onModelChange;
     this.onWorkspaceChange = onWorkspaceChange;
+    this.onAgentModeChange = onAgentModeChange;
     this.pendingFiles = [];
     // 从对话里「恢复到这里」带回来的附件：服务端已经有了，重发时只传 id
     this.pendingAttachments = [];
     this.running = false;
+    // 工作模式：agent（默认）/ ask / plan / design
+    this.agentMode = "agent";
     // /api/info 里的命令表 + 技能名，输入 / 时用来补全
     this.commands = [];
     this.skillNames = [];
@@ -78,6 +81,24 @@ export class Composer {
 
     this.modelPicker = new ModelPicker({ onSelectModel: (modelId) => this.onModelChange?.(modelId) });
 
+    this.agentModePill = el("label", "pill agent-mode-pill");
+    this.agentModeIcon = el("span", "pill-icon");
+    this.agentModeSelect = el("select");
+    this.agentModeSelect.title = "工作模式";
+    for (const [value, label] of Object.entries(AGENT_MODE_LABELS)) {
+      const option = el("option", "", label);
+      option.value = value;
+      option.title = AGENT_MODE_HINTS[value] || "";
+      this.agentModeSelect.appendChild(option);
+    }
+    this.agentModeSelect.addEventListener("change", () => {
+      this.agentMode = this.agentModeSelect.value;
+      this._paintAgentMode();
+      this.onAgentModeChange?.(this.agentMode);
+    });
+    this.agentModePill.append(this.agentModeIcon, this.agentModeSelect, icon("chevronDown", "pill-chevron"));
+    this._paintAgentMode();
+
     this.stopButton = button("stop-button hidden", "", "stop", "停止（Esc）");
     this.stopButton.addEventListener("click", () => this.onStop?.());
     this.sendButton = button("send-button", "", "arrowUp", "发送（Enter）");
@@ -87,6 +108,7 @@ export class Composer {
       attachButton,
       this.fileInput,
       this.permissionPill,
+      this.agentModePill,
       this.modelPicker.root,
       el("div", "toolbar-spacer"),
       this.stopButton,
@@ -437,6 +459,24 @@ export class Composer {
 
   getMode() {
     return this.permissionSelect.value;
+  }
+
+  setAgentMode(mode) {
+    const wanted = AGENT_MODE_LABELS[mode] ? mode : "agent";
+    this.agentMode = wanted;
+    this.agentModeSelect.value = wanted;
+    this._paintAgentMode();
+  }
+
+  getAgentMode() {
+    return this.agentModeSelect.value || this.agentMode || "agent";
+  }
+
+  _paintAgentMode() {
+    const mode = this.agentModeSelect.value || "agent";
+    this.agentModeIcon.replaceChildren(icon(AGENT_MODE_ICONS[mode] || "sparkle"));
+    this.agentModePill.classList.toggle("accent", mode !== "agent");
+    this.agentModePill.title = AGENT_MODE_HINTS[mode] || "";
   }
 
   _paintPermission() {

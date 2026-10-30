@@ -73,6 +73,8 @@ export class ChatView {
     this.toolCards = new Map();
     this.approvalCards = new Map();
     this.questionCards = new Map();
+    // 计划卡：建议切计划模式 / 提交计划等批准
+    this.planCards = new Map();
     // 「任务计划」面板：todo_write 维护，一张卡片原地更新
     this.todoPanel = null;
     this.running = false;
@@ -100,6 +102,7 @@ export class ChatView {
     this.toolCards.clear();
     this.approvalCards.clear();
     this.questionCards.clear();
+    this.planCards.clear();
     this.todoPanel = null;
     this.currentAssistant = null;
     this.currentReasoning = null;
@@ -143,6 +146,12 @@ export class ChatView {
       case "question_resolved":
         this.removeQuestions(message.request_id);
         break;
+      case "plan_request":
+        this.showPlanRequest(message);
+        break;
+      case "plan_resolved":
+        this.resolvePlan(message);
+        break;
       case "returned_inputs":
         this.callbacks.onReturnedInputs?.(message.inputs || []);
         break;
@@ -171,11 +180,23 @@ export class ChatView {
     for (const question of snapshot.pending_questions || []) {
       this.showQuestions(question);
     }
+    for (const plan of snapshot.pending_plans || []) {
+      this.showPlanRequest(plan);
+    }
+    const waitingForPlan = (snapshot.pending_plans || []).some((pending) => pending.kind === "approval");
+    if (!waitingForPlan) {
+      this.renderSavedPlan(snapshot.plan, snapshot.plan_status, snapshot.plan_kind);
+    }
     // 刷新 / 切回来时从会话上恢复计划面板（面板出现在历史后面，反映当前进度）
     this.renderTodoPanel(snapshot.todos);
     this.closeActivityFold();
     this.callbacks.onSnapshot?.(snapshot);
-    if (snapshot.running && (snapshot.pending_approvals || []).length === 0 && (snapshot.pending_questions || []).length === 0) {
+    if (
+      snapshot.running &&
+      (snapshot.pending_approvals || []).length === 0 &&
+      (snapshot.pending_questions || []).length === 0 &&
+      (snapshot.pending_plans || []).length === 0
+    ) {
       this.showActivity("运行中");
     }
     this.scrollToBottom();
@@ -1076,6 +1097,115 @@ export class ChatView {
     if (this.running) {
       this.showActivity("等待模型响应");
     }
+  }
+
+  // ---- 计划卡：建议切计划模式 / 计划做好等批准 ----
+
+  showPlanRequest(request) {
+    if (!request?.request_id || this.planCards.has(request.request_id)) {
+      return;
+    }
+    this.hideActivity();
+    this.closeActivityFold();
+    const isSwitch = request.kind === "switch";
+    const isDesign = request.mode === "design";
+    const card = el("div", `card plan ${isSwitch ? "plan-switch" : "plan-approval"}`);
+    card.dataset.kind = request.kind;
+    card.dataset.mode = request.mode || "plan";
+    const header = el("div", "card-header");
+    header.append(
+      el("span", "card-badge", isSwitch ? "计划模式" : isDesign ? "设计方案" : "等你批准"),
+      el("span", "card-title", isSwitch ? "这个任务适合先用计划模式" : isDesign ? "设计方案做好了" : "计划做好了"),
+    );
+    card.append(header);
+    if (isSwitch) {
+      card.append(el("div", "plan-reason", request.reason || ""));
+    } else {
+      const body = el("div", "plan-body message assistant");
+      body.innerHTML = renderMarkdown(request.plan || "", this.markdownOptions());
+      card.append(body);
+    }
+
+    const actions = el("div", "card-actions");
+    const answer = (approve, feedback = "") => {
+      this.callbacks.onPlanAnswer?.(request.request_id, approve, feedback);
+      for (const node of card.querySelectorAll("button, input")) {
+        node.disabled = true;
+      }
+    };
+    if (isSwitch) {
+      const usePlan = button("primary-button", "用计划模式", "listCheck");
+      usePlan.addEventListener("click", () => answer(true));
+      const skip = button("text-button", "直接开始");
+      skip.addEventListener("click", () => answer(false));
+      actions.append(usePlan, skip);
+    } else {
+      const feedback = document.createElement("input");
+      feedback.type = "text";
+      feedback.className = "plan-feedback";
+      feedback.placeholder = "要继续完善的话，写下你的意见（可空）";
+      card.append(feedback);
+      const execute = button("primary-button", isDesign ? "按设计开始实现" : "按计划执行", isDesign ? "compass" : "check");
+      execute.addEventListener("click", () => answer(true));
+      const revise = button("text-button", "继续完善");
+      revise.addEventListener("click", () => answer(false, feedback.value.trim()));
+      const cancel = button("text-button", "先不做");
+      cancel.addEventListener("click", () => answer(false));
+      actions.append(execute, revise, cancel);
+    }
+    card.append(actions);
+    this.appendNode(card);
+    this.planCards.set(request.request_id, card);
+    this.scrollToBottom();
+  }
+
+  resolvePlan(message) {
+    const card = this.planCards.get(message.request_id);
+    if (!card) {
+      return;
+    }
+    this.planCards.delete(message.request_id);
+    if (card.dataset.kind === "switch") {
+      card.remove();
+      if (this.running) {
+        this.showActivity("等待模型响应");
+      }
+      return;
+    }
+    card.querySelector(".card-actions")?.remove();
+    card.querySelector(".plan-feedback")?.remove();
+    const note = el("div", "plan-status");
+    const isDesign = card.dataset.mode === "design";
+    if (message.approved) {
+      note.textContent = isDesign ? "已按这个设计方案开始实现" : "已按这个计划开始执行";
+    } else if (message.feedback) {
+      note.textContent = `继续完善：${message.feedback}`;
+    } else {
+      note.textContent = isDesign ? "先不实现这个设计方案" : "先不执行这份计划";
+    }
+    card.append(note);
+    if (this.running) {
+      this.showActivity("等待模型响应");
+    }
+  }
+
+  renderSavedPlan(plan, status, kind) {
+    if (!plan) {
+      return;
+    }
+    this.closeActivityFold();
+    const isDesign = kind === "design";
+    const card = el("div", "card plan plan-approval saved");
+    const header = el("div", "card-header");
+    header.append(
+      el("span", "card-badge", status === "approved" ? "已批准" : "未批准"),
+      el("span", "card-title", isDesign ? "设计方案" : "计划"),
+    );
+    card.append(header);
+    const body = el("div", "plan-body message assistant");
+    body.innerHTML = renderMarkdown(plan, this.markdownOptions());
+    card.append(body);
+    this.appendNode(card);
   }
 
   // ---- 活动提示和滚动 ----

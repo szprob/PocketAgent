@@ -23,6 +23,7 @@ from pocketagent.core.tool_outputs import session_directory
 from pocketagent.knowledge.frontmatter import split_frontmatter
 from pocketagent.knowledge.memory import delete_memory, list_memories, memory_file_path, project_memory_dir, read_index
 from pocketagent.knowledge.skills import discover_skills, skill_directories
+from pocketagent.interaction.modes import parse_agent_mode
 from pocketagent.llm.base import LLMProvider, SilentListener
 from pocketagent.safety.permissions import ApprovalMode
 from pocketagent.server.automations import Automation, AutomationStore
@@ -149,6 +150,7 @@ class SessionManager:
         title: str | None = None,
         source: str | None = None,
         ephemeral: bool = False,
+        agent_mode: str | None = None,
     ) -> WebSession:
         """ephemeral=True 表示不指定工作区；要不要独立 worktree 按设置自动决定（worktree_foreground）。"""
         if ephemeral:
@@ -170,8 +172,14 @@ class SessionManager:
                 session.worktree = worktree_info.to_dict()
                 session.workspace = worktree_info.path
                 workspace = Path(worktree_info.path)
+        if session is None:
+            session = self.store.new_session(workspace, ephemeral=ephemeral)
+        try:
+            session.agent_mode = parse_agent_mode(agent_mode).value
+        except ValueError as error:
+            raise ConfigError(str(error))
         settings = self._settings_for(
-            workspace, model_id, mode_name, ephemeral=ephemeral, worktree=session.worktree if session else None
+            workspace, model_id, mode_name, ephemeral=ephemeral, worktree=session.worktree
         )
         web_session = self._register(settings, session=session)
         web_session.session.title = title

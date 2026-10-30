@@ -144,6 +144,7 @@ async function startNewTask({ text, files }) {
       ephemeral: choice.ephemeral,
       model_id: newTaskComposer.getModel(),
       mode: newTaskComposer.getMode(),
+      agent_mode: newTaskComposer.getAgentMode(),
     });
   } catch (error) {
     window.alert(`新建任务失败：${error.message}`);
@@ -170,6 +171,9 @@ function showNewTaskCommandOutput(outcome) {
   }
   if (outcome.action === "switch_mode" && outcome.argument) {
     newTaskComposer.setMode(outcome.argument);
+  }
+  if (outcome.action === "switch_agent_mode" && outcome.argument) {
+    newTaskComposer.setAgentMode(outcome.argument);
   }
 }
 

@@ -594,10 +594,13 @@ def _check_permission(prepared: PreparedCall, context: AgentContext) -> None:
     except Exception as error:
         prepared.outcome = _error_outcome(call, f"{type(error).__name__}: {error}")
         return
-    check = context.permissions.check(tool, access)
+    # 只读模式（ask / plan / design）按这次调用的实际类别判断：type=general 的子 agent 也要拦住。
+    # agent 模式仍按工具静态类别审批，派子 agent 本身不额外弹审批。
+    actual_kind = tool.kind_for(call.arguments) if context.permissions.agent_mode.read_only else tool.kind
+    check = context.permissions.check(tool, access, actual_kind)
     prepared.check = check
     if check.decision == Decision.DENY:
-        prepared.outcome = _denied_outcome(call, context.permissions.denial_reason(tool))
+        prepared.outcome = _denied_outcome(call, context.permissions.denial_reason(tool, actual_kind))
         return
     if check.decision == Decision.ALLOW:
         prepared.approved = True

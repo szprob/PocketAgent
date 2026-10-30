@@ -65,6 +65,7 @@ pocketagent/
     frontmatter.py       解析 Markdown 开头 --- 包着的元数据（技能、记忆共用）
   interaction/           和用户打交道
     questions.py         ask_user 的问题和回答：校验、整理成给模型看的结果
+    modes.py             工作模式：Agent / Ask / 计划 / 设计，切换建议、提交方案等批准
     attachments.py       附件存储；消息里只放引用，发给模型前展开（图片缩小 + 编码缓存）
     commands.py          斜杠命令：命令行和 web 共用一套
   account/

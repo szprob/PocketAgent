@@ -11,6 +11,7 @@ const RECENT_TASK_LIMIT = 50;
 const WAITING_MARKS = {
   question: { mark: "?", label: "等你回答问题" },
   approval: { mark: "!", label: "等你确认操作" },
+  plan: { mark: "◆", label: "等你决定方案" },
 };
 
 const elements = {};

@@ -28,6 +28,10 @@ class EventType(str, Enum):
     # 用户配的钩子跑完一次（拦住、补充了上下文、或者自己出错了）
     HOOK = "hook"
     TODOS_UPDATED = "todos_updated"
+    # 工作模式切换（agent / ask / plan / design）
+    AGENT_MODE = "agent_mode"
+    # 提交了一份新方案（计划 / 设计方案），等用户批准
+    PROPOSAL_UPDATED = "proposal_updated"
     INTERJECTION_QUEUED = "interjection_queued"
     INTERJECTION_APPLIED = "interjection_applied"
     CHECKPOINT = "checkpoint"

@@ -28,6 +28,8 @@ const chat = {
   toolCards: new Map(),
   approvalCards: new Map(),
   questionCards: new Map(),
+  // 计划卡：建议切计划模式 / 提交计划等批准
+  planCards: new Map(),
   // 「任务计划」面板：todo_write 维护，一张卡片原地更新
   todoPanel: null,
   // 本轮从哪个子元素开始画的，用来判断图片是不是已经在回复里显示过
@@ -109,6 +111,7 @@ export function initChat({ onDeleted }) {
     onStop: interrupt,
     onModeChange: (mode) => sendToServer({ type: "set_mode", mode }),
     onModelChange: (modelId) => sendToServer({ type: "set_model", model_id: modelId }),
+    onAgentModeChange: (mode) => sendToServer({ type: "set_agent_mode", mode }),
   });
 
   elements.menuButton.addEventListener("click", (event) => {
@@ -267,6 +270,9 @@ function showCommandOutput(outcome) {
   if (outcome.action === "open_session" && outcome.argument) {
     window.location.hash = `#/task/${encodeURIComponent(outcome.argument)}`;
   }
+  if (outcome.action === "switch_agent_mode" && outcome.argument) {
+    chat.composer.setAgentMode(outcome.argument);
+  }
 }
 
 export function interrupt() {
@@ -310,6 +316,14 @@ function handleServerMessage(message) {
       resolveQuestions(message.request_id);
       refreshTaskList();
       break;
+    case "plan_request":
+      showPlanRequest(message);
+      refreshTaskList();
+      break;
+    case "plan_resolved":
+      resolvePlan(message);
+      refreshTaskList();
+      break;
     case "returned_inputs":
       chat.composer.restoreTexts(message.inputs.map((input) => input.text));
       break;
@@ -345,6 +359,7 @@ function applyStatus(status) {
   document.title = `${status.title} · PocketAgent`;
   chat.composer.setMode(status.mode);
   chat.composer.setModel(status.model_id);
+  chat.composer.setAgentMode(status.agent_mode || "agent");
   chat.composer.setRunning(status.running, state.info?.busy_input_mode);
   chat.composer.setContext(status.context_tokens, status.context_window, status.compact_threshold);
   chat.composer.setCompacting(status.compacting);
@@ -551,6 +566,7 @@ function clearTranscript() {
   chat.toolCards.clear();
   chat.approvalCards.clear();
   chat.questionCards.clear();
+  chat.planCards.clear();
   chat.todoPanel = null;
   show(elements.pendingInputs, false);
 }
@@ -1228,6 +1244,112 @@ function resolveQuestions(requestId) {
   }
 }
 
+// ---- 计划卡：建议切计划模式 / 计划做好等批准 ----
+
+function showPlanRequest(request) {
+  if (chat.planCards.has(request.request_id)) {
+    return;
+  }
+  hideActivity();
+  closeActivityFold();
+  const isSwitch = request.kind === "switch";
+  const isDesign = request.mode === "design";
+  const card = el("div", `plan-card ${isSwitch ? "plan-switch" : "plan-approval"}`);
+  card.dataset.kind = request.kind;
+  card.dataset.mode = request.mode || "plan";
+  const title = el("div", "plan-title");
+  title.append(
+    icon(isSwitch ? "listCheck" : isDesign ? "compass" : "file"),
+    isSwitch ? "这个任务适合先用计划模式" : isDesign ? "设计方案做好了" : "计划做好了"
+  );
+  card.appendChild(title);
+  if (isSwitch) {
+    card.appendChild(el("div", "plan-reason", request.reason || ""));
+  } else {
+    const body = el("div", "plan-body message-assistant");
+    body.innerHTML = renderMarkdown(request.plan || "", { imageUrl: chatImageUrl });
+    card.appendChild(body);
+  }
+
+  const actions = el("div", "plan-actions");
+  const answer = (approve, feedback = "") => {
+    sendToServer({ type: "plan_answer", request_id: request.request_id, approve, feedback });
+    card.querySelectorAll("button, input").forEach((each) => (each.disabled = true));
+  };
+  if (isSwitch) {
+    const usePlan = button("primary-button", "用计划模式", "listCheck");
+    usePlan.addEventListener("click", () => answer(true));
+    const skip = button("ghost-button", "直接开始");
+    skip.addEventListener("click", () => answer(false));
+    actions.append(usePlan, skip);
+  } else {
+    const feedback = el("input", "plan-feedback");
+    feedback.placeholder = "要继续完善的话，写下你的意见（可空）";
+    card.appendChild(feedback);
+    const execute = button("primary-button", isDesign ? "按设计开始实现" : "按计划执行", isDesign ? "compass" : "play");
+    execute.addEventListener("click", () => answer(true));
+    const revise = button("ghost-button", "继续完善");
+    revise.addEventListener("click", () => answer(false, feedback.value.trim()));
+    const cancel = button("ghost-button danger-text", "先不做");
+    cancel.addEventListener("click", () => answer(false));
+    actions.append(execute, revise, cancel);
+  }
+  card.appendChild(actions);
+  chat.planCards.set(request.request_id, card);
+  appendToTranscript(card);
+  scrollToBottom();
+}
+
+function resolvePlan(message) {
+  const card = chat.planCards.get(message.request_id);
+  if (!card) {
+    return;
+  }
+  chat.planCards.delete(message.request_id);
+  if (card.dataset.kind === "switch") {
+    // 只是问要不要切，答复之后没必要留在对话里
+    card.remove();
+    if (chat.running) {
+      showActivity("等待模型响应");
+    }
+    return;
+  }
+  // 计划本身留着，把按钮换成结果
+  card.querySelector(".plan-actions")?.remove();
+  card.querySelector(".plan-feedback")?.remove();
+  const note = el("div", "plan-status");
+  const isDesign = card.dataset.mode === "design";
+  if (message.approved) {
+    note.textContent = isDesign ? "已按这个设计方案开始实现" : "已按这个计划开始执行";
+  } else if (message.feedback) {
+    note.textContent = `继续完善：${message.feedback}`;
+  } else {
+    note.textContent = isDesign ? "先不实现这个设计方案" : "先不执行这份计划";
+  }
+  card.appendChild(note);
+  if (chat.running) {
+    showActivity("等待模型响应");
+  }
+}
+
+// 刷新 / 切回任务时按会话上的记录恢复最近一份方案
+function renderSavedPlan(plan, status, kind) {
+  if (!plan) {
+    return;
+  }
+  closeActivityFold();
+  const isDesign = kind === "design";
+  const card = el("div", "plan-card plan-approval saved");
+  const title = el("div", "plan-title");
+  const name = isDesign ? "设计" : "计划";
+  title.append(icon(isDesign ? "compass" : "file"), `${name}（${status === "approved" ? "已批准" : "未批准"}）`);
+  card.appendChild(title);
+  const body = el("div", "plan-body message-assistant");
+  body.innerHTML = renderMarkdown(plan, { imageUrl: chatImageUrl });
+  card.appendChild(body);
+  appendToTranscript(card);
+}
+
 function renderHistoryItem(item) {
   if (item.kind === "user") {
     addUserMessage(item.text, item.attachments, "", item.message_id);
@@ -1256,10 +1378,21 @@ function renderSnapshot(snapshot) {
   }
   snapshot.pending_approvals.forEach(showApproval);
   (snapshot.pending_questions || []).forEach(showQuestions);
+  (snapshot.pending_plans || []).forEach(showPlanRequest);
+  // 有等批准的计划卡时不再画一份静态的，免得同一份计划出现两次
+  const waitingForPlan = (snapshot.pending_plans || []).some((pending) => pending.kind === "approval");
+  if (!waitingForPlan) {
+    renderSavedPlan(snapshot.plan, snapshot.plan_status, snapshot.plan_kind);
+  }
   // 刷新 / 切回来时从会话上恢复计划面板（面板出现在历史后面，反映当前进度）
   renderTodoPanel(snapshot.todos);
   closeActivityFold();
-  if (snapshot.running && snapshot.pending_approvals.length === 0 && !(snapshot.pending_questions || []).length) {
+  if (
+    snapshot.running &&
+    snapshot.pending_approvals.length === 0 &&
+    !(snapshot.pending_questions || []).length &&
+    !(snapshot.pending_plans || []).length
+  ) {
     // 中途连上来的：前面流式的那段没了，给个提示，后面的照常显示
     showActivity("运行中");
   }

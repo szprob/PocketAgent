@@ -23,6 +23,7 @@ from pocketagent.core.context import AgentContext, TurnState
 from pocketagent.core.events import Event, EventBus, EventType
 from pocketagent.core.prompts import build_system_prompt
 from pocketagent.core.session import Session
+from pocketagent.interaction.modes import AgentMode
 from pocketagent.interaction.questions import Question, QuestionAnswer
 from pocketagent.llm.base import SilentListener
 from pocketagent.safety.permissions import ApprovalAnswer, ApprovalRequest, Approver, PermissionGate, ask_approvals
@@ -32,8 +33,8 @@ from pocketagent.tools.background import BackgroundTaskManager
 from pocketagent.tools.base import ToolContext, ToolKind, ToolRegistry, current_tool_call_id
 from pocketagent.tools.subagent import SubagentRequest, SubagentResult
 
-# 子 agent 不能有的工具：不能问用户，不能再派子 agent
-NOT_FOR_SUBAGENTS = {"ask_user", "subagent"}
+# 子 agent 不能有的工具：不能问用户，不能再派子 agent，也不能操纵计划模式（那是主 agent 和用户的事）
+NOT_FOR_SUBAGENTS = {"ask_user", "subagent", "suggest_plan_mode", "submit_plan"}
 PROGRESS_SUMMARY_LIMIT = 160
 # 看一眼时长的间隔：到点最多晚这么久发现
 TIME_LIMIT_POLL_SECONDS = 1.0
@@ -147,7 +148,15 @@ def _worktree_sandbox(policy: SandboxPolicy | None, info: WorktreeInfo) -> Sandb
 
 def _subagent_tool_context(parent: AgentContext, settings: Settings, session: Session, worktree: WorktreeInfo | None) -> ToolContext:
     if worktree is None:
-        return replace(parent.tool_context, ask_user=None, spawn_subagent=None, history=lambda: session.messages)
+        return replace(
+            parent.tool_context,
+            ask_user=None,
+            spawn_subagent=None,
+            agent_mode=lambda: AgentMode.AGENT,
+            suggest_plan_mode=None,
+            submit_plan=None,
+            history=lambda: session.messages,
+        )
     return replace(
         parent.tool_context,
         workspace=Path(worktree.path),
@@ -156,6 +165,9 @@ def _subagent_tool_context(parent: AgentContext, settings: Settings, session: Se
         background_tasks=BackgroundTaskManager(settings.background_tasks_dir, Path(worktree.path), session.id),
         ask_user=None,
         spawn_subagent=None,
+        agent_mode=lambda: AgentMode.AGENT,
+        suggest_plan_mode=None,
+        submit_plan=None,
         history=lambda: session.messages,
     )
 
