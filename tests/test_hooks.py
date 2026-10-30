@@ -6,8 +6,9 @@ from pathlib import Path
 
 from pocketagent.config import AppConfig, ConfigError, Settings
 from pocketagent.core.events import EventBus, EventType
+from pocketagent.interaction.modes import PlanApprovalRequest, PlanDecision, PlanSwitchRequest
 from pocketagent.llm import LLMResponse
-from pocketagent.safety.hooks import HookDefinition, HookRunner
+from pocketagent.safety.hooks import HookDefinition, HookRunner, NotifyingApprover
 from pocketagent.safety.permissions import ApprovalAnswer, ApprovalMode, DenyAllApprover
 from pocketagent.safety.processes import bash_executable
 from tests.helpers import TemporaryDirectories, build_harness, tool_call
@@ -436,3 +437,39 @@ class HookAgentTest(unittest.IsolatedAsyncioTestCase):
         tool_messages = [message for message in harness.agent.context.messages if message.get("role") == "tool"]
         self.assertIn("子 agent 的结论", tool_messages[0]["content"])
         self.assertIn("记得跑测试", tool_messages[0]["content"])
+
+
+class NotifyingApproverTest(unittest.IsolatedAsyncioTestCase):
+    """审批通道包一层之后，它上面的其他能力不能被藏起来（计划模式就靠 request_plan_approval）。"""
+
+    def build(self, inner):
+        settings = Settings(workspace=Path("."), home_dir=Path("."))
+        return NotifyingApprover(inner, HookRunner(settings, "s1", EventBus()))
+
+    async def test_plan_requests_are_forwarded(self) -> None:
+        class PlanApprover(RecordingApprover):
+            def __init__(self) -> None:
+                super().__init__()
+                self.plans = []
+
+            async def request_plan_approval(self, request):
+                self.plans.append(request)
+                return PlanDecision(approve=True)
+
+        inner = PlanApprover()
+        wrapper = self.build(inner)
+
+        decision = await wrapper.request_plan_approval(PlanApprovalRequest(plan="先这样"))
+        # 内层没实现「要不要切计划模式」时按没人能回答处理
+        switched = await wrapper.request_plan_switch(PlanSwitchRequest(reason="值得先规划"))
+
+        self.assertTrue(decision.approve)
+        self.assertEqual(len(inner.plans), 1)
+        self.assertFalse(switched)
+
+    async def test_other_approver_attributes_are_forwarded(self) -> None:
+        inner = RecordingApprover()
+        inner.label = "extra"
+        wrapper = self.build(inner)
+
+        self.assertEqual(wrapper.label, "extra")

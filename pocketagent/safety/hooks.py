@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from pocketagent.core.events import EventBus, EventType
+from pocketagent.interaction.modes import PlanApprovalRequest, PlanDecision, PlanSwitchRequest
 from pocketagent.interaction.questions import Question, QuestionAnswer
 from pocketagent.safety.permissions import ApprovalAnswer, ApprovalRequest, ask_approvals
 from pocketagent.safety.processes import bash_executable, terminate_process_tree
@@ -296,6 +297,28 @@ class NotifyingApprover:
     async def ask_questions(self, questions: list[Question]) -> list[QuestionAnswer] | None:
         await self._notify("question", questions=[question.question for question in questions])
         return await self.approver.ask_questions(questions)
+
+    async def request_plan_switch(self, request: PlanSwitchRequest) -> bool:
+        """计划模式的「要不要先规划一下」也是一次等你拍板，一起通知。"""
+        await self._notify("plan_switch", reason=request.reason)
+        ask = getattr(self.approver, "request_plan_switch", None)
+        if ask is None:
+            return False
+        return bool(await ask(request))
+
+    async def request_plan_approval(self, request: PlanApprovalRequest) -> PlanDecision:
+        await self._notify("plan_approval", mode=request.mode)
+        ask = getattr(self.approver, "request_plan_approval", None)
+        if ask is None:
+            return PlanDecision(approve=False)
+        return await ask(request)
+
+    def __getattr__(self, name: str) -> Any:
+        """审批通道上的其他可选能力原样转发：包一层不能把它们藏起来。"""
+        approver = self.__dict__.get("approver")
+        if approver is None:
+            raise AttributeError(name)
+        return getattr(approver, name)
 
     async def _notify(self, kind: str, **payload: Any) -> None:
         # 通知失败不能挡住审批：这里的问题已经由 HookRunner 收进 outcome，不用再管

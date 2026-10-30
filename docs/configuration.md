@@ -97,7 +97,7 @@
 | `post_tool_use` | `tool_name`、`tool_input`、`tool_call_id`、`tool_result`、`is_error` |
 | `subagent_stop` | `subagent_type`、`description`、`stop_reason`、`result`、`tool_calls`、`seconds` |
 | `pre_compact` | `reason`（auto / overflow / manual）、`tokens_before`、`messages` |
-| `notification` | `kind`（approval / question）、`tools` 或 `questions`、`summary` |
+| `notification` | `kind`（approval / question / plan_switch / plan_approval）、`tools` 或 `questions`、`summary` |
 | `turn_end` | `stop_reason`、`final_text` |
 | `session_end` | `turns`、`tool_calls` |
 
