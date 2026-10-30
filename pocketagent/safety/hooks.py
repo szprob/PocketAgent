@@ -19,7 +19,6 @@
 它本来就是用来看住 agent 的，再让 agent 去批准它就说不通了。
 """
 
-import asyncio
 import fnmatch
 import json
 import os
@@ -32,7 +31,7 @@ from pocketagent.core.events import EventBus, EventType
 from pocketagent.interaction.modes import PlanApprovalRequest, PlanDecision, PlanSwitchRequest
 from pocketagent.interaction.questions import Question, QuestionAnswer
 from pocketagent.safety.permissions import ApprovalAnswer, ApprovalRequest, ask_approvals
-from pocketagent.safety.processes import bash_executable, terminate_process_tree
+from pocketagent.safety.scripts import MAX_SCRIPT_TIMEOUT_SECONDS, ScriptResult, run_script
 
 if TYPE_CHECKING:
     from pocketagent.config import Settings
@@ -51,7 +50,8 @@ HOOK_EVENTS = (
 # 只有这两个时机按工具名匹配；其余时机 matcher 没有意义
 TOOL_EVENTS = ("pre_tool_use", "post_tool_use")
 DEFAULT_HOOK_TIMEOUT_SECONDS = 30
-MAX_HOOK_TIMEOUT_SECONDS = 600
+# 上限和触发器条件共用一份，别两边各写一个数字最后走岔
+MAX_HOOK_TIMEOUT_SECONDS = MAX_SCRIPT_TIMEOUT_SECONDS
 # 钩子说的话要进上下文，太长会挤掉正经内容
 MAX_HOOK_TEXT_CHARS = 4000
 COMMAND_PREVIEW_CHARS = 200
@@ -194,33 +194,18 @@ class HookRunner:
         return outcome
 
     async def _execute(self, definition: HookDefinition, payload: dict[str, Any], tool_name: str) -> HookOutcome:
-        bash = bash_executable()
-        if bash is None:
-            return HookOutcome(problems=["这台机器上找不到 bash，钩子没有执行"])
-        try:
-            process = await asyncio.create_subprocess_exec(
-                bash,
-                "-c",
-                definition.command,
-                cwd=str(self.settings.workspace),
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=self._environment(definition, tool_name),
-                # 单独的进程组：超时能连脚本派生出来的子进程一起结束
-                start_new_session=True,
-            )
-        except OSError as error:
-            return HookOutcome(problems=[f"起不来：{type(error).__name__}: {error}"])
-        payload_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        try:
-            stdout, stderr = await asyncio.wait_for(
-                process.communicate(payload_bytes), timeout=definition.timeout_seconds
-            )
-        except asyncio.TimeoutError:
-            await terminate_process_tree(process)
+        result = await run_script(
+            definition.command,
+            payload=payload,
+            cwd=str(self.settings.workspace),
+            timeout_seconds=definition.timeout_seconds,
+            environment=self._environment(definition, tool_name),
+        )
+        if result.missing_bash:
+            return HookOutcome(problems=[result.describe_failure()])
+        if result.timed_out:
             return HookOutcome(problems=[f"超过 {definition.timeout_seconds} 秒没结束，已终止"])
-        return _read_result(process.returncode, stdout, stderr)
+        return _read_result(result)
 
     def _environment(self, definition: HookDefinition, tool_name: str) -> dict[str, str]:
         """把常用的字段也放进环境变量，简单脚本不用去解析 JSON。"""
@@ -234,16 +219,17 @@ class HookRunner:
         return environment
 
 
-def _read_result(exit_code: int | None, stdout: bytes, stderr: bytes) -> HookOutcome:
-    output = stdout.decode("utf-8", "replace").strip()
-    error_output = stderr.decode("utf-8", "replace").strip()
-    if exit_code == 2:
+def _read_result(result: ScriptResult) -> HookOutcome:
+    if result.exit_code is None:
+        return HookOutcome(problems=[result.describe_failure()])
+    if result.exit_code == 2:
         # 和 Claude Code 一样：退出码 2 是「拦住」，stderr 当作理由
-        return HookOutcome(blocked=True, reason=_clip(error_output or output or "钩子拦住了这次调用"))
-    if exit_code != 0:
-        detail = error_output or output or "没有输出"
-        return HookOutcome(problems=[f"退出码 {exit_code}：{_clip(detail, COMMAND_PREVIEW_CHARS)}"])
-    blocked, reason, additional_context = _read_json_output(output)
+        reason = result.stderr or result.stdout or "钩子拦住了这次调用"
+        return HookOutcome(blocked=True, reason=_clip(reason))
+    if not result.ok:
+        detail = result.stderr or result.stdout or "没有输出"
+        return HookOutcome(problems=[f"退出码 {result.exit_code}：{_clip(detail, COMMAND_PREVIEW_CHARS)}"])
+    blocked, reason, additional_context = _read_json_output(result.stdout)
     return HookOutcome(blocked=blocked, reason=reason, additional_context=additional_context)
 
 
