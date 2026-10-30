@@ -12,7 +12,7 @@ from pocketagent.safety.hooks import HookDefinition, HookRunner, NotifyingApprov
 from pocketagent.safety.permissions import ApprovalAnswer, ApprovalMode, DenyAllApprover
 from pocketagent.safety.processes import bash_executable
 from tests.helpers import TemporaryDirectories, build_harness, tool_call
-from tests.test_subagents import TwoLevelProvider, spawn
+from tests.mock.test_subagents import TwoLevelProvider, spawn
 
 HAS_BASH = bash_executable() is not None
 

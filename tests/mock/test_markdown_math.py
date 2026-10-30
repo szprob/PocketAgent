@@ -6,7 +6,7 @@ import subprocess
 import unittest
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 RENDER_SCRIPT = r"""
 globalThis.document = { addEventListener() {}, compatMode: "CSS1Compat" };
 const { renderMarkdown } = await import("./pocketagent/web/static/js/ui/markdown.js");

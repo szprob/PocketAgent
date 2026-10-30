@@ -88,7 +88,7 @@ pocketagent/
       js/                main.js 入口；core/ 不碰 DOM 的接口和状态，ui/ 通用界面件，
                          task/ 任务页，sidebar/ 左栏，settings/ 设置，automations/ 自动化
 desktop/                 Electron 客户端：前端独立实现，只调 server 的 REST + WebSocket
-tests/                   unittest；vendor_pocketflow/ 是上游测试
+tests/                   unittest；mock/ 是快速离线用例，live/ 调真实免费 API，vendor_pocketflow/ 是上游测试
 ```
 
 ## 设计约定

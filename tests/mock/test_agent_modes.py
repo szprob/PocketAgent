@@ -17,7 +17,7 @@ from pocketagent.safety.permissions import AllowAllApprover
 from tests.helpers import TemporaryDirectories, build_harness, tool_call
 
 if web is not None:
-    from tests.test_web import WebTestBase, is_event, is_idle_state, is_type
+    from tests.mock.test_web import WebTestBase, is_event, is_idle_state, is_type
 
 
 class ScriptedModeApprover(AllowAllApprover):
