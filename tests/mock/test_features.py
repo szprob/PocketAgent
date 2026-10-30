@@ -191,10 +191,21 @@ class AutomationTest(unittest.TestCase):
             "要人审批的模式": self.form(approval_mode="ask"),
             "间隔太短": self.form(schedule_kind="interval", interval_minutes=1),
             "时间格式": self.form(daily_time="9点"),
+            "轮询没写命令": self.form(trigger={"source": {"kind": "poll"}}),
+            "条件没有正则": self.form(trigger={"source": {"kind": "clock"}, "condition": {"kind": "match", "pattern": "("}}),
         }
         for label, form in invalid_forms.items():
             with self.subTest(label), self.assertRaises(ConfigError):
                 Automation.from_form(form)
+
+    def test_editing_keeps_the_webhook_secret(self) -> None:
+        """改名字 / 改提示词不能把密钥换掉，不然外面已经配好的调用会全部 401。"""
+        trigger = {"source": {"kind": "webhook"}, "condition": {"kind": "always"}}
+        created = Automation.from_form(self.form(trigger=trigger))
+        edited = Automation.from_form(self.form(name="改了名字", trigger=trigger), existing=created)
+
+        self.assertTrue(created.trigger.source.secret)
+        self.assertEqual(edited.trigger.source.secret, created.trigger.source.secret)
 
     def test_store_round_trip_and_edit_keeps_history(self) -> None:
         store = AutomationStore(self.directories.home_dir / "automations.json")
