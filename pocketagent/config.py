@@ -15,6 +15,9 @@
       "busy_input_mode": "interject",
       "worktree_foreground": false,
       "worktree_background": true,
+      "sandbox_enabled": true,
+      "sandbox_network": false,
+      "sandbox_network_allowlist": ["pypi.org", "*.github.com"],
       "max_steps": 50,
       "workspaces": ["/Users/me/projects/foo"],
       "trusted_dirs": ["/Users/me/data"],
@@ -465,6 +468,8 @@ class AppConfig:
     # bash 沙箱：只能写工作目录和临时目录、读不到密钥；sandbox_network 决定沙箱里能不能联网
     sandbox_enabled: bool = True
     sandbox_network: bool = False
+    # sandbox_network 关着时，只放行这些域名（支持 *.example.com；allow_network 打开后不起作用）
+    sandbox_network_allowlist: list[str] = field(default_factory=list)
     # 勾了以后读写工作目录以外的文件不再询问（密钥目录照样问），改文件仍按审批模式走
     allow_outside_workspace: bool = False
     # 技能：除了默认目录还去哪找；关掉的技能名
@@ -541,6 +546,7 @@ class AppConfig:
             hooks=_hook_list(data.get("hooks")),
             sandbox_enabled=_boolean_with_default(data, "sandbox_enabled", True),
             sandbox_network=_boolean_with_default(data, "sandbox_network", False),
+            sandbox_network_allowlist=_text_list(data, "sandbox_network_allowlist"),
             allow_outside_workspace=_boolean_with_default(data, "allow_outside_workspace", False),
             skills_enabled=_boolean_with_default(data, "skills_enabled", True),
             skill_dirs=_workspace_list(data.get("skill_dirs")),
@@ -600,6 +606,7 @@ class AppConfig:
             "hooks": [hook.to_dict() for hook in self.hooks],
             "sandbox_enabled": self.sandbox_enabled,
             "sandbox_network": self.sandbox_network,
+            "sandbox_network_allowlist": self.sandbox_network_allowlist,
             "allow_outside_workspace": self.allow_outside_workspace,
             "skills_enabled": self.skills_enabled,
             "skill_dirs": self.skill_dirs,
@@ -652,6 +659,7 @@ class AppConfig:
             "hooks": [hook.to_dict() for hook in self.hooks],
             "sandbox_enabled": self.sandbox_enabled,
             "sandbox_network": self.sandbox_network,
+            "sandbox_network_allowlist": self.sandbox_network_allowlist,
             "sandbox_available": available_sandbox(),
             "allow_outside_workspace": self.allow_outside_workspace,
             "skills_enabled": self.skills_enabled,
@@ -839,6 +847,7 @@ class Settings:
     hooks: list[HookDefinition] = field(default_factory=list)
     sandbox_enabled: bool = True
     sandbox_network: bool = False
+    sandbox_network_allowlist: list[str] = field(default_factory=list)
     allow_outside_workspace: bool = False
     skills_enabled: bool = True
     skill_dirs: list[str] = field(default_factory=list)
@@ -947,6 +956,7 @@ class Settings:
         self.hooks = list(app_config.hooks)
         self.sandbox_enabled = app_config.sandbox_enabled
         self.sandbox_network = app_config.sandbox_network
+        self.sandbox_network_allowlist = list(app_config.sandbox_network_allowlist)
         self.allow_outside_workspace = app_config.allow_outside_workspace
         self.skills_enabled = app_config.skills_enabled
         self.skill_dirs = list(app_config.skill_dirs)

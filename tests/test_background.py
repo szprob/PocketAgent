@@ -63,6 +63,20 @@ class BackgroundShellTest(unittest.IsolatedAsyncioTestCase):
         after = await BashOutputTool().run({"id": shell_id}, self.context)
         self.assertIn("已退出", after.content)
 
+    async def test_extra_environment_reaches_background_commands(self) -> None:
+        """沙箱联网白名单的代理地址是额外注入的环境变量，后台命令也要拿得到。"""
+        record = await self.manager.start(
+            "echo $POCKETAGENT_SANDBOX_TEST",
+            ["bash", "-c", "echo $POCKETAGENT_SANDBOX_TEST"],
+            "",
+            {"POCKETAGENT_SANDBOX_TEST": "proxied"},
+        )
+        finished = await wait_until_finished(self.manager, record["id"], 5)
+        output = self.manager.read(record["id"])["output"]
+
+        self.assertEqual(finished["exit_code"], 0)
+        self.assertIn("proxied", output)
+
     async def test_finished_command_keeps_output_and_exit_code(self) -> None:
         shell_id = await self.start("echo done; exit 5")
         await wait_until_finished(self.manager, shell_id, 5)

@@ -30,6 +30,7 @@
   "hooks": [],
   "sandbox_enabled": true,
   "sandbox_network": false,
+  "sandbox_network_allowlist": ["pypi.org", "*.github.com"],
   "allow_outside_workspace": false,
   "skills_enabled": true,
   "skill_dirs": [],
@@ -49,6 +50,10 @@
   （DeepSeek：关 / 低 / 高 / 最高；智谱：低 / 高 / 最高；OpenRouter：关 / 低 / 中 / 高），OpenRouter 用它自己的
   `reasoning.effort` 写法，其他用顶层 `reasoning_effort`
 - `visible: false` 的模型不出现在会话的模型列表里（已经在用它的任务不受影响）
+- 沙箱联网：`sandbox_network` 是整个打开；关着时 `sandbox_network_allowlist` 里的域名仍然可以访问
+  （走 PocketAgent 进程里的本地代理，只认 HTTP(S)；`*.example.com` 连 `example.com` 和子域名一起放行，
+  `host:443` 限定端口）。这项只在 macOS 的 Seatbelt 沙箱里生效，Linux 的 bubblewrap 配了也只当不能联网，
+  细节见[权限与安全](safety.md)
 - 每个任务记住自己用的模型和权限，续跑时接着用
 - 优先级：命令行参数 > 配置文件 > 环境变量 > 默认值。环境变量（`POCKETAGENT_MODEL` / `POCKETAGENT_BASE_URL` /
   `POCKETAGENT_API_KEY` / `POCKETAGENT_PROTOCOL` 等，完整列表见 `pocketagent/config.py`）只在一个模型都没配时才用

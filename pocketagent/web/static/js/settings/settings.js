@@ -102,6 +102,7 @@ export function initSettings() {
     computerUseHint: byId("computer-use-hint"),
     sandboxEnabled: byId("sandbox-enabled"),
     sandboxNetwork: byId("sandbox-network"),
+    sandboxNetworkAllowlist: byId("sandbox-network-allowlist"),
     sandboxHint: byId("sandbox-hint"),
     allowOutsideWorkspace: byId("allow-outside-workspace"),
     skillsEnabled: byId("skills-enabled"),
@@ -411,6 +412,7 @@ export async function openSettings(tabName) {
     : "目前只支持 macOS。";
   elements.sandboxEnabled.checked = config.sandbox_enabled;
   elements.sandboxNetwork.checked = config.sandbox_network;
+  elements.sandboxNetworkAllowlist.value = (config.sandbox_network_allowlist || []).join("\n");
   elements.sandboxHint.textContent = sandboxHint(config.sandbox_available);
   elements.allowOutsideWorkspace.checked = config.allow_outside_workspace;
   elements.skillsEnabled.checked = config.skills_enabled;
@@ -756,6 +758,7 @@ async function saveSettings() {
     computer_use_enabled: elements.computerUseEnabled.checked,
     sandbox_enabled: elements.sandboxEnabled.checked,
     sandbox_network: elements.sandboxNetwork.checked,
+    sandbox_network_allowlist: pathLinesFromInput(elements.sandboxNetworkAllowlist),
     allow_outside_workspace: elements.allowOutsideWorkspace.checked,
     skills_enabled: elements.skillsEnabled.checked,
     skill_dirs: pathLinesFromInput(elements.skillDirs),

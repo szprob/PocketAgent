@@ -82,10 +82,9 @@ py -3.12 -m pocketagent --web -C D:\SZ\git\foo
 对照 Codex / Claude Code / WorkBuddy / Qoder，还缺这些，大致按优先级排：
 
 1. **plan 模式**：todo 清单已经有了，缺「先出方案、人确认再执行」
-2. **沙箱联网白名单**：现在只有开 / 关，可以像 Claude Code 那样走代理按域名放行；Linux bubblewrap 要在真机上验证
-3. **trace 回放和评测**：拿 JSONL trace 重放、对比不同模型或提示词
-4. **界面**：IDE 插件；web 里搜索任务
-5. **更多协议**：Anthropic 已经接上，Gemini 等其他原生协议按 `LLMProvider` 再加
+2. **trace 回放和评测**：拿 JSONL trace 重放、对比不同模型或提示词
+3. **界面**：IDE 插件；web 里搜索任务
+4. **更多协议**：Anthropic 已经接上，Gemini 等其他原生协议按 `LLMProvider` 再加
 
 ## 测试
 

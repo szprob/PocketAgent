@@ -45,6 +45,7 @@ def main(config_path: Path) -> int:
             process = subprocess.Popen(
                 config["command_line"],
                 cwd=config["workspace"],
+                env={**os.environ, **config.get("environment", {})},
                 stdin=subprocess.DEVNULL,
                 stdout=output,
                 stderr=subprocess.STDOUT,

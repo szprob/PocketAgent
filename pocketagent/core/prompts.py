@@ -112,7 +112,7 @@ def _tools_section(tools: ToolRegistry) -> str:
 def _sandbox_section(sandbox: SandboxPolicy | None) -> str:
     if sandbox is None:
         return "bash 命令不在沙箱里，直接在用户机器上执行。"
-    network = "可以联网" if sandbox.allow_network else "不能联网"
+    network = sandbox.network_summary()
     return (
         f"bash 命令在沙箱里执行：能读大部分文件，但只能写工作目录、临时目录和缓存目录，{network}，读不到密钥目录。"
         "被拦了（Operation not permitted、连不上网）而又确实需要时，用 outside_sandbox=true 重新执行，会请用户确认。"

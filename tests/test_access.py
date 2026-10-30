@@ -2,13 +2,17 @@
 
 import asyncio
 import json
+import os
 import shutil
 import subprocess
 import tempfile
+import threading
 import unittest
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 from pocketagent.llm import LLMResponse
+from pocketagent.safety.network_proxy import network_proxy
 from pocketagent.safety.permissions import (
     ApprovalAnswer,
     ApprovalMode,
@@ -44,9 +48,29 @@ class RecordingApprover:
         return self.answer
 
 
+class _OkHandler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:
+        body = b"ok"
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args: object) -> None:
+        pass
+
+
 def run_in_sandbox(command: str, policy: SandboxPolicy) -> subprocess.CompletedProcess:
-    arguments, _ = wrap_command(command, policy)
-    return subprocess.run(arguments, cwd=policy.workspace, capture_output=True, text=True, timeout=30)
+    prepared = wrap_command(command, policy)
+    environment = {**os.environ, **prepared.environment}
+    return subprocess.run(
+        prepared.command_line,
+        cwd=policy.workspace,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
 
 
 @unittest.skipUnless(available_sandbox() == "seatbelt", "只在有 sandbox-exec 的 macOS 上测")
@@ -117,6 +141,33 @@ class SeatbeltSandboxTest(unittest.TestCase):
             "python3 -c \"import socket; socket.create_connection(('1.1.1.1', 53), timeout=3)\"", self.policy
         )
         self.assertNotEqual(result.returncode, 0)
+
+    def test_allowlist_opens_only_the_local_proxy(self) -> None:
+        policy = SandboxPolicy(workspace=self.workspace, network_allowlist=["127.0.0.1"])
+        proxy = network_proxy(policy.network_allowlist)
+        profile = seatbelt_profile(policy)
+        server = HTTPServer(("127.0.0.1", 0), _OkHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        upstream = server.server_address[1]
+
+        self.assertNotIn("(allow network*)", profile)
+        self.assertIn(f'(allow network-outbound (remote tcp "localhost:{proxy.port}"))', profile)
+        allowed = run_in_sandbox(
+            "curl -s -o /dev/null -w '%{http_code}' --noproxy '' "
+            f"-x http://127.0.0.1:{proxy.port} http://127.0.0.1:{upstream}/",
+            policy,
+        )
+        denied = run_in_sandbox(
+            "curl -s -o /dev/null -w '%{http_code}' --noproxy '' "
+            f"-x http://127.0.0.1:{proxy.port} http://blocked.example/",
+            policy,
+        )
+
+        self.assertEqual(allowed.stdout.strip(), "200", allowed.stderr)
+        self.assertEqual(denied.stdout.strip(), "403", denied.stderr)
 
     def test_trusted_dirs_are_writable(self) -> None:
         """免问目录在沙箱里也要能写，否则 bash 把结果存到那里还得跳出去。"""
@@ -198,6 +249,17 @@ class BashSandboxIntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("outside_sandbox=true", denial_hint("touch: /x: Operation not permitted", policy))
         self.assertEqual(denial_hint("touch: /x: Operation not permitted", None), "")
         self.assertEqual(denial_hint("all good", policy), "")
+
+    @unittest.skipUnless(available_sandbox() == "seatbelt", "只在有 sandbox-exec 的 macOS 上测")
+    async def test_bash_tool_injects_the_allowlist_proxy_environment(self) -> None:
+        policy = SandboxPolicy(workspace=self.workspace, network_allowlist=["127.0.0.1"])
+        proxy = network_proxy(policy.network_allowlist)
+        context = ToolContext(workspace=self.workspace, sandbox=policy)
+
+        result = await BashTool(sandboxed=True).run({"command": "echo $HTTPS_PROXY"}, context)
+
+        self.assertFalse(result.is_error, result.content)
+        self.assertIn(f"http://127.0.0.1:{proxy.port}", result.content)
 
     @unittest.skipUnless(available_sandbox() == "seatbelt", "只在有 sandbox-exec 的 macOS 上测")
     async def test_bash_tool_runs_inside_the_sandbox(self) -> None:
