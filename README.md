@@ -50,8 +50,9 @@ py -3.12 -m pocketagent --web -C D:\SZ\git\foo
 - 命令超时或点停止时结束整棵进程树（POSIX 杀进程组，Windows 用 `taskkill /T`）
 - `screenshot` / `computer` 只在 macOS 上注册
 - 桌面端默认用 `py -3` 启动后端；Python 装在别处就设 `POCKETAGENT_PYTHON`
-- 测试用 `py -m unittest discover -s tests -t .`（Windows 上不一定有 make）；
-  `tests/vendor_pocketflow/` 里上游的并行 batch 测试依赖字典插入顺序，在 Windows 上会挂，和本项目代码无关
+- 测试用 `py -m unittest discover -s tests/mock -t .` 和 `py -m unittest discover -s tests/vendor_pocketflow -t .`
+  （Windows 上不一定有 make）；`tests/vendor_pocketflow/` 里上游的并行 batch 测试依赖字典插入顺序，
+  在 Windows 上会挂，和本项目代码无关
 
 ## 文档
 
@@ -90,10 +91,14 @@ py -3.12 -m pocketagent --web -C D:\SZ\git\foo
 ## 测试
 
 ```bash
-make test                                 # = python -m unittest discover -s tests -t .
+make test                                 # mock：不联网，假模型按剧本返回，改完代码就跑
+make test-live                            # live：调真实免费 API 校验流程，默认跳过
 make test PYTHON=~/env/s11/bin/python
 ```
 
-测试不连网络，模型用 `ScriptedProvider` 按剧本返回。web 测试用 aiohttp 自带的测试客户端走真实的 HTTP 和 WebSocket，
+`tests/mock/` 不连网络，模型用 `ScriptedProvider` 按剧本返回；web 测试用 aiohttp 自带的测试客户端走真实的 HTTP 和 WebSocket，
 没装 aiohttp 时自动跳过；TUI 测试用 Textual 的 `run_test()` 无头驱动真实控件，没装 textual 时自动跳过；
-沙箱测试只在有 `sandbox-exec` 的 macOS 上跑。
+沙箱测试只在有 `sandbox-exec` 的 macOS 上跑。新功能必须补 mock 测试。
+
+`tests/live/` 调真实免费接口（自动挑配置里带 `:free` 的模型、必应搜索、example.com、智谱免费生图），
+没有 `POCKETAGENT_LIVE=1` 时全部跳过，所以不会误花钱。两套怎么分工、怎么加用例见 [tests/README.md](tests/README.md)。

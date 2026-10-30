@@ -32,7 +32,7 @@ from pocketagent.tools import ToolContext, default_tool_registry
 from pocketagent.tools.files import READ_MAX_LINE_CHARS, READ_MAX_TOTAL_CHARS, ReadFileTool
 from tests.helpers import TemporaryDirectories, build_harness, tool_call
 
-REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
+REPOSITORY_ROOT = Path(__file__).resolve().parent.parent.parent
 REQUEST = httpx.Request("POST", "https://example.com/v1/chat/completions")
 
 try:
