@@ -54,6 +54,7 @@ pocketagent/
     ripgrep.py           ripgrep 的调用和 --json 解析；rg 用不了时 search.py 回退 Python 实现
   safety/                权限和兜底
     permissions.py       权限模式、审批接口；按工具类别和这次调用碰到的地方（工作目录外、沙箱外、密钥）决定
+    hooks.py             钩子：在几个固定时机跑用户脚本，可以拦住工具调用、给模型补上下文
     reviewer.py          AI 自动审批：让模型判断一次工具调用能不能放行
     sandbox.py           bash 沙箱：macOS Seatbelt 规则、Linux bubblewrap 参数
     checkpoints.py       影子 git 检查点：拍快照、列变更、diff、撤销、整体恢复；嵌套仓库各一个影子仓库

@@ -26,6 +26,8 @@ let pendingClearSearchKey = false;
 let currentTab = "general";
 // MCP 页的草稿：服务器配置、当前选中、有没有和服务端同步过（和服务端存的 mcp.json 对应）
 let mcpDraft = { servers: [], selected: null, loaded: false };
+// 钩子页的草稿：每条钩子一个对象，随「保存」一起提交
+let hookDraft = [];
 
 export function initSettings(handlers) {
   callbacks = handlers;
@@ -106,6 +108,7 @@ export function initSettings(handlers) {
   elements.mcpResult = document.getElementById("mcp-result");
   elements.mcpStatus = document.getElementById("mcp-status");
   elements.mcpConfigPath = document.getElementById("mcp-config-path");
+  elements.hookList = document.getElementById("hook-list");
 
   elements.clearSearchKey = button("ghost-button small", "清除已保存的密钥");
   elements.clearSearchKey.addEventListener("click", () => {
@@ -153,6 +156,7 @@ export function initSettings(handlers) {
   document.getElementById("save-mcp").addEventListener("click", saveMcp);
   document.getElementById("reload-mcp").addEventListener("click", reloadMcp);
   document.getElementById("delete-mcp-server").addEventListener("click", deleteSelectedMcpServer);
+  document.getElementById("add-hook").addEventListener("click", addHook);
 
   for (const tab of elements.tabs) {
     if (tab.dataset.tab === "models") {
@@ -229,6 +233,7 @@ async function loadConfig() {
   };
   selectedModelId = draft.default_model || draft.models[0]?.id || null;
   disabledSkills = new Set(config.disabled_skills || []);
+  hookDraft = (config.hooks || []).map(toDraftHook);
   skillContentCache = new Map();
   memoryContentCache = new Map();
   memoryWorkspace = currentWorkspace();
@@ -237,6 +242,7 @@ async function loadConfig() {
   fillModels();
   renderModelForm();
   fillGeneral();
+  renderHookList();
 
   if (currentTab === "skills") {
     loadSkills();
@@ -849,6 +855,7 @@ async function saveConfig() {
     appearance: elements.appearance.value,
     font_size: elements.fontSize.value,
     fold_tool_calls: elements.foldToolCalls.checked,
+    hooks: hookPayload(),
   };
   const searchKey = elements.webSearchKey.value.trim();
   if (searchKey) {
@@ -1158,4 +1165,138 @@ function setMcpResult(text, kind = "") {
   elements.mcpResult.textContent = text || "";
   elements.mcpResult.classList.toggle("ok", kind === "ok");
   elements.mcpResult.classList.toggle("error", kind === "error");
+}
+
+// ---- 钩子 ----
+
+// 和后端 safety/hooks.py 的 HOOK_EVENTS 一一对应
+const HOOK_EVENTS = [
+  { value: "user_prompt_submit", label: "用户发来一句话（这一轮开始前）" },
+  { value: "pre_tool_use", label: "工具调用之前（可以拦住）" },
+  { value: "post_tool_use", label: "工具调用之后（可以补充提示）" },
+  { value: "turn_end", label: "一轮结束（答完 / 被拒绝 / 出错）" },
+];
+// 只有这两个时机按工具名匹配
+const TOOL_HOOK_EVENTS = ["pre_tool_use", "post_tool_use"];
+
+function toDraftHook(hook) {
+  return {
+    event: hook.event || "pre_tool_use",
+    matcher: hook.matcher || "",
+    command: hook.command || "",
+    timeout_seconds: String(hook.timeout_seconds || 30),
+    enabled: hook.enabled !== false,
+  };
+}
+
+function renderHookList() {
+  if (!elements.hookList) {
+    return;
+  }
+  if (hookDraft.length === 0) {
+    elements.hookList.replaceChildren(
+      el("div", "muted", "还没有钩子。比如加一个「工具调用之前」的钩子，工具名填 bash，命令写你自己的检查脚本。"),
+    );
+    return;
+  }
+  elements.hookList.replaceChildren(...hookDraft.map(renderHookItem));
+}
+
+function renderHookItem(hook, index) {
+  const item = el("div", "hook-item");
+
+  const head = el("div", "hook-head");
+  const eventSelect = document.createElement("select");
+  for (const choice of HOOK_EVENTS) {
+    eventSelect.appendChild(new Option(choice.label, choice.value));
+  }
+  eventSelect.value = hook.event;
+  eventSelect.addEventListener("change", () => {
+    hook.event = eventSelect.value;
+    // 换时机后工具名可能变得没意义，重画一遍把输入框禁掉
+    renderHookList();
+  });
+
+  const matcher = document.createElement("input");
+  matcher.type = "text";
+  matcher.className = "hook-matcher";
+  matcher.placeholder = "工具名，如 bash、edit_*、mcp__*；留空 = 全部";
+  matcher.value = hook.matcher;
+  matcher.disabled = !TOOL_HOOK_EVENTS.includes(hook.event);
+  matcher.addEventListener("input", () => {
+    hook.matcher = matcher.value;
+  });
+
+  const timeout = document.createElement("input");
+  timeout.type = "number";
+  timeout.min = "1";
+  timeout.step = "1";
+  timeout.className = "hook-timeout";
+  timeout.value = hook.timeout_seconds;
+  timeout.title = "超时秒数：超过就结束这个脚本，当它出错处理";
+  timeout.addEventListener("input", () => {
+    hook.timeout_seconds = timeout.value;
+  });
+
+  const enabledLabel = document.createElement("label");
+  enabledLabel.className = "checkbox-field hook-enabled";
+  const enabled = document.createElement("input");
+  enabled.type = "checkbox";
+  enabled.checked = hook.enabled;
+  enabled.addEventListener("change", () => {
+    hook.enabled = enabled.checked;
+  });
+  enabledLabel.append(enabled, el("span", "", "启用"));
+
+  const remove = button("ghost-button small danger-text", "删除");
+  remove.addEventListener("click", () => {
+    hookDraft.splice(index, 1);
+    renderHookList();
+  });
+
+  head.append(
+    eventSelect,
+    matcher,
+    el("span", "hook-unit", "超时"),
+    timeout,
+    el("span", "hook-unit", "秒"),
+    enabledLabel,
+    remove,
+  );
+
+  const command = document.createElement("textarea");
+  command.rows = 2;
+  command.className = "hook-command";
+  command.placeholder = "要跑的 shell 命令，如 ~/bin/guard.sh，或者 npx prettier --write .";
+  command.value = hook.command;
+  command.addEventListener("input", () => {
+    hook.command = command.value;
+  });
+
+  item.append(head, command);
+  return item;
+}
+
+function addHook() {
+  hookDraft.push({
+    event: "pre_tool_use",
+    matcher: "",
+    command: "",
+    timeout_seconds: "30",
+    enabled: true,
+  });
+  renderHookList();
+}
+
+function hookPayload() {
+  // 命令空着的行是加了还没填，保存时丢掉，免得后端报「命令不能为空」
+  return hookDraft
+    .filter((hook) => hook.command.trim())
+    .map((hook) => ({
+      event: hook.event,
+      matcher: hook.matcher.trim(),
+      command: hook.command.trim(),
+      timeout_seconds: Number(hook.timeout_seconds) || 30,
+      enabled: hook.enabled,
+    }));
 }

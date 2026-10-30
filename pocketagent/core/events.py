@@ -25,6 +25,8 @@ class EventType(str, Enum):
     TOOL_OUTPUT_DELTA = "tool_output_delta"
     TOOL_REVIEW = "tool_review"
     TOOL_RESULT = "tool_result"
+    # 用户配的钩子跑完一次（拦住、补充了上下文、或者自己出错了）
+    HOOK = "hook"
     TODOS_UPDATED = "todos_updated"
     INTERJECTION_QUEUED = "interjection_queued"
     INTERJECTION_APPLIED = "interjection_applied"

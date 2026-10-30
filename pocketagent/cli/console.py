@@ -100,6 +100,8 @@ class ConsoleRenderer:
             case EventType.SUBAGENT_PROGRESS:
                 mark = "✗ " if event.data["step"] == "tool_error" else ""
                 self._print_line(self.style.dim(f"    ↳ 子 agent {mark}{event.data['name']} {event.data['summary']}"))
+            case EventType.HOOK:
+                self._print_hook(event.data)
             case EventType.STEP_LIMIT:
                 self._print_line(self.style.yellow(f"[这一轮已调用模型 {event.data['max_steps']} 次，达到上限，先停下]"))
             case EventType.ERROR:
@@ -169,6 +171,15 @@ class ConsoleRenderer:
         for index, line in enumerate(shown):
             prefix = "  ⎿ " if index == 0 else "    "
             self._print_line(colorize(prefix + line))
+
+    def _print_hook(self, data: dict) -> None:
+        """钩子只在拦住了、或者自己出错时说话：跑成功的钩子是背景动作，不刷屏。"""
+        if data.get("blocked"):
+            target = f" {data['tool_name']}" if data.get("tool_name") else ""
+            reason = data.get("reason") or "没有说明原因"
+            self._print_line(self.style.yellow(f"[钩子] {data['event']}{target} 拦住了：{reason}"))
+        elif data.get("problem"):
+            self._print_line(self.style.yellow(f"[钩子] {data['event']} 出错：{data['problem']}"))
 
 
 class ConsoleApprover:

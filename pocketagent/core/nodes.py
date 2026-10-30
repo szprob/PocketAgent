@@ -663,16 +663,25 @@ def _approval_request(prepared: PreparedCall) -> ApprovalRequest:
 
 
 async def execute_prepared(prepared: PreparedCall, context: AgentContext) -> ToolCallOutcome:
-    """审完的调用：放行的执行，没放行的回「用户拒绝了」；结果截断后发 TOOL_RESULT 事件。"""
+    """审完的调用：放行的执行，没放行的回「用户拒绝了」；结果截断后发 TOOL_RESULT 事件。
+
+    真正执行的调用前后各给钩子一次机会：pre_tool_use 可以拦住它，post_tool_use 可以给模型补一句话。
+    """
     call = prepared.call
+    ran_tool = False
     if prepared.outcome is not None:
         outcome = prepared.outcome
     elif not prepared.approved:
         outcome = _denied_outcome(call, "用户拒绝了这次调用")
         outcome.review = prepared.review
     else:
-        outcome = await _run_tool(prepared, context)
+        outcome = await _pre_tool_hook_outcome(prepared, context)
+        if outcome is None:
+            outcome = await _run_tool(prepared, context)
+            ran_tool = True
     outcome.result.content = await _render_tool_result(context, call, outcome.result.content)
+    if ran_tool:
+        await _run_post_tool_hook(outcome, context)
     await context.events.emit(
         EventType.TOOL_RESULT,
         call_id=call.id,
@@ -682,6 +691,54 @@ async def execute_prepared(prepared: PreparedCall, context: AgentContext) -> Too
         denied=outcome.denied,
     )
     return outcome
+
+
+async def _pre_tool_hook_outcome(prepared: PreparedCall, context: AgentContext) -> ToolCallOutcome | None:
+    """pre_tool_use 钩子：返回「被拦住」的结果；None 表示放行。"""
+    if context.hooks is None:
+        return None
+    hook = await context.hooks.run(
+        "pre_tool_use",
+        {
+            "tool_name": prepared.tool.name,
+            "tool_call_id": prepared.call.id,
+            "tool_input": prepared.call.arguments,
+            "summary": prepared.summary,
+        },
+        tool_name=prepared.tool.name,
+    )
+    if not hook.blocked:
+        return None
+    reason = hook.reason or "钩子没有说明原因"
+    # 不当成「用户拒绝」：钩子拦下的是这一次做法，模型可以换个方式接着做，这一轮不用停
+    return _error_outcome(
+        prepared.call,
+        f"钩子阻止了这次调用：{reason}。不要原样重试，先向用户说明或者换个做法。",
+    )
+
+
+async def _run_post_tool_hook(outcome: ToolCallOutcome, context: AgentContext) -> None:
+    """post_tool_use 钩子：补充的上下文、指出的问题接在工具结果后面，模型下一步就看得到。"""
+    if context.hooks is None:
+        return
+    hook = await context.hooks.run(
+        "post_tool_use",
+        {
+            "tool_name": outcome.call.name,
+            "tool_call_id": outcome.call.id,
+            "tool_input": outcome.call.arguments,
+            "tool_result": outcome.result.content,
+            "is_error": outcome.result.is_error,
+        },
+        tool_name=outcome.call.name,
+    )
+    if hook.blocked:
+        # 工具已经跑完了，拦不住；把钩子的意见标成错误，让模型当回事
+        outcome.result.is_error = True
+        note = f"钩子指出这次调用有问题：{hook.reason or '钩子没有说明原因'}"
+        outcome.result.content = f"{outcome.result.content}\n\n（{note}）"
+    if hook.additional_context:
+        outcome.result.content = f"{outcome.result.content}\n\n（钩子补充：{hook.additional_context}）"
 
 
 async def _run_tool(prepared: PreparedCall, context: AgentContext) -> ToolCallOutcome:
