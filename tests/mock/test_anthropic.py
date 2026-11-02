@@ -5,6 +5,7 @@ from unittest import mock
 import httpx
 
 from pocketagent.llm.anthropic import (
+    DEFAULT_MAX_TOKENS,
     AnthropicAPIError,
     AnthropicProvider,
     convert_messages,
@@ -33,6 +34,21 @@ class RecordingListener:
 
     async def on_retry(self, attempt: int, error: Exception, wait_seconds: float) -> None:
         self.retries.append((attempt, str(error), wait_seconds))
+
+
+class OutputLimitTest(unittest.TestCase):
+    """默认输出上限跟着现在的 Claude 走：还按 8k 发，写个大文件就会被截断、白跑一轮补救。"""
+
+    def test_default_request_uses_the_modern_limit(self) -> None:
+        provider = AnthropicProvider(model="claude-sonnet-4-5", base_url=None, api_key="k")
+
+        self.assertEqual(provider.build_request([], [])["max_tokens"], DEFAULT_MAX_TOKENS)
+        self.assertGreater(DEFAULT_MAX_TOKENS, 8192)
+
+    def test_configured_limit_wins(self) -> None:
+        provider = AnthropicProvider(model="claude-sonnet-4-5", base_url=None, api_key="k", max_output_tokens=1024)
+
+        self.assertEqual(provider.build_request([], [])["max_tokens"], 1024)
 
 
 class MessageConversionTest(unittest.TestCase):

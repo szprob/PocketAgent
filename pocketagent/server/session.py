@@ -162,6 +162,8 @@ class WebSession:
         self.pending_questions: dict[str, PendingQuestions] = {}
         self.pending_plans: dict[str, PendingPlan] = {}
         self.background_task: asyncio.Task | None = None
+        # 任务被删了：还开着的标签页再发消息，不能再把它写回磁盘
+        self.deleted = False
         # 排队等这一轮结束后再跑的 user 消息
         self.queued_messages: list[dict[str, Any]] = []
         # 自动化任务设一个超时，没人审批就拒绝
@@ -285,6 +287,8 @@ class WebSession:
         return build_user_message(text, attachments, self.attachments)
 
     async def submit(self, message: dict[str, Any], busy_input_mode: str) -> None:
+        if self.deleted:
+            raise SessionBusyError("任务已经删除")
         if not self.running:
             self.start_turn(message)
             return
@@ -299,6 +303,8 @@ class WebSession:
             self.queued_messages.pop(index)
 
     def start_turn(self, message: dict[str, Any] | str) -> None:
+        if self.deleted:
+            raise SessionBusyError("任务已经删除")
         self._start_background(self.agent.run_turn(message))
 
     def rewind_to(self, message_id: str) -> dict[str, Any]:
@@ -364,6 +370,12 @@ class WebSession:
         if self.agent.context.pending_compaction is not None:
             self.agent.context.pending_compaction.task.cancel()
             self.agent.context.pending_compaction = None
+
+    async def close_clients(self) -> None:
+        """断开所有连接。删任务时先做这一步：还开着的标签页不能接着往上写。"""
+        for client in list(self.clients):
+            self.clients.discard(client)
+            await client.close()
 
     async def close(self) -> None:
         """删任务或服务退出时停掉压缩、跑 session_end 钩子；后台命令由独立监督进程继续运行。"""

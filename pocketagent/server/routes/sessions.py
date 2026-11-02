@@ -93,7 +93,12 @@ async def get_attachment(request: web.Request) -> web.StreamResponse:
 async def get_session_file(request: web.Request) -> web.StreamResponse:
     # 按会话的工作区取图：临时任务的临时目录没登记成工作区，也能在聊天里显示
     web_session = find_session(request)
-    path = files.session_file_path(web_session.session.workspace, request.query.get("path", ""))
+    path = files.session_file_path(
+        web_session.session.workspace,
+        request.query.get("path", ""),
+        registered_workspaces=session_manager(request).session_preview_workspaces(),
+        allow_unregistered=web_session.session.ephemeral,
+    )
     return web.FileResponse(path)
 
 

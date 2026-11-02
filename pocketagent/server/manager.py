@@ -79,6 +79,8 @@ class SessionManager:
         self.sessions: dict[str, WebSession] = {}
         # 触发器开出来的后台任务：留着引用，别让它们在半路被回收
         self.trigger_tasks: set[asyncio.Task] = set()
+        # 某一轮调度抛出异常时记在这里，界面上一并显示；空串表示正常
+        self.scheduler_problem = ""
 
     # ---- provider 和设置 ----
 
@@ -139,6 +141,16 @@ class SessionManager:
             if worktree and live.session.workspace not in paths:
                 paths.append(live.session.workspace)
         return paths
+
+    def session_preview_workspaces(self) -> list[str]:
+        """会话文件接口认的目录：已登记的工作区，加上新任务的默认目录。
+
+        默认目录没登记也该能读——不带工作区建出来的任务就落在那里；但它不进 /api/files
+        的名单，那边仍然要求先「添加工作区」。
+        """
+        default = str(self.default_workspace().resolve())
+        paths = self.file_workspaces()
+        return paths if default in paths else [default] + paths
 
     def add_workspace(self, raw_path: str) -> None:
         path = Path(raw_path).expanduser()
@@ -264,6 +276,9 @@ class SessionManager:
             raise SessionBusyError("任务还在运行，先停止再删除")
         web_session = live or (self.get(session_id) if self.store.exists(session_id) else None)
         if web_session is not None:
+            # 先标记再关连接：已经开着的标签页可能正好在发消息，靠这个标记拦住它把任务写回来
+            web_session.deleted = True
+            await web_session.close_clients()
             await web_session.close()
             await web_session.checkpoints.forget()
         self.sessions.pop(session_id, None)
@@ -484,10 +499,14 @@ class SessionManager:
                     "trigger_kind": automation.trigger.source.kind,
                     "next_run_at": next_run_at.isoformat(timespec="minutes") if next_run_at else None,
                     "last_status": status,
-                    "problem": self.triggers.problem_for(automation.id),
+                    "problem": self.triggers.problem_for(automation.id) or self.scheduler_problem,
                 }
             )
         return summaries
+
+    def automations_problem(self) -> str:
+        """调度整体的问题：配置文件读不出来、某一轮调度抛错。没有就是空串。"""
+        return self.scheduler_problem or self.automations.load_error or ""
 
     def run_automation(self, automation_id: str, occurrence: Occurrence | None = None) -> WebSession:
         """开一个任务把这条自动化跑起来。occurrence 为空表示用户手点的「立即运行」。"""
@@ -565,7 +584,16 @@ class SessionManager:
 
     async def run_scheduler(self) -> None:
         while True:
-            await self.run_due_automations(datetime.now())
+            try:
+                await self.run_due_automations(datetime.now())
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                # 一轮调度出错不能把循环带走：这个协程一退，所有自动化就静默失效了，
+                # 用户只会觉得「怎么不跑了」。记下来，下一轮接着试。
+                self.scheduler_problem = f"调度出错：{type(error).__name__}: {error}"
+            else:
+                self.scheduler_problem = ""
             await asyncio.sleep(SCHEDULER_TICK_SECONDS)
 
     async def shutdown(self) -> None:

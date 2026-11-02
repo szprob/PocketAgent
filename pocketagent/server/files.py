@@ -64,9 +64,22 @@ def list_workspace_dir(workspaces: list[str], workspace: str, relative_path: str
         raise ConfigError(f"不是目录：{relative_path}")
     entries = []
     for child in _sorted_children(directory)[:LIST_LIMIT]:
-        size = None if child.is_dir() else child.stat().st_size
-        entries.append(FileEntry(child.name, child.relative_to(root).as_posix(), child.is_dir(), size).to_dict())
+        entry = FileEntry(child.name, child.relative_to(root).as_posix(), child.is_dir(), _file_size(child))
+        entries.append(entry.to_dict())
     return entries
+
+
+def _file_size(path: Path) -> int | None:
+    """文件大小；目录、断掉的软链接（stat 会抛 FileNotFoundError）都给 None。
+
+    一个坏链接不该让整个目录列不出来。
+    """
+    if path.is_dir():
+        return None
+    try:
+        return path.stat().st_size
+    except OSError:
+        return None
 
 
 def read_workspace_file(workspaces: list[str], workspace: str, relative_path: str) -> dict[str, Any]:
@@ -99,9 +112,21 @@ def workspace_file_path(workspaces: list[str], workspace: str, relative_path: st
     return target
 
 
-def session_file_path(workspace: str, relative_path: str) -> Path:
-    """会话自己的文件：不要求工作区登记过，临时任务的目录也能取；仍然不能跑出该目录。"""
-    _, target = resolve_under(Path(workspace), relative_path)
+def session_file_path(
+    workspace: str,
+    relative_path: str,
+    registered_workspaces: list[str] | None = None,
+    allow_unregistered: bool = False,
+) -> Path:
+    """会话自己的文件：临时任务的目录没登记成工作区也能取；仍然不能跑出该目录。
+
+    给了 registered_workspaces 时，非临时任务的工作区必须在里面：新建任务时不校验目录有没有登记，
+    只靠这个接口的「跑不出工作区」拦不住「把工作区填成 /etc 再读 passwd」。
+    """
+    root = Path(workspace).expanduser().resolve()
+    if registered_workspaces is not None and not allow_unregistered and str(root) not in registered_workspaces:
+        raise ConfigError(f"不是已添加的工作区：{workspace}")
+    _, target = resolve_under(root, relative_path)
     if not target.is_file():
         raise ConfigError(f"不是文件：{relative_path}")
     return target

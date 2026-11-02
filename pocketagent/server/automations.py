@@ -130,12 +130,32 @@ def _trigger_from_payload(data: dict[str, Any], previous: Trigger | None) -> Tri
 class AutomationStore:
     def __init__(self, path: Path) -> None:
         self.path = path
+        # 文件读不出来（不是合法 JSON、被截断）时记下原因，界面上一并显示；None 表示没问题
+        self.load_error: str | None = None
 
     def list_all(self) -> list[Automation]:
         if not self.path.is_file():
+            # 文件没了（刚被备份走）不清 load_error：界面上还要继续提示那份坏文件在哪
             return []
-        data = json.loads(self.path.read_text(encoding="utf-8"))
-        return [Automation.from_dict(item) for item in data]
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+            if not isinstance(data, list):
+                raise ValueError("顶层不是数组")
+            automations = [Automation.from_dict(item) for item in data]
+        except (json.JSONDecodeError, ValueError, TypeError, KeyError, AttributeError) as error:
+            # 一个坏文件不能让整个服务起不来，也不能每次调度都抛一次：备份走，从空列表开始
+            self.load_error = self._quarantine(error)
+            return []
+        self.load_error = None
+        return automations
+
+    def _quarantine(self, error: Exception) -> str:
+        backup = self.path.with_name(f"{self.path.name}.corrupt-{datetime.now():%Y%m%d-%H%M%S}")
+        try:
+            self.path.replace(backup)
+        except OSError:
+            return f"自动化的配置文件读不了（{type(error).__name__}: {error}），请检查 {self.path}"
+        return f"自动化的配置文件读不了（{type(error).__name__}），已备份到 {backup}，确认后重新添加"
 
     def get(self, automation_id: str) -> Automation:
         for automation in self.list_all():
@@ -165,4 +185,11 @@ class AutomationStore:
             json.dumps([automation.to_dict() for automation in automations], ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+        try:
+            # 里面有每条外部触发的签名密钥，和 config.json 一样只给自己读
+            temporary.chmod(0o600)
+        except OSError:
+            pass
         temporary.replace(self.path)
+        # 能正常写回去说明文件已经好了，之前的「读不了」提示可以撤掉
+        self.load_error = None

@@ -22,7 +22,9 @@ from pocketagent.knowledge.memory import project_memory_dir
 from pocketagent.llm import LLMResponse, ScriptedProvider, Usage
 from pocketagent.safety.permissions import ApprovalMode
 from pocketagent.server import app as server
+from pocketagent.server import manager as manager_module
 from pocketagent.server.app import MANAGER_KEY, create_app
+from pocketagent.server.session import SessionBusyError
 from pocketagent.server.triggers.engine import sign_webhook
 from tests.helpers import TemporaryDirectories, tool_call
 
@@ -1346,6 +1348,102 @@ class StartupTest(unittest.IsolatedAsyncioTestCase):
         workspace = str(self.directories.workspace.resolve())
         self.assertEqual(app_config.workspaces, [workspace])
         self.assertEqual(app_config.default_workspace, workspace)
+
+
+class ServerHardeningTest(WebTestBase):
+    """服务端的几条边界：坏消息不断连、删掉的任务不会被旧标签页写回来、
+    会话文件接口只认已登记的工作区、调度协程不被一次出错带走。"""
+
+    async def test_malformed_socket_frame_keeps_the_connection(self) -> None:
+        session_id = await self._create_session()
+        async with self._connect(session_id) as socket_client:
+            await self._receive_until(socket_client, is_type("snapshot"))
+            await socket_client.send_str("{not json")
+            error = await self._receive_until(socket_client, is_type("error"))
+            # 连接还在：后面这条还能收到回复，不用重连
+            await socket_client.send_json({"type": "no_such_type"})
+            unknown = await self._receive_until(socket_client, is_type("error"))
+
+        self.assertIn("JSON", error["message"])
+        self.assertIn("不认识", unknown["message"])
+
+    async def test_deleted_task_is_not_written_back_by_an_open_tab(self) -> None:
+        session_id = await self._create_session()
+        manager = self.app[MANAGER_KEY]
+        web_session = manager.sessions[session_id]
+
+        response = await self.client.delete(f"/api/sessions/{session_id}", params=AUTH)
+
+        self.assertEqual(response.status, 200)
+        self.assertTrue(web_session.deleted)
+        with self.assertRaises(SessionBusyError):
+            await web_session.submit(web_session.build_message("还在吗", []), "interject")
+        self.assertFalse(manager.store.exists(session_id))
+        self.assertNotIn(session_id, manager.sessions)
+
+    async def test_session_file_route_only_serves_registered_workspaces(self) -> None:
+        outside = self.directories.workspace.parent / "outside"
+        outside.mkdir()
+        (outside / "secret.txt").write_text("不该被读到", encoding="utf-8")
+        (self.directories.workspace / "ok.txt").write_text("ok", encoding="utf-8")
+
+        unregistered = await self._create_session(workspace=str(outside))
+        registered = await self._create_session()
+        refused = await self.client.get(
+            f"/api/sessions/{unregistered}/file/raw", params={**AUTH, "path": "secret.txt"}
+        )
+        allowed = await self.client.get(f"/api/sessions/{registered}/file/raw", params={**AUTH, "path": "ok.txt"})
+
+        self.assertEqual(refused.status, 400)
+        self.assertNotIn("不该被读到", await refused.text())
+        self.assertEqual(allowed.status, 200)
+
+    async def test_corrupt_automations_file_is_quarantined(self) -> None:
+        manager = self.app[MANAGER_KEY]
+        manager.automations.path.parent.mkdir(parents=True, exist_ok=True)
+        manager.automations.path.write_text("{not json", encoding="utf-8")
+
+        listing = await self._get_json("/api/automations")
+
+        self.assertEqual(listing["automations"], [])
+        self.assertIn("已备份", listing["problem"])
+        backups = list(manager.automations.path.parent.glob("automations.json.corrupt-*"))
+        self.assertEqual(len(backups), 1)
+
+    async def test_broken_symlink_does_not_break_the_file_list(self) -> None:
+        if sys.platform == "win32":
+            self.skipTest("Windows 上建软链接要管理员权限")
+        workspace = self.directories.workspace
+        await self._send_json("POST", "/api/workspaces", {"path": str(workspace)})
+        (workspace / "ok.txt").write_text("ok", encoding="utf-8")
+        (workspace / "dangling").symlink_to(workspace / "nope.txt")
+
+        listing = await self._get_json(f"/api/files?workspace={workspace.resolve()}")
+
+        self.assertEqual([entry["name"] for entry in listing["entries"]], ["dangling", "ok.txt"])
+
+    async def test_scheduler_keeps_running_after_a_failed_tick(self) -> None:
+        manager = self.app[MANAGER_KEY]
+        ticks: list[Any] = []
+
+        async def failing_tick(now):
+            ticks.append(now)
+            raise RuntimeError("磁盘抽风")
+
+        with mock.patch.object(manager, "run_due_automations", failing_tick), mock.patch.object(
+            manager_module, "SCHEDULER_TICK_SECONDS", 0
+        ):
+            task = asyncio.create_task(manager.run_scheduler())
+            for _ in range(200):
+                if len(ticks) >= 2:
+                    break
+                await asyncio.sleep(0.01)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+
+        self.assertGreaterEqual(len(ticks), 2)
+        self.assertIn("调度出错", manager.scheduler_problem)
 
 
 if __name__ == "__main__":

@@ -77,9 +77,9 @@ export function closeEditor() {
 export async function showAutomations() {
   elements.list.replaceChildren(el("div", "muted", "加载中…"));
   try {
-    const { automations } = await requestJson("api/automations");
+    const { automations, problem } = await requestJson("api/automations");
     loadedAutomations = automations;
-    renderList(automations);
+    renderList(automations, problem);
   } catch (error) {
     elements.list.replaceChildren(el("div", "error-text", error.message));
   }
@@ -87,9 +87,13 @@ export async function showAutomations() {
 
 // ---- 列表 ----
 
-function renderList(automations) {
+function renderList(automations, problem = "") {
   loadedAutomations = automations;
   elements.list.replaceChildren();
+  if (problem) {
+    // 调度整体的问题（配置文件坏了、某一轮调度抛错）：列表可能是空的，卡片上挂不出来
+    elements.list.appendChild(el("div", "error-text", problem));
+  }
   if (automations.length === 0) {
     const empty = el("div", "automation-empty");
     empty.append(
@@ -183,8 +187,8 @@ async function deleteAutomation(automation) {
   if (!window.confirm(`删除自动化「${automation.name}」？已经跑出来的任务不删。`)) {
     return;
   }
-  const { automations } = await requestJson(`api/automations/${automation.id}`, { method: "DELETE" });
-  renderList(automations);
+  const { automations, problem } = await requestJson(`api/automations/${automation.id}`, { method: "DELETE" });
+  renderList(automations, problem);
 }
 
 // ---- 编辑弹窗 ----
@@ -343,8 +347,8 @@ async function saveAutomation() {
 async function saveForm(form, automationId) {
   try {
     const path = automationId ? `api/automations/${automationId}` : "api/automations";
-    const { automations } = await sendJson(path, automationId ? "PUT" : "POST", form);
-    renderList(automations);
+    const { automations, problem } = await sendJson(path, automationId ? "PUT" : "POST", form);
+    renderList(automations, problem);
     return true;
   } catch (error) {
     if (isAutomationEditorOpen()) {

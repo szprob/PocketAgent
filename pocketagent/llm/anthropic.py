@@ -27,7 +27,10 @@ from pocketagent.llm.base import ContextOverflowError, LLMResponse, StreamListen
 
 DEFAULT_BASE_URL = "https://api.anthropic.com"
 ANTHROPIC_VERSION = "2023-06-01"
-DEFAULT_MAX_TOKENS = 8192
+# 新一代 Claude 单次输出都能出 32k（Opus 4.1 正好 32k，Sonnet / Haiku 4.5 更高），
+# 还按老模型的 8k 发，写个大文件就会被截断、白跑一轮补救。真要接只能出 8k 的旧模型，
+# 在模型配置里把 max_output_tokens 调回去即可
+DEFAULT_MAX_TOKENS = 32000
 
 MAX_ATTEMPTS = 4
 BASE_DELAY_SECONDS = 1.0

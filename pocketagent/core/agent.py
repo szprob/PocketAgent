@@ -318,6 +318,9 @@ class Agent:
             messages[0] = system_message
         else:
             messages.insert(0, system_message)
+        # 锚点记的是「旧系统提示 + 旧工具定义」的占用，提示换了（模式、日期、AGENTS.md、
+        # MCP 工具）它就不准了，继续用会让压缩阈值判错，下一次估算从头算
+        self.context.token_anchor = None
 
     async def _ensure_mcp_tools(self) -> None:
         """每一轮开跑前确认 MCP 服务器连着、工具都在注册表里（幂等，没配 mcp.json 时几乎不花时间）。

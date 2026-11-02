@@ -1,11 +1,13 @@
 """自动化的增删改、立即运行，以及外部 POST 进来的那个入口。"""
 
 import json
+from typing import Any
 
 from aiohttp import web
 
 from pocketagent.server.automations import Automation
 from pocketagent.server.common import error_response, json_response, session_manager
+from pocketagent.server.manager import SessionManager
 from pocketagent.server.triggers.engine import verify_webhook
 from pocketagent.server.triggers.model import WebhookSource
 
@@ -13,28 +15,33 @@ SIGNATURE_HEADER = "X-PocketAgent-Signature"
 DELIVERY_HEADER = "X-PocketAgent-Delivery"
 
 
+def _automations_payload(manager: SessionManager) -> dict[str, Any]:
+    """列表 + 调度整体的问题（配置文件坏了、某一轮调度抛错），前端一并显示。"""
+    return {"automations": manager.automation_summaries(), "problem": manager.automations_problem()}
+
+
 async def list_automations(request: web.Request) -> web.Response:
-    return json_response({"automations": session_manager(request).automation_summaries()})
+    return json_response(_automations_payload(session_manager(request)))
 
 
 async def create_automation(request: web.Request) -> web.Response:
     manager = session_manager(request)
     automation = Automation.from_form(await request.json())
     manager.automations.save(automation)
-    return json_response({"automations": manager.automation_summaries()})
+    return json_response(_automations_payload(manager))
 
 
 async def update_automation(request: web.Request) -> web.Response:
     manager = session_manager(request)
     existing = manager.automations.get(request.match_info["automation_id"])
     manager.automations.save(Automation.from_form(await request.json(), existing=existing))
-    return json_response({"automations": manager.automation_summaries()})
+    return json_response(_automations_payload(manager))
 
 
 async def delete_automation(request: web.Request) -> web.Response:
     manager = session_manager(request)
     manager.automations.delete(request.match_info["automation_id"])
-    return json_response({"automations": manager.automation_summaries()})
+    return json_response(_automations_payload(manager))
 
 
 async def run_automation_now(request: web.Request) -> web.Response:

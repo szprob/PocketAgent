@@ -50,6 +50,11 @@ state.state.info = { models: [{ id: "m1", name: "模型一" }] };
 check("findModel", state.findModel("m1")?.name === "模型一" && state.findModel("missing") === null);
 check("withToken", api.withToken("api/info") === "http://localhost:8765/api/info?token=abc");
 check("socketUrl", api.socketUrl("s 1") === "ws://localhost:8765/ws/s%201?token=abc");
+// token 按 host 分：同主机不同端口的两个实例不能互相覆盖
+check(
+  "token key is per host",
+  [...window.localStorage.store.keys()].some((key) => key.startsWith("pocketagent-token:localhost:8765")),
+);
 
 if (failures.length > 0) {
   console.error(failures.join("\n"));

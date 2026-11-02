@@ -5,6 +5,7 @@ from typing import Any
 
 from pocketagent.core.agent import INTERRUPTED_TOOL_RESULT
 from pocketagent.core.compaction import MERGE_SUMMARY_INSTRUCTION, SUMMARY_PREFIX
+from pocketagent.core.context import TokenAnchor
 from pocketagent.core.events import EventType
 from pocketagent.core.nodes import apply_finished_compaction, start_background_compaction
 from pocketagent.core.session import Session, SessionStore
@@ -372,6 +373,23 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
         await second.agent.run_turn("还记得吗")
 
         self.assertEqual(roles(second.agent.context.messages), ["system", "user", "assistant", "user", "assistant"])
+
+
+class TokenAnchorTest(unittest.IsolatedAsyncioTestCase):
+    """锚点记的是「那一次请求的输入占用」。系统提示一换（模式、日期、AGENTS.md、MCP 工具），
+    旧锚点就偏了，继续用会让压缩阈值判错。"""
+
+    async def test_refreshing_system_prompt_drops_the_anchor(self) -> None:
+        directories = TemporaryDirectories()
+        self.addCleanup(directories.cleanup)
+        harness = build_harness(directories, [])
+        context = harness.agent.context
+        context.token_anchor = TokenAnchor(tokens=1200, message_count=len(context.messages), history_version=0)
+
+        harness.agent.refresh_system_prompt()
+
+        self.assertIsNone(context.token_anchor)
+        self.assertTrue(context.messages[0]["content"].startswith("你是 PocketAgent"))
 
 
 if __name__ == "__main__":

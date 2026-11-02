@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from pocketagent.core.nodes import ToolCallOutcome, append_tool_messages
 from pocketagent.interaction.attachments import AttachmentStore, tool_message_content
 from pocketagent.tools import default_tool_registry
 from pocketagent.tools.base import ToolContext, ToolResult
@@ -19,6 +20,7 @@ from pocketagent.tools.computer import (
     key_script,
     png_size,
 )
+from tests.helpers import TemporaryDirectories, build_harness, tool_call
 
 
 class KeyScriptTest(unittest.TestCase):
@@ -141,3 +143,27 @@ class ScreenshotToolSchemaTest(unittest.TestCase):
         tool = ScreenshotTool()
         self.assertEqual(tool.kind.name, "READ")
         self.assertEqual(tool.parameters, {"type": "object", "properties": {}})
+
+
+class ToolImagesInHistoryTest(unittest.IsolatedAsyncioTestCase):
+    """带图的工具结果要真的进历史。只测 tool_message_content 不够：
+    append_tool_messages 把算好的 content 丢掉时，那种测试照样是绿的。"""
+
+    async def test_image_part_is_written_into_the_tool_message(self) -> None:
+        directories = TemporaryDirectories()
+        self.addCleanup(directories.cleanup)
+        harness = build_harness(directories, [])
+        image = directories.workspace / "shot.png"
+        image.write_bytes(b"\x89PNG\r\n\x1a\n" + b"fake")
+        outcome = ToolCallOutcome(
+            call=tool_call("call_1", "screenshot", "{}"),
+            result=ToolResult("已截屏", images=[image]),
+        )
+
+        append_tool_messages(harness.agent.context, [outcome])
+
+        message = harness.agent.context.messages[-1]
+        self.assertEqual(message["role"], "tool")
+        self.assertIsInstance(message["content"], list)
+        self.assertEqual(message["content"][0], {"type": "text", "text": "已截屏"})
+        self.assertEqual(message["content"][1]["type"], "image_url")

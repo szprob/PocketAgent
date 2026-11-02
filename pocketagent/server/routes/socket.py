@@ -21,10 +21,27 @@ async def session_socket(request: web.Request) -> web.StreamResponse:
         async for message in client:
             if message.type != WSMsgType.TEXT:
                 continue
-            await _handle_client_message(manager, web_session, client, json.loads(message.data))
+            payload = _parse_client_message(message.data)
+            if payload is None:
+                await web_session.send(client, {"type": "error", "message": "消息不是合法的 JSON 对象"})
+                continue
+            if web_session.deleted:
+                # 任务可能已被另一个标签页删掉，这条连接不能再发一条话把它写回磁盘
+                await web_session.send(client, {"type": "error", "message": "任务已经删除"})
+                break
+            await _handle_client_message(manager, web_session, client, payload)
     finally:
         web_session.clients.discard(client)
     return client
+
+
+def _parse_client_message(raw: str) -> dict[str, Any] | None:
+    """一条客户端消息：不是 JSON、或者不是对象，就返回 None（调用方回一条 error，连接留着）。"""
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
 
 
 async def _handle_client_message(

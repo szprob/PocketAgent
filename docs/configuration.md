@@ -133,3 +133,5 @@
   `base_url` 写到 `/v1` 或 `/messages` 都认。密钥放在 `api_key`，请求头按官方的 `x-api-key` 发
 - 工具调用、流式输出、图片、用量（含缓存命中）都会在 provider 里转成 Anthropic 的 content blocks / usage；
   Anthropic 的 thinking 块要求原样带回历史，当前消息格式存不下，所以先不接思考档位（界面上只有「默认」）
+- 单次输出上限默认 32000（`max_output_tokens` 可以按模型改）。新一代 Claude 都能出这么多，
+  老一代只能出 8k 的模型要调小，不然接口会报 `max_tokens` 超过上限

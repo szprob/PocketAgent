@@ -544,7 +544,8 @@ def append_tool_messages(context: AgentContext, outcomes: list[ToolCallOutcome])
         message = {
             "role": "tool",
             "tool_call_id": outcome.call.id,
-            "content": outcome.result.content,
+            # 用上面算好的 content：带图的工具（截图）要靠它把图片段一起放进历史
+            "content": content,
             "_is_error": outcome.result.is_error,
             "_denied": outcome.denied,
         }

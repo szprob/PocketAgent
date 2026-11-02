@@ -6,9 +6,11 @@
 const TOKEN_STORAGE_PREFIX = "pocketagent-token";
 
 function tokenStorageKey() {
-  // 按 origin + 子路径前缀分开：不同端口、网关下不同子路径的实例互不覆盖
-  const basePath = new URL(".", window.location.href).pathname;
-  return `${TOKEN_STORAGE_PREFIX}:${basePath}`;
+  // 按 host（含端口）+ 子路径前缀分开：不同端口、网关下不同子路径的实例互不覆盖。
+  // host 从 href 里取，window.location.host 有的运行环境（测试桩、自定义协议）没有
+  const pageUrl = new URL(window.location.href);
+  const basePath = new URL(".", pageUrl).pathname;
+  return `${TOKEN_STORAGE_PREFIX}:${pageUrl.host}${basePath}`;
 }
 
 function readToken() {
