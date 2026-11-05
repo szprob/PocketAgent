@@ -1,15 +1,18 @@
 """影子 git 检查点：嵌套仓库、新任务继承 index、检查点和第一次调用模型同时进行。"""
 
 import asyncio
+import os
 import subprocess
+import sys
 import time
 import unittest
+from unittest import mock
 from dataclasses import dataclass, field
 
 from pocketagent.core.events import EventType
 from pocketagent.llm import LLMResponse
 from pocketagent.safety.checkpoints import Checkpoint, TaskCheckpoints, find_nested_repos
-from tests.helpers import TemporaryDirectories, build_harness, tool_call
+from tests.helpers import TemporaryDirectories, build_harness, tool_call, wait_for_pid_file, wait_until_process_gone
 
 
 @dataclass
@@ -203,3 +206,34 @@ class SlowCheckpointTest(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipIf(sys.platform == "win32", "假 git 是 sh 脚本")
+class CancelledSnapshotTest(unittest.IsolatedAsyncioTestCase):
+    """任务被停时快照可能还在拍：git 要被结束掉并等它退出，不能留在后台没人收。"""
+
+    def setUp(self) -> None:
+        self.directories = TemporaryDirectories()
+        fake_bin = self.directories.home_dir / "fake-bin"
+        fake_bin.mkdir(parents=True)
+        self.pid_file = fake_bin / "git.pid"
+        fake_git = fake_bin / "git"
+        fake_git.write_text(f'#!/bin/sh\necho $$ > "{self.pid_file}"\nexec sleep 30\n', encoding="utf-8")
+        fake_git.chmod(0o755)
+        self.path_patch = mock.patch.dict(os.environ, {"PATH": f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}"})
+        self.path_patch.start()
+
+    def tearDown(self) -> None:
+        self.path_patch.stop()
+        self.directories.cleanup()
+
+    async def test_cancelling_a_running_git_kills_it(self) -> None:
+        checkpoints = TaskCheckpoints(self.directories.home_dir / "shadow", self.directories.workspace, FakeSession("s1"))
+        running = asyncio.create_task(checkpoints.repo._git("status"))
+        pid = await wait_for_pid_file(self.pid_file)
+
+        running.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await running
+
+        self.assertTrue(await wait_until_process_gone(pid))

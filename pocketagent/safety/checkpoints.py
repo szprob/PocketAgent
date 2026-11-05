@@ -23,6 +23,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from pocketagent.safety.processes import terminate_process_tree
+
 SNAPSHOT_TIMEOUT_SECONDS = 30
 DEFAULT_EXCLUDES = [
     "node_modules/",
@@ -136,9 +138,12 @@ class ShadowRepo:
         try:
             stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
         except asyncio.TimeoutError:
-            process.kill()
-            await process.wait()
+            await terminate_process_tree(process)
             raise CheckpointError(f"git {arguments[0]} 超过 {timeout:.0f} 秒（工作区可能太大）")
+        except asyncio.CancelledError:
+            # 任务被停时快照可能还在拍：结束 git 并等它退出，不然进程和管道一直没人收
+            await terminate_process_tree(process)
+            raise
         if check and process.returncode != 0:
             raise CheckpointError(f"git {' '.join(arguments[:2])} 失败：{stderr.decode('utf-8', 'replace').strip()[:300]}")
         return stdout.decode("utf-8", "replace")

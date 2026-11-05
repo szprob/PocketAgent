@@ -13,6 +13,7 @@ from pocketagent.core.events import Event, EventType
 from pocketagent.core.session import Session
 from pocketagent.llm import LLMResponse, ScriptedProvider, ToolCall
 from pocketagent.safety.permissions import AllowAllApprover, ApprovalMode, Approver
+from pocketagent.safety.processes import process_exists
 from pocketagent.tools import ToolRegistry
 
 
@@ -123,3 +124,23 @@ def tool_call(call_id: str, name: str, arguments_json: str) -> ToolCall:
 
 def roles(messages: list[dict]) -> list[str]:
     return [message["role"] for message in messages]
+
+
+async def wait_for_pid_file(pid_file: Path, timeout_seconds: float = 5.0) -> int:
+    """等子进程把自己的 pid 写进文件（测试里的假脚本 echo $$），返回这个 pid。"""
+    deadline = asyncio.get_running_loop().time() + timeout_seconds
+    while asyncio.get_running_loop().time() < deadline:
+        if pid_file.exists() and pid_file.read_text(encoding="utf-8").strip():
+            return int(pid_file.read_text(encoding="utf-8"))
+        await asyncio.sleep(0.05)
+    raise AssertionError(f"{pid_file} 一直没写出来，子进程没起来")
+
+
+async def wait_until_process_gone(pid: int, timeout_seconds: float = 2.0) -> bool:
+    """孙进程被杀后要等系统收尸，给一点时间；到点还在就算没杀掉。"""
+    deadline = asyncio.get_running_loop().time() + timeout_seconds
+    while process_exists(pid):
+        if asyncio.get_running_loop().time() >= deadline:
+            return False
+        await asyncio.sleep(0.05)
+    return True

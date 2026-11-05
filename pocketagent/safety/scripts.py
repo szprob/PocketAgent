@@ -83,6 +83,10 @@ async def run_script(
     except asyncio.TimeoutError:
         await terminate_process_tree(process)
         return ScriptResult(exit_code=None, timed_out=True)
+    except asyncio.CancelledError:
+        # 任务被停时钩子脚本还在跑：连它派生的子进程一起结束，别留在后台
+        await terminate_process_tree(process)
+        raise
     return ScriptResult(
         exit_code=process.returncode,
         stdout=stdout.decode("utf-8", "replace").strip(),

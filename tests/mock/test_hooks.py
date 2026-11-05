@@ -1,5 +1,6 @@
 """钩子：配置校验、工具名匹配、九个时机的行为。"""
 
+import asyncio
 import json
 import unittest
 from pathlib import Path
@@ -11,7 +12,8 @@ from pocketagent.llm import LLMResponse
 from pocketagent.safety.hooks import HookDefinition, HookRunner, NotifyingApprover
 from pocketagent.safety.permissions import ApprovalAnswer, ApprovalMode, DenyAllApprover
 from pocketagent.safety.processes import bash_executable
-from tests.helpers import TemporaryDirectories, build_harness, tool_call
+from pocketagent.safety.scripts import run_script
+from tests.helpers import TemporaryDirectories, build_harness, tool_call, wait_for_pid_file, wait_until_process_gone
 from tests.mock.test_subagents import TwoLevelProvider, spawn
 
 HAS_BASH = bash_executable() is not None
@@ -105,6 +107,19 @@ class HookRunnerTest(unittest.IsolatedAsyncioTestCase):
     def build_runner(self, hooks: list[HookDefinition], session_id: str = "s1") -> HookRunner:
         settings = Settings(workspace=self.workspace, home_dir=self.directories.home_dir, hooks=hooks)
         return HookRunner(settings, session_id, EventBus())
+
+    async def test_stopping_the_task_kills_a_running_hook_script(self) -> None:
+        """任务被停时钩子脚本还在跑：连它一起结束，不能留在后台。"""
+        pid_file = self.workspace / "hook.pid"
+        command = write_script(self.workspace, "slow.sh", f'echo $$ > "{pid_file}"\nexec sleep 30\n')
+        running = asyncio.create_task(run_script(command, payload={}, cwd=str(self.workspace), timeout_seconds=60))
+        pid = await wait_for_pid_file(pid_file)
+
+        running.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await running
+
+        self.assertTrue(await wait_until_process_gone(pid))
 
     async def test_exit_code_two_blocks_with_stderr_as_reason(self) -> None:
         command = write_script(self.workspace, "block.sh", 'echo "不许删这个目录" >&2\nexit 2\n')
