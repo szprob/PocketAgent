@@ -1,6 +1,6 @@
 PYTHON ?= python
 
-.PHONY: test test-live test-all run desktop
+.PHONY: test test-live test-all run desktop desktop-dist
 
 # 快速、不联网：假模型 + 假服务器，改代码和加功能后都跑这一套
 test:
@@ -20,3 +20,9 @@ run:
 desktop:
 	cd desktop && [ -d node_modules ] || npm install --no-audit --no-fund
 	cd desktop && npm start
+
+# 打桌面端安装包（当前系统的：macOS 出 dmg + zip，Windows 出 nsis 安装器，Linux 出 AppImage），产物在 desktop/dist/。
+# 包里只有界面；后端还是用户自己装的 pocketagent（见 README「桌面端」）
+desktop-dist:
+	cd desktop && [ -d node_modules ] || npm install --no-audit --no-fund
+	cd desktop && npm run dist

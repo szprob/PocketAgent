@@ -35,34 +35,110 @@ protocol.registerSchemesAsPrivileged([
   },
 ]);
 
-function resolvePython() {
-  // 优先用显式指定的；本机约定主环境是 ~/env/s11（和 AGENTS.md 里 make test 的 PYTHON 一致）；
-  // Windows 上 PATH 里的 python 常常是应用商店占位符，改用官方安装器带的 py 启动器；最后退回 PATH
-  if (process.env.POCKETAGENT_PYTHON) {
-    return { command: process.env.POCKETAGENT_PYTHON, arguments: [] };
+// 从 Finder / 开始菜单 / Dock 启动的打包版拿到的 PATH 很短（macOS 上只有 /usr/bin:/bin:/usr/sbin:/sbin），
+// 用户在 shell 里装的 pocketagent、pyenv / uv / conda 的 Python 都看不见。从登录 shell 里取一次完整的 PATH。
+// 开发时从终端 npm start，PATH 本来就是全的，不用多跑这一趟。
+const PATH_MARKER = "__POCKETAGENT_PATH__";
+
+function loadLoginShellPath() {
+  if (!app.isPackaged || process.platform === "win32") {
+    return;
   }
-  const localEnvironment = path.join(os.homedir(), "env", "s11", "bin", "python");
-  if (fs.existsSync(localEnvironment)) {
-    return { command: localEnvironment, arguments: [] };
-  }
-  if (process.platform === "win32") {
-    if (commandExists("py.exe")) {
-      return { command: "py", arguments: ["-3"] };
+  const shell = process.env.SHELL || "/bin/zsh";
+  try {
+    // -i -l 才会读 .zshrc / .bash_profile；rc 文件可能往 stdout 打东西，所以用标记切出 PATH
+    const output = execFileSync(shell, ["-ilc", `printf '${PATH_MARKER}%s' "$PATH"`], {
+      encoding: "utf8",
+      timeout: 5000,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    const markerIndex = output.lastIndexOf(PATH_MARKER);
+    const shellPath = markerIndex >= 0 ? output.slice(markerIndex + PATH_MARKER.length).trim() : "";
+    if (shellPath) {
+      const merged = [...shellPath.split(path.delimiter), ...(process.env.PATH || "").split(path.delimiter)];
+      process.env.PATH = [...new Set(merged.filter(Boolean))].join(path.delimiter);
     }
-    return { command: "python", arguments: [] };
+  } catch {
+    // shell 起不来或者超时：就用原来的 PATH，后面找不到 Python 会在界面上说清楚
   }
-  return { command: "python3", arguments: [] };
 }
 
-function commandExists(name) {
-  // 只用在 Windows 上找 py 启动器；where 是系统自带的
+function findOnPath(name) {
+  const extensions = process.platform === "win32" ? [".exe", ".cmd", ""] : [""];
+  for (const directory of (process.env.PATH || "").split(path.delimiter)) {
+    for (const extension of extensions) {
+      const candidate = path.join(directory, name + extension);
+      if (directory && fs.existsSync(candidate)) {
+        return candidate;
+      }
+    }
+  }
+  return null;
+}
+
+// pip / pipx / uv tool 装出来的 pocketagent 命令知道自己用的是哪个 Python：
+// POSIX 上看脚本第一行的 #!，Windows 上 Scripts\pocketagent.exe 的上一级就是 python.exe 所在的目录
+function launcherPython() {
+  const launcher = findOnPath("pocketagent");
+  if (!launcher) {
+    return null;
+  }
+  if (process.platform === "win32") {
+    const python = path.join(path.dirname(path.dirname(launcher)), "python.exe");
+    return fs.existsSync(python) ? python : null;
+  }
   try {
-    execFileSync("where", [name], { stdio: "ignore" });
+    const firstLine = fs.readFileSync(launcher, "utf8").split("\n", 1)[0];
+    const interpreter = firstLine.startsWith("#!") ? firstLine.slice(2).trim().split(/\s+/)[0] : "";
+    return interpreter && fs.existsSync(interpreter) ? interpreter : null;
+  } catch {
+    return null;
+  }
+}
+
+function pythonCandidates() {
+  const candidates = [];
+  // 本机约定的主环境是 ~/env/s11（和 AGENTS.md 里 make test 的 PYTHON 一致）
+  const localEnvironment = path.join(os.homedir(), "env", "s11", "bin", "python");
+  if (fs.existsSync(localEnvironment)) {
+    candidates.push({ command: localEnvironment, arguments: [] });
+  }
+  const fromLauncher = launcherPython();
+  if (fromLauncher) {
+    candidates.push({ command: fromLauncher, arguments: [] });
+  }
+  if (process.platform === "win32") {
+    // PATH 里的 python 常常是应用商店占位符，先试官方安装器带的 py 启动器
+    if (findOnPath("py")) {
+      candidates.push({ command: "py", arguments: ["-3"] });
+    }
+    candidates.push({ command: "python", arguments: [] });
+  } else {
+    candidates.push({ command: "python3", arguments: [] }, { command: "python", arguments: [] });
+  }
+  return candidates;
+}
+
+function canImportPocketagent(python) {
+  try {
+    execFileSync(python.command, [...python.arguments, "-c", "import pocketagent"], { stdio: "ignore", timeout: 20000 });
     return true;
   } catch {
     return false;
   }
 }
+
+// 显式指定的直接用（用错了让它在日志里报错，比悄悄换一个强）；否则挨个试，挑第一个 import 得了 pocketagent 的
+function resolvePython() {
+  if (process.env.POCKETAGENT_PYTHON) {
+    return { command: process.env.POCKETAGENT_PYTHON, arguments: [] };
+  }
+  return pythonCandidates().find(canImportPocketagent) || null;
+}
+
+const PYTHON_MISSING_MESSAGE =
+  "没找到装了 pocketagent 的 Python。先在终端里装好后端（如 pip install \"pocketagent[web] @ git+https://github.com/szprob/PocketAgent\"，" +
+  "或者 pipx / uv tool install），再点「重新启动后端」；Python 装在别处就用环境变量 POCKETAGENT_PYTHON 指定。";
 
 function resolveWorkspace() {
   return process.env.POCKETAGENT_WORKSPACE || os.homedir();
@@ -101,6 +177,10 @@ function startBackend() {
   const python = resolvePython();
   const workspace = resolveWorkspace();
   backendState = { status: "starting", baseUrl: "", token, error: "" };
+  if (!python) {
+    updateBackendState({ status: "exited", error: PYTHON_MISSING_MESSAGE });
+    return;
+  }
 
   const child = spawn(
     python.command,
@@ -428,6 +508,7 @@ if (!hasSingleInstanceLock) {
   });
 
   app.whenReady().then(() => {
+    loadLoginShellPath();
     registerProtocolHandler();
     registerIpcHandlers();
     buildMenu();

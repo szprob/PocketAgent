@@ -33,6 +33,23 @@ pocketagent -m "DS 4.1 Flash" -p "跑一下测试，把失败的修好" --mode f
 
 不安装也能用：在仓库根目录 `python -m pocketagent ...`。
 
+### 桌面端
+
+`desktop/` 是 Electron 客户端，界面自己画，后端还是上面装的那个 pocketagent（它起一个只听本机的 `--web` 进程）。
+
+```bash
+make desktop          # 开发时直接跑（第一次会 npm install）
+make desktop-dist     # 打当前系统的安装包到 desktop/dist/：macOS 是 dmg + zip，Windows 是安装器，Linux 是 AppImage
+```
+
+三个系统的安装包也可以在 GitHub Actions 里打：推一个 `v` 开头的 tag，或者在 Actions 页面手动运行 desktop 工作流，
+产物在那次运行的 Artifacts 里。包没有签名：macOS 第一次要右键「打开」，Windows 会提示未知发布者。
+
+安装包里只有界面，要先装好后端（`pip install "pocketagent[web] @ git+https://github.com/szprob/PocketAgent"`，
+或者 pipx / uv tool install）。桌面端按这个顺序找 Python：环境变量 `POCKETAGENT_PYTHON` → `pocketagent` 命令
+所用的解释器 → `python3`（Windows 上是 `py -3`），挑第一个 `import pocketagent` 成功的。
+从 Finder / Dock 打开时会先从登录 shell 里取一次 PATH，所以 shell 里能用的 pocketagent 这里也找得到；都找不到时界面上会说怎么装。
+
 ### Windows
 
 Windows 上 web、命令行和桌面端都能跑，装依赖和启动换成：

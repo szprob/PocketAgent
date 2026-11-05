@@ -2,14 +2,67 @@
   "name": "pocketagent-desktop",
   "version": "0.1.0",
   "private": true,
-  "description": "PocketAgent 桌面客户端：独立前端，只通过 REST + WebSocket 调共享后端",
+  "description": "PocketAgent 桌面客户端：页面自己写，通用界面代码和 web 共用，只通过 REST + WebSocket 调共享后端",
+  "author": "szprob",
   "main": "main.js",
   "scripts": {
     "postinstall": "node scripts/ensure-electron.js",
     "start": "electron .",
-    "start:debug": "electron . --remote-debugging-port=9222"
+    "start:debug": "electron . --remote-debugging-port=9222",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder --publish never"
   },
   "devDependencies": {
-    "electron": "^45.0.0"
+    "electron": "^45.0.0",
+    "electron-builder": "^26.18.0"
+  },
+  "build": {
+    "appId": "io.github.szprob.pocketagent",
+    "productName": "PocketAgent",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../pocketagent/web/static/js/shared",
+        "to": "static/js/shared",
+        "filter": [
+          "**/*.js"
+        ]
+      },
+      {
+        "from": "../pocketagent/web/static/vendor",
+        "to": "static/vendor"
+      }
+    ],
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.developer-tools",
+      "identity": null
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Development"
+    }
   }
 }

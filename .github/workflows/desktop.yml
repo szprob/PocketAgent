@@ -1,0 +1,40 @@
+# 桌面端安装包：打 v 开头的 tag 或者在 Actions 页面手动运行时，三个系统各打一份，挂在这次运行的 Artifacts 里。
+# 没有签名：macOS 第一次打开要右键「打开」（或 xattr -cr PocketAgent.app），Windows 会提示未知发布者。
+name: desktop
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npx electron-builder --publish never
+        env:
+          # 没有证书，别让 electron-builder 去钥匙串里找
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PocketAgent-${{ runner.os }}
+          path: |
+            desktop/dist/*.dmg
+            desktop/dist/*.zip
+            desktop/dist/*.exe
+            desktop/dist/*.AppImage
+          if-no-files-found: error
