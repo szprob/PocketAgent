@@ -70,8 +70,8 @@ jobs:
               body = text[start:end] if start >= 0 else ""
               full = f"[{name}]\n{tail}\n{body}"
               while full:
-                  chunks.append(full[:12000])
-                  full = full[12000:]
+                  chunks.append(full[:3800])
+                  full = full[3800:]
           def escape(value):
               return value.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
           for index, chunk in enumerate(chunks[:30]):
