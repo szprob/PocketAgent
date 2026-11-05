@@ -42,10 +42,37 @@ jobs:
 
       # 和 Makefile 的 test 目标一致；Windows 上不一定有 make，所以直接调 python。tests/live 会调真实接口，不在 CI 跑
       - name: mock 测试
-        run: python -m unittest discover -s tests/mock -t .
+        shell: bash
+        run: python -m unittest discover -s tests/mock -t . 2>&1 | tee mock-test.log; exit ${PIPESTATUS[0]}
 
+      # mock 挂了也跑，两套的结果都要看到
       - name: 上游 PocketFlow 测试
-        run: python -m unittest discover -s tests/vendor_pocketflow -t .
+        if: success() || failure()
+        shell: bash
+        run: python -m unittest discover -s tests/vendor_pocketflow -t . 2>&1 | tee vendor-test.log; exit ${PIPESTATUS[0]}
+
+      # DEBUG：临时把失败详情写进 job summary，调通后删掉
+      - name: 失败详情
+        if: failure()
+        shell: bash
+        run: |
+          python - <<'PYEOF'
+          import os, re
+          out = []
+          for name in ("mock-test.log", "vendor-test.log"):
+              if not os.path.exists(name):
+                  continue
+              text = open(name, encoding="utf-8", errors="replace").read()
+              start = text.find("=" * 70)
+              end = text.rfind("\nRan ")
+              tail = text[end:end + 400] if end >= 0 else text[-3000:]
+              body = text[start:end] if start >= 0 else ""
+              out.append(f"### {name}\n\n```text\n{body[:400000]}\n{tail}\n```\n")
+              for header in re.findall(r"^(?:FAIL|ERROR): .*$", text, re.M)[:40]:
+                  print("::error::" + header)
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+              summary.write("\n".join(out))
+          PYEOF
 
   lint:
     runs-on: ubuntu-latest
