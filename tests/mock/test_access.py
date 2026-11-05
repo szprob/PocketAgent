@@ -117,6 +117,17 @@ class SeatbeltSandboxTest(unittest.TestCase):
         self.assertIn("Operation not permitted", secret.stderr)
         self.assertEqual(exception.stdout, "attachment")
 
+    def test_parents_of_exceptions_can_be_stat_but_not_listed(self) -> None:
+        """git 等工具解析真实路径会逐级 lstat；例外目录的父目录（就是密钥目录）只给 stat，不给列目录。"""
+        stat_parent = run_in_sandbox(f"stat -f %N '{self.secret}'", self.policy)
+        list_parent = run_in_sandbox(f"ls '{self.secret}'", self.policy)
+        stat_sibling = run_in_sandbox(f"stat -f %N '{self.secret / 'key'}'", self.policy)
+
+        self.assertEqual(stat_parent.returncode, 0, stat_parent.stderr)
+        self.assertNotEqual(list_parent.returncode, 0)
+        self.assertNotIn("key", list_parent.stdout)
+        self.assertNotEqual(stat_sibling.returncode, 0)
+
     def test_git_hooks_and_config_are_protected(self) -> None:
         subprocess.run(["git", "init", "-q"], cwd=self.workspace, check=True)
 

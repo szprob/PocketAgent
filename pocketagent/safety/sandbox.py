@@ -141,13 +141,32 @@ def _subpaths(paths: list[Path]) -> str:
     return " ".join(f"(subpath {_sbpl_string(path)})" for path in paths)
 
 
+def _literals(paths: list[Path]) -> str:
+    return " ".join(f"(literal {_sbpl_string(path)})" for path in paths)
+
+
+def _ancestors_inside_secrets(exceptions: list[Path], secrets: list[Path]) -> list[Path]:
+    """落在密钥目录里的例外目录，从密钥目录本身到它上一级的每一级目录。"""
+    ancestors: list[Path] = []
+    for exception in exceptions:
+        for parent in exception.parents:
+            inside_secret = any(is_within(parent, secret) for secret in secrets)
+            if inside_secret and parent not in ancestors:
+                ancestors.append(parent)
+    return ancestors
+
+
 def seatbelt_profile(policy: SandboxPolicy) -> str:
     """macOS Seatbelt 规则。后写的规则优先，所以先放开、再收紧。"""
     writable = _subpaths(policy.all_writable())
-    secrets = _subpaths(_unique_real_paths(policy.secret_dirs))
+    secret_paths = _unique_real_paths(policy.secret_dirs)
+    secrets = _subpaths(secret_paths)
     # 工作区可能就在密钥目录里（临时任务），也要算进读例外
-    readable = [*policy.readable_exceptions, *policy.writable_inside_secret()]
-    exceptions = _subpaths(_unique_real_paths(readable))
+    readable = _unique_real_paths([*policy.readable_exceptions, *policy.writable_inside_secret()])
+    exceptions = _subpaths(readable)
+    # 例外目录的各级父目录只放开 stat（不能列目录、不能读文件）：git 等工具解析真实路径时逐级 lstat，
+    # 父目录 stat 不了会直接报错（新版 git 在 ~/.pocketagent 下的 worktree 里 commit 就是这样挂的）
+    traversable = _literals(_ancestors_inside_secrets(readable, secret_paths))
     protected = _subpaths(policy.protected_paths())
     lines = [
         "(version 1)",
@@ -166,6 +185,7 @@ def seatbelt_profile(policy: SandboxPolicy) -> str:
         "(allow file-read*)",
         f"(deny file-read* {secrets})",
         f"(allow file-read* {exceptions})" if exceptions else "",
+        f"(allow file-read-metadata {traversable})" if traversable else "",
         f"(allow file-write* {writable})",
         '(allow file-write* (literal "/dev/null") (literal "/dev/zero") (literal "/dev/stdout") (literal "/dev/stderr")'
         ' (regex #"^/dev/tty") (regex #"^/dev/fd/"))',
