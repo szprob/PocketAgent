@@ -2,7 +2,7 @@ import asyncio
 import sys
 import unittest
 
-from pocketagent.safety.processes import process_exists
+from pocketagent.safety.processes import bash_executable, process_exists
 from pocketagent.tools import ToolContext
 from pocketagent.tools.background import BackgroundTaskManager
 from pocketagent.tools.shell import BashOutputTool, BashTool, KillShellTool
@@ -65,9 +65,10 @@ class BackgroundShellTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_extra_environment_reaches_background_commands(self) -> None:
         """沙箱联网白名单的代理地址是额外注入的环境变量，后台命令也要拿得到。"""
+        # 用和 bash 工具同一个 bash：Windows 上 PATH 里的 bash 可能是 WSL 的，拿 Windows 路径的工作目录跑不了
         record = await self.manager.start(
             "echo $POCKETAGENT_SANDBOX_TEST",
-            ["bash", "-c", "echo $POCKETAGENT_SANDBOX_TEST"],
+            [bash_executable(), "-c", "echo $POCKETAGENT_SANDBOX_TEST"],
             "",
             {"POCKETAGENT_SANDBOX_TEST": "proxied"},
         )

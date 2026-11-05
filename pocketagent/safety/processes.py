@@ -62,6 +62,8 @@ def process_exists(pid: int) -> bool:
     """只用于展示后台任务状态；停止前仍由监督进程写入最终状态。"""
     if pid <= 0:
         return False
+    if sys.platform == "win32":
+        return _windows_process_exists(pid)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -69,6 +71,40 @@ def process_exists(pid: int) -> bool:
     except PermissionError:
         return True
     return True
+
+
+# OpenProcess / GetExitCodeProcess 用到的常量（winnt.h / winerror.h）
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+_STILL_ACTIVE = 259
+_ERROR_ACCESS_DENIED = 5
+
+
+def _windows_process_exists(pid: int) -> bool:
+    """Windows 上不能用 os.kill(pid, 0) 探活：除 CTRL_C / CTRL_BREAK 以外的信号都会走 TerminateProcess，
+    一查就把进程杀了。改成打开进程句柄看退出码。"""
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+    kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    handle = kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        # 拒绝访问说明进程在、只是不归我们管；其余情况（参数无效）就是没有这个进程
+        return ctypes.get_last_error() == _ERROR_ACCESS_DENIED
+    try:
+        exit_code = wintypes.DWORD()
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+            return True
+        # 进程退出了但还有人拿着句柄时也能打开，要看退出码才知道还在不在跑
+        return exit_code.value == _STILL_ACTIVE
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 async def signal_process_tree(pid: int, force: bool) -> None:
