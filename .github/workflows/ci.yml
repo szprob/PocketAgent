@@ -40,14 +40,27 @@ jobs:
       - name: 安装（含 web、tui 两组可选依赖，否则对应测试会跳过）
         run: python -m pip install -e ".[web,tui]"
 
-      # 和 Makefile 的 test 目标一致；Windows 上不一定有 make，所以直接调 python。tests/live 会调真实接口，不在 CI 跑
+      # 和 Makefile 的 test 目标一致；Windows 上不一定有 make，所以直接调 python。tests/live 会调真实接口，不在 CI 跑。
+      # 输出同时存一份给下面挂注解用；Windows 上管道默认不是 UTF-8，回溯里有中文时会打不出来，所以指定 stdio 编码
       - name: mock 测试
-        run: python -m unittest discover -s tests/mock -t .
+        shell: bash
+        env:
+          PYTHONIOENCODING: utf-8
+        run: python -m unittest discover -s tests/mock -t . 2>&1 | tee mock-tests.log; exit ${PIPESTATUS[0]}
 
       # mock 挂了也跑，两套的结果都要看到
       - name: 上游 PocketFlow 测试
         if: success() || failure()
-        run: python -m unittest discover -s tests/vendor_pocketflow -t .
+        shell: bash
+        env:
+          PYTHONIOENCODING: utf-8
+        run: python -m unittest discover -s tests/vendor_pocketflow -t . 2>&1 | tee vendor-tests.log; exit ${PIPESTATUS[0]}
+
+      # 日志要登录才能看，注解谁都看得到：把失败用例的名字和报错挂到运行页面上
+      - name: 失败用例挂成注解
+        if: failure()
+        shell: bash
+        run: python .github/scripts/annotate_unittest.py mock-tests.log vendor-tests.log
 
   lint:
     runs-on: ubuntu-latest
