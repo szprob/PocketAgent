@@ -1,8 +1,8 @@
 // 设置 → 记忆：看某个工作区的项目记忆（MEMORY.md 索引 + 每条记忆），可以查看、删除。开关跟着设置一起保存。
 
 import { requestJson, sendJson } from "../core/api.js";
-import { button, el, relativeTime } from "../ui/dom.js";
-import { renderMarkdown } from "../ui/markdown.js";
+import { button, el, formatRelativeTime } from "../ui/dom.js";
+import { renderMarkdown } from "../shared/markdown.js";
 import { state } from "../core/state.js";
 
 const TYPE_LABELS = { user: "用户", feedback: "反馈", project: "项目", reference: "参考" };
@@ -91,7 +91,7 @@ function memoryRow(memory, isIndex) {
     title.appendChild(el("span", "skill-source", TYPE_LABELS[memory.type] || memory.type));
   }
   if (memory.updated_at) {
-    title.appendChild(el("span", "memory-time", relativeTime(memory.updated_at)));
+    title.appendChild(el("span", "memory-time", formatRelativeTime(memory.updated_at)));
   }
   text.append(title, el("div", "skill-description", memory.description || "（没写描述）"));
   text.title = memory.file;
@@ -122,7 +122,7 @@ function renderContent(fileName) {
   requestJson(`api/memory/file?${query}`)
     .then(({ content }) => {
       box.replaceChildren();
-      box.innerHTML = renderMarkdown(content || "（空）");
+      box.replaceChildren(renderMarkdown(content || "（空）"));
     })
     .catch((error) => box.replaceChildren(el("div", "error-text", error.message)));
   return box;

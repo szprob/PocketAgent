@@ -87,7 +87,10 @@ pocketagent/
     static/              index.html / style.css / js/
       js/                main.js 入口；core/ 不碰 DOM 的接口和状态，ui/ 通用界面件，
                          task/ 任务页，sidebar/ 左栏，settings/ 设置，automations/ 自动化
-desktop/                 Electron 客户端：前端独立实现，只调 server 的 REST + WebSocket
+        shared/          web 和桌面端共用的一份：Markdown、活动折叠、格式化、选目录、文件预览、
+                         自动化弹窗和触发器表单；两端不同的地方（图标、请求怎么发）走 platform.js 注入
+desktop/                 Electron 客户端：页面编排和样式自己写，通用部分直接用 web/static/js/shared/
+                         （自定义协议把 pocketagent://app/static/ 映射过去），只调 server 的 REST + WebSocket
 tests/                   unittest；mock/ 是快速离线用例，live/ 调真实免费 API，vendor_pocketflow/ 是上游测试
 ```
 

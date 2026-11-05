@@ -1,8 +1,8 @@
 // 一轮里的工具调用和思考收进一个可折叠的块：AI 说的话永远在外面，
 // 说了话就把这一块收尾，后面再开新的一块。折叠头上一行预览说清这块干了什么。
-// 和桌面端 renderer/activity-fold.js 是同一套逻辑，改一边记得改另一边。
 
-import { el, icon } from "../ui/dom.js";
+import { el } from "./dom.js";
+import { icon } from "./platform.js";
 
 // 折叠头上「思考中 / 正在运行」后面那句最多显示几个字
 const LIVE_PREVIEW_CHARS = 40;

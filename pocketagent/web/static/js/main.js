@@ -1,18 +1,31 @@
 // 入口：页面路由（#/new、#/task/<id>、#/automations）、把各模块接起来、侧栏和右侧栏的开关。
 
-import { sendJson } from "./core/api.js";
+import { requestJson, sendJson, withToken } from "./core/api.js";
 import { closeEditor, initAutomations, isAutomationEditorOpen, showAutomations } from "./automations/automations.js";
 import { chatComposer, initChat, interrupt, isChatRunning, leaveTask, openTask, updateChatOptions } from "./task/chat.js";
 import { looksLikeCommand, loadSkillNames, runCommand } from "./core/commands.js";
 import { Composer, SCRATCH_WORKSPACE } from "./task/composer.js";
 import { applyAppearance, el, icon, show } from "./ui/dom.js";
-import { citationText, closeFilePreview, initFilePreview, isFilePreviewOpen } from "./sidebar/filepreview.js";
-import { closeFolderPicker, isFolderPickerOpen } from "./sidebar/folderpicker.js";
+import { citationText, closeFilePreview, initFilePreview, isFilePreviewOpen } from "./shared/filepreview.js";
+import { closeFolderPicker, isFolderPickerOpen } from "./shared/folderpicker.js";
 import { initResizers } from "./ui/resizers.js";
 import { initRightPanel, setRightPanelVisible, showTaskInPanel } from "./task/rightpanel.js";
 import { closeSettings, initSettings, isSettingsOpen, openSettings } from "./settings/settings.js";
 import { initSidebar, setActiveView } from "./sidebar/sidebar.js";
 import { loadPreference, on, reloadInfo, reloadTasks, savePreference, state } from "./core/state.js";
+import { configurePlatform } from "./shared/platform.js";
+
+// 共享模块（shared/）里的接口地址都写成 "/api/..."；web 可能挂在网关子路径下，要换成相对页面的地址
+function relativeToPage(path) {
+  return path.replace(/^\/+/, "");
+}
+
+configurePlatform({
+  icon,
+  requestJson: (path) => requestJson(relativeToPage(path)),
+  sendJson: (path, method, body) => sendJson(relativeToPage(path), method, body),
+  imageSource: (apiPath) => withToken(relativeToPage(apiPath)),
+});
 
 const TASK_POLL_MILLISECONDS = 5000;
 
@@ -314,7 +327,7 @@ async function init() {
   initSettings();
   initAutomations({ onOpenTask: (taskId) => navigate(`#/task/${encodeURIComponent(taskId)}`) });
   initNewTask();
-  initFilePreview();
+  initFilePreview(citeFile);
   bindLayoutControls();
   initResizers();
 
@@ -327,7 +340,6 @@ async function init() {
   await reloadTasks();
   on("info-changed", onInfoChanged);
   on("turn-finished", () => reloadTasks());
-  on("cite-file", citeFile);
   updateChatOptions(state.info);
   window.addEventListener("hashchange", route);
   route();

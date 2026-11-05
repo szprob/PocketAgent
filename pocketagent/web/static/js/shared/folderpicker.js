@@ -1,20 +1,20 @@
 // 添加工作区：一级一级浏览本机目录挑一个，也可以直接粘贴路径。
+// 弹窗的元素 id（workspace-modal、folder-list……）两个 index.html 里要一致。
 
-import { request, sendJson } from "./api.js";
 import { el, show } from "./dom.js";
-import { icon } from "./icons.js";
+import { icon, requestJson, sendJson } from "./platform.js";
 
 const elements = {};
 let currentPath = null;
 let onAdded = null;
 
-export function initFolderPicker(handler) {
-  onAdded = handler;
+// handleAdded(path)：加好以后回调，path 是后端登记的写法（可能和输入框里的不完全一样）
+export function initFolderPicker(handleAdded) {
+  onAdded = handleAdded;
   elements.modal = document.getElementById("workspace-modal");
   elements.pathInput = document.getElementById("workspace-path-input");
   elements.list = document.getElementById("folder-list");
   elements.error = document.getElementById("workspace-error");
-
   document.getElementById("workspace-cancel").addEventListener("click", closeFolderPicker);
   document.getElementById("workspace-save").addEventListener("click", addCurrentFolder);
   document.getElementById("folder-up").addEventListener("click", () => {
@@ -23,7 +23,10 @@ export function initFolderPicker(handler) {
     }
   });
   const homeButton = document.getElementById("folder-home");
-  homeButton.append(icon("folder"));
+  // web 的 index.html 里按 data-icon 统一填图标，桌面端没有这一步，空着就自己补上
+  if (!homeButton.firstChild) {
+    homeButton.append(icon("folder"));
+  }
   homeButton.addEventListener("click", () => browse(null));
   elements.pathInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.isComposing) {
@@ -38,7 +41,7 @@ export function initFolderPicker(handler) {
 }
 
 export function isFolderPickerOpen() {
-  return elements.modal && !elements.modal.classList.contains("hidden");
+  return Boolean(elements.modal) && !elements.modal.classList.contains("hidden");
 }
 
 export function closeFolderPicker() {
@@ -56,7 +59,7 @@ async function browse(path) {
   let result;
   try {
     const query = path ? `?path=${encodeURIComponent(path)}` : "";
-    result = await request(`/api/browse${query}`);
+    result = await requestJson(`/api/browse${query}`);
   } catch (error) {
     elements.error.textContent = error.message;
     return;
@@ -78,16 +81,21 @@ async function browse(path) {
 }
 
 async function addCurrentFolder() {
+  // 输入框里手动改了路径就用输入框的
   const path = elements.pathInput.value.trim() || currentPath;
   if (!path) {
     return;
   }
+  let result;
   try {
-    await sendJson("/api/workspaces", "POST", { path });
+    result = await sendJson("/api/workspaces", "POST", { path });
   } catch (error) {
     elements.error.textContent = error.message;
     return;
   }
   closeFolderPicker();
-  onAdded?.(path);
+  // 后端会把路径规整一遍（展开 ~、去掉末尾的 /），以它返回的列表为准
+  const workspaces = result?.workspaces || [];
+  const added = workspaces.find((workspace) => workspace.path === path) || workspaces.at(-1);
+  onAdded?.(added?.path || path);
 }

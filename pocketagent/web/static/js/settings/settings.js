@@ -3,7 +3,7 @@
 
 import { requestJson, sendJson } from "../core/api.js";
 import { button, el, show } from "../ui/dom.js";
-import { renderMarkdown } from "../ui/markdown.js";
+import { renderMarkdown } from "../shared/markdown.js";
 import { renderMemoryPage } from "./memory.js";
 import { reasoningLabel } from "../task/modelpicker.js";
 import { MODE_LABELS, reloadInfo, state } from "../core/state.js";
@@ -513,7 +513,7 @@ function renderSkillItem(skill) {
       body.textContent = "加载中…";
       try {
         const { content } = await requestJson(`api/skills/content?path=${encodeURIComponent(skill.path)}`);
-        body.innerHTML = renderMarkdown(content);
+        body.replaceChildren(renderMarkdown(content));
         body.dataset.loaded = "1";
       } catch (error) {
         body.textContent = `读不了：${error.message}`;

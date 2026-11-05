@@ -12,4 +12,6 @@
 - 代码按职责分子包（docs/architecture.md「分层」一节）：主循环 `core/`、权限沙箱检查点 `safety/`、技能记忆 `knowledge/`、
   提问附件命令 `interaction/`、用量余额 `account/`、所有前端共用的后端 `server/`（接口按资源放 `server/routes/`）。
   不要再往 `pocketagent/` 顶层加模块；前端只走 `server/__init__.py` 里写的 REST + WebSocket 协议。
+- web（`pocketagent/web/static/`）和桌面端（`desktop/renderer/`）通用的界面代码放 `pocketagent/web/static/js/shared/`，
+  两边都 import 这一份，不要再各抄一份；两端做法不同的地方走 `shared/platform.js`，说明见那个目录的 README。
 - 会话、trace 等运行产物写到 `~/.pocketagent/`，不要写进仓库目录。

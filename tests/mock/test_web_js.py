@@ -65,7 +65,7 @@ process.stdout.write("ok");
 
 # 弹窗里能选出来的每种组合都走一遍，把结果交给后端的校验函数——字段名对不上就会在这一步炸
 TRIGGER_FORM_SCRIPT = r"""
-const form = await import("./pocketagent/web/static/js/automations/trigger-form.js");
+const form = await import("./pocketagent/web/static/js/shared/trigger-form.js");
 
 const cases = [
   {

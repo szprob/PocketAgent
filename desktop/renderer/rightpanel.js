@@ -3,7 +3,7 @@
 import { binaryDataUrl, openExternal, request, sendJson, sessionFilePath } from "./api.js";
 import { button, el, formatClock, formatNumber, formatTokens, isImagePath, renderDiff, workspaceName } from "./dom.js";
 import { icon } from "./icons.js";
-import { openFilePreview } from "./filepreview.js";
+import { openFilePreview } from "./static/js/shared/filepreview.js";
 import { loadPreference, savePreference } from "./state.js";
 
 const STATUS_LABELS = { added: "新建", modified: "修改", deleted: "删除" };

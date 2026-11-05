@@ -1,9 +1,9 @@
 // 左侧栏：新任务、自动化、工作区（点开是文件树）、最近任务（全部历史），底部是账户和设置。
 
 import { requestJson, sendJson } from "../core/api.js";
-import { button, el, icon, relativeTime, workspaceName } from "../ui/dom.js";
-import { openFilePreview } from "./filepreview.js";
-import { initFolderPicker, openFolderPicker } from "./folderpicker.js";
+import { button, el, formatRelativeTime, icon, workspaceName } from "../ui/dom.js";
+import { openFilePreview } from "../shared/filepreview.js";
+import { initFolderPicker, openFolderPicker } from "../shared/folderpicker.js";
 import { loadPreference, on, reloadInfo, savePreference, state } from "../core/state.js";
 
 const RECENT_TASK_LIMIT = 50;
@@ -39,7 +39,9 @@ export function initSidebar(handlers) {
   document.getElementById("account-button").addEventListener("click", () => callbacks.onSettings("usage"));
   document.getElementById("open-settings").addEventListener("click", () => callbacks.onSettings("general"));
   document.getElementById("add-workspace").addEventListener("click", openFolderPicker);
-  initFolderPicker((addedPath) => {
+  initFolderPicker(async (addedPath) => {
+    // 侧栏和新任务页的工作区列表都从 info 里来，先刷新再跳过去
+    await reloadInfo();
     if (addedPath) {
       state.expandedWorkspaces.add(addedPath);
       saveExpanded();
@@ -362,7 +364,7 @@ function taskRow(task) {
   const title = el("span", "task-title", task.title);
   // 临时任务没有工作区，写「临时」比显示 scratch 下的目录名清楚
   const place = task.ephemeral ? "临时" : workspaceName(task.workspace);
-  const meta = el("span", "task-meta", `${place} · ${relativeTime(task.updated_at)}`);
+  const meta = el("span", "task-meta", `${place} · ${formatRelativeTime(task.updated_at)}`);
   const text = el("span", "task-text");
   text.append(title, meta);
   if (task.source && task.source.startsWith("automation:")) {

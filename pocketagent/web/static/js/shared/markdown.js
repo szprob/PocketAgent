@@ -1,9 +1,12 @@
-// 模型回复的 Markdown 渲染。全部用 DOM 节点拼，不用 innerHTML，避免模型输出带脚本。
-// 块和行内的规则和 web 端 ui/markdown.js 一样，改一边记得改另一边。
+// 模型回复的 Markdown 渲染，web 和桌面端共用。返回 DocumentFragment，调用方 replaceChildren / append 进去。
+// 文字全部用文本节点拼，不往 innerHTML 里放模型输出，模型输出带 HTML 也不会被执行。
+//
+// 和端有关的只有图片：工作区里的相对路径要换成会话取图接口，怎么换由调用方的 options.resolveImage 决定
+// （返回地址字符串或 Promise，返回 null 就按原文显示）。链接一律 target=_blank：
+// 浏览器里开新标签页，桌面端由主进程的 setWindowOpenHandler 交给系统浏览器。
 
-import katex from "./vendor/katex/katex.mjs";
-import { binaryDataUrl, openExternal } from "./api.js";
-import { el } from "./dom.js";
+import katex from "../../vendor/katex/katex.mjs";
+import { copyText, el } from "./dom.js";
 
 // 行内语法一次扫完，替换出来的节点不会被后面的规则二次加工；
 // 顺序有讲究：粗斜体在粗体前、粗体在斜体前，否则 *** 会被拆成零散的星号。
@@ -125,6 +128,8 @@ function linkParts(token) {
 function buildMath(source, displayMode, rawSource) {
   const node = el(displayMode ? "div" : "span", displayMode ? "md-math-block" : "md-math-inline");
   try {
+    // 用 render 直接建节点而不是 renderToString + innerHTML：KaTeX 的排版靠 style 属性，
+    // 桌面端的 CSP（style-src 'self'）会拦掉 HTML 里内联的 style，经 DOM 设置的不受影响
     katex.render(source, node, { displayMode, throwOnError: true, trust: false });
     return node;
   } catch {
@@ -415,15 +420,10 @@ function buildCodeBlock(language, code) {
   const copyButton = el("button", "code-copy", "复制");
   copyButton.type = "button";
   copyButton.addEventListener("click", async () => {
-    try {
-      await navigator.clipboard.writeText(code);
-      copyButton.textContent = "已复制";
-      setTimeout(() => {
-        copyButton.textContent = "复制";
-      }, 1200);
-    } catch (clipboardError) {
-      copyButton.textContent = "复制失败";
-    }
+    copyButton.textContent = (await copyText(code)) ? "已复制" : "复制失败";
+    setTimeout(() => {
+      copyButton.textContent = "复制";
+    }, 1200);
   });
   head.append(copyButton);
 
@@ -444,8 +444,17 @@ function readCodeBlock(lines, startIndex, fence) {
   return { node: buildCodeBlock(fence.language, codeLines.join("\n")), nextIndex: index + 1 };
 }
 
-// 图片：http(s) 直接加载（CSP 拦不住 https），本地路径交给 options.resolveImage
-// 换成会话取图接口；解析不出来就按原文显示。
+// 只会传进来 http(s) 地址（行内规则只认这两种），不用担心 javascript: 之类
+function externalAnchor(url, className = "md-link") {
+  const anchor = el("a", className);
+  anchor.href = url;
+  anchor.target = "_blank";
+  anchor.rel = "noopener";
+  return anchor;
+}
+
+// 图片：http(s) 直接加载，点开是原图；本地路径交给 options.resolveImage 换成能加载的地址
+// （字符串或 Promise），点了交给 options.onOpenImage；换不出来就按原文显示。
 function buildImage(token, options) {
   const { alt, source } = imageParts(token);
   const image = el("img", "md-image");
@@ -454,21 +463,24 @@ function buildImage(token, options) {
 
   if (/^https?:\/\//.test(source)) {
     image.src = source;
-    if (options.onOpenExternalImage) {
-      image.addEventListener("click", () => options.onOpenExternalImage(source));
-    }
-    return image;
+    const anchor = externalAnchor(source, "md-image-link");
+    anchor.append(image);
+    return anchor;
   }
 
-  const apiPath = options.resolveImage ? options.resolveImage(source) : null;
-  if (!apiPath) {
+  const resolved = options.resolveImage ? options.resolveImage(source) : null;
+  if (!resolved) {
     return document.createTextNode(token);
   }
-  options.onImage?.(apiPath);
   if (options.onOpenImage) {
     image.addEventListener("click", () => options.onOpenImage(source));
   }
-  binaryDataUrl(apiPath)
+  // web 拼好 token 就是现成的地址，直接用；桌面端要等主进程取回来
+  if (typeof resolved === "string") {
+    image.src = resolved;
+    return image;
+  }
+  resolved
     .then((url) => {
       image.src = url;
     })
@@ -479,12 +491,7 @@ function buildImage(token, options) {
 }
 
 function buildLink(label, url, options, depth) {
-  const anchor = el("a", "md-link");
-  anchor.href = "#";
-  anchor.addEventListener("click", (event) => {
-    event.preventDefault();
-    openExternal(url);
-  });
+  const anchor = externalAnchor(url);
   // 链接文字里不再自动识别裸链接，避免 a 套 a
   appendInline(anchor, label, options, depth + 1, false);
   return anchor;
@@ -492,12 +499,8 @@ function buildLink(label, url, options, depth) {
 
 function buildBareLink(displayUrl) {
   const href = /^www\./i.test(displayUrl) ? `https://${displayUrl}` : displayUrl;
-  const anchor = el("a", "md-link", displayUrl);
-  anchor.href = "#";
-  anchor.addEventListener("click", (event) => {
-    event.preventDefault();
-    openExternal(href);
-  });
+  const anchor = externalAnchor(href);
+  anchor.textContent = displayUrl;
   return anchor;
 }
 

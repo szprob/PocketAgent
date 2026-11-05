@@ -3,6 +3,7 @@
 import {
   SessionSocket,
   attachmentUrl,
+  binaryDataUrl,
   getBackendState,
   loadSkillNames,
   looksLikeCommand,
@@ -19,14 +20,23 @@ import { closeEditor, initAutomations, isAutomationEditorOpen, showAutomations }
 import { ChatView } from "./chat.js";
 import { Composer } from "./composer.js";
 import { applyAppearance, clear, el, show } from "./dom.js";
-import { closeFilePreview, citationText, initFilePreview, isFilePreviewOpen } from "./filepreview.js";
-import { closeFolderPicker, isFolderPickerOpen } from "./folderpicker.js";
+import { closeFilePreview, citationText, initFilePreview, isFilePreviewOpen } from "./static/js/shared/filepreview.js";
+import { closeFolderPicker, isFolderPickerOpen } from "./static/js/shared/folderpicker.js";
 import { icon } from "./icons.js";
 import { initResizers } from "./resizers.js";
 import { closeSettings, initSettings, isSettingsOpen, openSettings } from "./settings.js";
 import { initSidebar, setActiveView } from "./sidebar.js";
 import { emit, loadPreference, on, savePreference, state } from "./state.js";
 import { RightPanel } from "./rightpanel.js";
+import { configurePlatform } from "./static/js/shared/platform.js";
+
+// 共享模块（static/js/shared/）要用的几件端相关的事：图标、REST 走主进程转发、带 token 的图片转成 data URL
+configurePlatform({
+  icon,
+  requestJson: (path) => request(path),
+  sendJson,
+  imageSource: binaryDataUrl,
+});
 
 const TASK_POLL_MILLISECONDS = 5000;
 
@@ -829,9 +839,12 @@ async function init() {
   bindChatMenu();
   bindGlobalShortcuts();
   initSidebarHandlers();
-  initFilePreview();
+  initFilePreview((cite) => emit("cite-file", cite));
   initFileCite();
-  initAutomations({ onOpenTask: (taskId) => navigate(`#/task/${encodeURIComponent(taskId)}`) });
+  initAutomations({
+    onOpenTask: (taskId) => navigate(`#/task/${encodeURIComponent(taskId)}`),
+    getBackend: () => runtime.backend,
+  });
   initSettings({
     onSaved: async () => {
       await reloadInfo();

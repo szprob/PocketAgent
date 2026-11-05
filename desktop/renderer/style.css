@@ -3427,14 +3427,20 @@ code.md-inline-code {
   flex-wrap: wrap;
 }
 
-.weekday-chip {
+/* 星期几的开关按钮由共享的自动化弹窗生成（shared/automation-editor.js），类名和 web 一样 */
+.weekday-toggle {
   width: 28px;
   height: 26px;
   padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim);
   font-size: calc(11.5px * var(--font-scale));
+  cursor: pointer;
 }
 
-.weekday-chip.active {
+.weekday-toggle.active {
   background: rgba(124, 140, 255, 0.16);
   border-color: rgba(124, 140, 255, 0.4);
   color: var(--accent-strong);

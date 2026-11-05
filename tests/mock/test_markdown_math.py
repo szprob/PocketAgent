@@ -8,10 +8,11 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 RENDER_SCRIPT = r"""
-globalThis.document = { addEventListener() {}, compatMode: "CSS1Compat" };
-const { renderMarkdown } = await import("./pocketagent/web/static/js/ui/markdown.js");
+const { installFakeDom, toHtml } = await import("./tests/mock/fake_dom.mjs");
+installFakeDom();
+const { renderMarkdown } = await import("./pocketagent/web/static/js/shared/markdown.js");
 const sources = JSON.parse(process.env.POCKETAGENT_TEST_MARKDOWN);
-process.stdout.write(JSON.stringify(sources.map((source) => renderMarkdown(source))));
+process.stdout.write(JSON.stringify(sources.map((source) => toHtml(renderMarkdown(source)))));
 """
 
 

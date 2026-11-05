@@ -3,8 +3,8 @@
 import { request, sendJson } from "./api.js";
 import { button, el, formatRelativeTime, workspaceName } from "./dom.js";
 import { icon } from "./icons.js";
-import { openFilePreview } from "./filepreview.js";
-import { initFolderPicker, openFolderPicker } from "./folderpicker.js";
+import { openFilePreview } from "./static/js/shared/filepreview.js";
+import { initFolderPicker, openFolderPicker } from "./static/js/shared/folderpicker.js";
 import { loadPreference, on, savePreference, state } from "./state.js";
 
 const RECENT_TASK_LIMIT = 50;

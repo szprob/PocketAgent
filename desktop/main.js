@@ -1,6 +1,7 @@
 // Electron 主进程：只管窗口、原生能力和后端的拉起/关闭。
-// 后端是共享的那套（python -m pocketagent --web），桌面端前端在 renderer/ 里独立实现，
-// 只通过 REST + WebSocket 和后端说话，不 import 任何 pocketagent 的 Python 或 web/static 代码。
+// 后端是共享的那套（python -m pocketagent --web），桌面端前端在 renderer/ 里，
+// 只通过 REST + WebSocket 和后端说话。和 web 一样的界面代码（Markdown、活动折叠、触发器表单……）
+// 不再抄一份，直接用 pocketagent/web/static/js/shared/，见 registerProtocolHandler。
 
 const { app, BrowserWindow, Menu, ipcMain, net, protocol, screen, shell } = require("electron");
 const { execFileSync, spawn } = require("node:child_process");
@@ -12,6 +13,12 @@ const { pathToFileURL } = require("node:url");
 
 const APP_SCHEME = "pocketagent";
 const RENDERER_DIRECTORY = path.join(__dirname, "renderer");
+// web 的静态目录：开发时就是仓库里那份；打包后由 electron-builder 的 extraResources 拷到 resources/static
+const WEB_STATIC_DIRECTORY = app.isPackaged
+  ? path.join(process.resourcesPath, "static")
+  : path.join(__dirname, "..", "pocketagent", "web", "static");
+// 只放行和 web 共用的这两块，web 自己的页面和脚本桌面端用不到
+const SHARED_STATIC_PREFIXES = ["js/shared/", "vendor/"];
 const BACKEND_URL_PATTERN = /PocketAgent web 界面：(http\S+)/;
 const BACKEND_LOG_LIMIT = 300;
 
@@ -215,12 +222,30 @@ function createWindow() {
   });
 }
 
+// pocketagent://app/xxx → renderer/xxx；pocketagent://app/static/js/shared/xxx → web 的共享目录
+function resolveAppFile(relativePath) {
+  if (relativePath.startsWith("static/")) {
+    const staticPath = relativePath.slice("static/".length);
+    if (!SHARED_STATIC_PREFIXES.some((prefix) => staticPath.startsWith(prefix))) {
+      return null;
+    }
+    return resolveInside(WEB_STATIC_DIRECTORY, staticPath);
+  }
+  return resolveInside(RENDERER_DIRECTORY, relativePath);
+}
+
+// 拼出来的路径必须还在目录里面，挡住 ../ 跳出去读别的文件
+function resolveInside(directory, relativePath) {
+  const filePath = path.resolve(directory, relativePath);
+  return filePath.startsWith(directory + path.sep) ? filePath : null;
+}
+
 function registerProtocolHandler() {
   protocol.handle(APP_SCHEME, (request) => {
     const url = new URL(request.url);
     const relativePath = decodeURIComponent(url.pathname).replace(/^\/+/, "") || "index.html";
-    const filePath = path.resolve(RENDERER_DIRECTORY, relativePath);
-    if (!filePath.startsWith(RENDERER_DIRECTORY + path.sep)) {
+    const filePath = resolveAppFile(relativePath);
+    if (!filePath) {
       return new Response("forbidden", { status: 403 });
     }
     return net.fetch(pathToFileURL(filePath).toString());

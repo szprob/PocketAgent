@@ -4,8 +4,8 @@ import { attachmentUrl, requestJson, sendJson, sessionFileUrl, socketUrl, upload
 import { looksLikeCommand, loadSkillNames, runCommand } from "../core/commands.js";
 import { Composer } from "./composer.js";
 import { button, el, icon, isImagePath, renderDiff, show } from "../ui/dom.js";
-import { renderMarkdown } from "../ui/markdown.js";
-import { ActivityFold, dissolveFolds } from "./activity-fold.js";
+import { renderMarkdown } from "../shared/markdown.js";
+import { ActivityFold, dissolveFolds } from "../shared/activity-fold.js";
 import { renderQuestionCard } from "./questions.js";
 import { emit, reloadTasks, state } from "../core/state.js";
 
@@ -655,7 +655,7 @@ async function rewindTo(messageId) {
 function addAssistantMessage(text, finish = "") {
   closeActivityFold();
   const element = el("div", "message-assistant");
-  element.innerHTML = renderMarkdown(text, { imageUrl: chatImageUrl });
+  element.replaceChildren(renderMarkdown(text, chatMarkdownOptions));
   const badge = buildCutOffBadge(finish);
   if (badge) {
     // 历史里重放时也把「这条是被掐断的」标出来
@@ -669,10 +669,21 @@ function addSummaryCard(text) {
   const details = el("details", "summary-card");
   details.appendChild(el("summary", "", "之前的对话已压缩，点开看摘要"));
   const body = el("div", "message-assistant");
-  body.innerHTML = renderMarkdown(text, { imageUrl: chatImageUrl });
+  body.replaceChildren(renderMarkdown(text, chatMarkdownOptions));
   details.appendChild(body);
   appendToTranscript(details);
 }
+
+// 回复里的图片：本地路径换成会话取图地址，点开在新标签页里看原图
+const chatMarkdownOptions = {
+  resolveImage: chatImageUrl,
+  onOpenImage: (source) => {
+    const url = chatImageUrl(source);
+    if (url) {
+      window.open(url, "_blank", "noopener");
+    }
+  },
+};
 
 // 回复里的 ![说明](路径)：工作区内的相对路径换成会话取图地址，临时任务也能显示
 function chatImageUrl(source) {
@@ -815,7 +826,7 @@ function typewriterFrame(block) {
 
 function renderStreamingBlock(block) {
   const shouldScroll = isNearBottom();
-  block.element.innerHTML = renderMarkdown(block.shown, { imageUrl: chatImageUrl });
+  block.element.replaceChildren(renderMarkdown(block.shown, chatMarkdownOptions));
   if (shouldScroll) {
     scrollToBottom();
   }
@@ -1267,7 +1278,7 @@ function showPlanRequest(request) {
     card.appendChild(el("div", "plan-reason", request.reason || ""));
   } else {
     const body = el("div", "plan-body message-assistant");
-    body.innerHTML = renderMarkdown(request.plan || "", { imageUrl: chatImageUrl });
+    body.replaceChildren(renderMarkdown(request.plan || "", chatMarkdownOptions));
     card.appendChild(body);
   }
 
@@ -1345,7 +1356,7 @@ function renderSavedPlan(plan, status, kind) {
   title.append(icon(isDesign ? "compass" : "file"), `${name}（${status === "approved" ? "已批准" : "未批准"}）`);
   card.appendChild(title);
   const body = el("div", "plan-body message-assistant");
-  body.innerHTML = renderMarkdown(plan, { imageUrl: chatImageUrl });
+  body.replaceChildren(renderMarkdown(plan, chatMarkdownOptions));
   card.appendChild(body);
   appendToTranscript(card);
 }

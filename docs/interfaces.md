@@ -1,7 +1,7 @@
 # 界面与交互
 
 命令行 REPL、全屏 TUI 和 web 三套界面共用同一个 agent、事件总线和审批接口，agent 本身不感知界面；
-桌面端（Electron）复用 web 前端，只调 server 的 REST + WebSocket。
+桌面端（Electron）的页面自己写，Markdown、活动折叠、自动化弹窗这些和 web 共用 `pocketagent/web/static/js/shared/` 里的同一份，只调 server 的 REST + WebSocket。
 
 ## 斜杠命令
 

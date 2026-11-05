@@ -1,26 +1,34 @@
 // 文件预览弹窗：从左侧文件树点开。文本带行号，图片直接显示；可以把 @路径 插进输入框让 agent 去读。
+// 弹窗的元素 id（file-modal、file-modal-body……）两个 index.html 里要一致。
 
-import { requestJson, withToken } from "../core/api.js";
-import { copyText, el, formatBytes, show } from "../ui/dom.js";
-import { emit } from "../core/state.js";
+import { copyText, el, show } from "./dom.js";
+import { formatBytes } from "./format.js";
+import { imageSource, requestJson } from "./platform.js";
 
 const elements = {};
 let current = null;
+let onCite = null;
 
-export function initFilePreview() {
+function fileQuery(workspace, path) {
+  return `workspace=${encodeURIComponent(workspace)}&path=${encodeURIComponent(path)}`;
+}
+
+// handleCite({ workspace, path })：点「在对话中引用」，交给当前的输入框去插 @路径
+export function initFilePreview(handleCite) {
+  onCite = handleCite;
   elements.modal = document.getElementById("file-modal");
   elements.title = document.getElementById("file-modal-title");
   elements.meta = document.getElementById("file-modal-meta");
   elements.body = document.getElementById("file-modal-body");
+  elements.copyButton = document.getElementById("file-copy");
   document.getElementById("file-close").addEventListener("click", closeFilePreview);
   document.getElementById("file-cite").addEventListener("click", citeCurrentFile);
-  const copyButton = document.getElementById("file-copy");
-  copyButton.addEventListener("click", async () => {
-    if (current) {
-      copyButton.textContent = (await copyText(current.absolutePath)) ? "已复制" : "复制失败";
+  elements.copyButton.addEventListener("click", async () => {
+    if (!current) {
+      return;
     }
+    elements.copyButton.textContent = (await copyText(current.absolutePath)) ? "已复制" : "复制失败";
   });
-  elements.copyButton = copyButton;
   elements.modal.addEventListener("click", (event) => {
     if (event.target === elements.modal) {
       closeFilePreview();
@@ -29,16 +37,12 @@ export function initFilePreview() {
 }
 
 export function isFilePreviewOpen() {
-  return !elements.modal.classList.contains("hidden");
+  return Boolean(elements.modal) && !elements.modal.classList.contains("hidden");
 }
 
 export function closeFilePreview() {
   show(elements.modal, false);
   current = null;
-}
-
-function fileQuery(workspace, path) {
-  return `workspace=${encodeURIComponent(workspace)}&path=${encodeURIComponent(path)}`;
 }
 
 export async function openFilePreview(workspace, path) {
@@ -48,27 +52,35 @@ export async function openFilePreview(workspace, path) {
   elements.copyButton.textContent = "复制路径";
   elements.body.replaceChildren(el("div", "muted", "加载中…"));
   show(elements.modal, true);
+
   let preview;
   try {
-    preview = await requestJson(`api/file?${fileQuery(workspace, path)}`);
+    preview = await requestJson(`/api/file?${fileQuery(workspace, path)}`);
   } catch (error) {
     elements.body.replaceChildren(el("div", "error-text", error.message));
     return;
   }
   current.absolutePath = preview.absolute_path;
   elements.meta.textContent = `${formatBytes(preview.size)} · ${preview.mime}`;
+
   if (preview.kind === "image") {
     const image = el("img", "file-image");
-    image.src = withToken(`api/file/raw?${fileQuery(workspace, path)}`);
     image.alt = path;
     elements.body.replaceChildren(image);
-  } else if (preview.kind === "binary") {
-    elements.body.replaceChildren(el("div", "muted", "二进制文件，不显示内容"));
-  } else {
-    elements.body.replaceChildren(renderNumberedText(preview.content));
-    if (preview.truncated) {
-      elements.body.appendChild(el("div", "muted", "文件太大，只显示了开头"));
+    try {
+      image.src = await imageSource(`/api/file/raw?${fileQuery(workspace, path)}`);
+    } catch (error) {
+      elements.body.replaceChildren(el("div", "error-text", `图片加载失败：${error.message}`));
     }
+    return;
+  }
+  if (preview.kind === "binary") {
+    elements.body.replaceChildren(el("div", "muted", "二进制文件，不显示内容"));
+    return;
+  }
+  elements.body.replaceChildren(renderNumberedText(preview.content));
+  if (preview.truncated) {
+    elements.body.append(el("div", "muted", "文件太大，只显示了开头"));
   }
 }
 
@@ -85,8 +97,7 @@ function citeCurrentFile() {
   if (!current) {
     return;
   }
-  // 交给 main.js 放进当前的输入框（任务页或新任务页）
-  emit("cite-file", { workspace: current.workspace, path: current.path });
+  onCite?.({ workspace: current.workspace, path: current.path });
   closeFilePreview();
 }
 

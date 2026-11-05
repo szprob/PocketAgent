@@ -2,13 +2,8 @@
 
 import { requestJson } from "./api.js";
 
-export const MODE_LABELS = {
-  ask: "每次询问",
-  ai_auto: "AI 自动审批",
-  full_auto: "完全访问",
-  read_only: "只读",
-  auto_edit: "自动改文件",
-};
+// 审批模式的名字和桌面端共用，定义在 shared/labels.js，这里转一手，老的 import 不用改
+export { MODE_LABELS } from "../shared/labels.js";
 
 export const MODE_ICONS = {
   ask: "shield",

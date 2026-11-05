@@ -7,3 +7,5 @@ dist/
 .env
 .DS_Store
 node_modules/
+# 子 agent 的临时 worktree
+.claude/worktrees/

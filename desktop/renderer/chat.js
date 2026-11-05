@@ -1,12 +1,12 @@
 // 对话视图：把后端的 snapshot / state / event / 审批 / 提问渲染成界面。
 // 事件协议见 pocketagent/server/__init__.py 的说明；这里不依赖 web/static 的实现。
 
-import { attachmentUrl, binaryDataUrl, openExternal, request, sessionFilePath } from "./api.js";
-import { ActivityFold, dissolveFolds } from "./activity-fold.js";
+import { attachmentUrl, binaryDataUrl, request, sessionFilePath } from "./api.js";
+import { ActivityFold, dissolveFolds } from "./static/js/shared/activity-fold.js";
 import { button, clear, el, isImagePath, renderDiff } from "./dom.js";
 import { icon } from "./icons.js";
-import { openFilePreview } from "./filepreview.js";
-import { renderMarkdown } from "./markdown.js";
+import { openFilePreview } from "./static/js/shared/filepreview.js";
+import { renderMarkdown } from "./static/js/shared/markdown.js";
 
 const TURN_END_NOTICES = {
   interrupted: ["已中断，可以接着说", "warning"],
@@ -454,11 +454,14 @@ export class ChatView {
     return {
       resolveImage: (source) => {
         const relative = this.relativeWorkspacePath(source);
-        return relative && this.sessionId ? sessionFilePath(this.sessionId, relative) : null;
+        if (!relative || !this.sessionId) {
+          return null;
+        }
+        const apiPath = sessionFilePath(this.sessionId, relative);
+        this.turnImagePaths.add(apiPath);
+        return binaryDataUrl(apiPath);
       },
-      onImage: (apiPath) => this.turnImagePaths.add(apiPath),
       onOpenImage: (source) => this.openWorkspaceImage(source),
-      onOpenExternalImage: (url) => openExternal(url),
     };
   }
 
@@ -1122,7 +1125,7 @@ export class ChatView {
       card.append(el("div", "plan-reason", request.reason || ""));
     } else {
       const body = el("div", "plan-body message assistant");
-      body.innerHTML = renderMarkdown(request.plan || "", this.markdownOptions());
+      body.replaceChildren(renderMarkdown(request.plan || "", this.markdownOptions()));
       card.append(body);
     }
 
@@ -1203,7 +1206,7 @@ export class ChatView {
     );
     card.append(header);
     const body = el("div", "plan-body message assistant");
-    body.innerHTML = renderMarkdown(plan, this.markdownOptions());
+    body.replaceChildren(renderMarkdown(plan, this.markdownOptions()));
     card.append(body);
     this.appendNode(card);
   }
