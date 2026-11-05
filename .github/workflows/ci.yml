@@ -79,6 +79,40 @@ jobs:
               print(f"::{level} title=part {index}::" + escape(chunk))
           PYEOF
 
+      # DEBUG：验证 Windows 上 bash -c 的引号问题，调通后删掉
+      - name: 引号实验
+        if: runner.os == 'Windows' && (success() || failure())
+        shell: bash
+        run: |
+          python - <<'PYEOF'
+          import os, subprocess, sys, tempfile
+          sys.stdout.reconfigure(encoding="utf-8")
+          from pocketagent.safety.processes import bash_executable
+          bash = bash_executable()
+          folder = tempfile.mkdtemp()
+          script = os.path.join(folder, "hello.sh")
+          open(script, "w", encoding="utf-8").write("#!/bin/bash\necho hello-from-script\n")
+          spaced = os.path.join(folder, "with space")
+          os.mkdir(spaced)
+          spaced_script = os.path.join(spaced, "hello.sh")
+          open(spaced_script, "w", encoding="utf-8").write("#!/bin/bash\necho hello-from-spaced\n")
+          cases = [
+              f'"{script}"',
+              f'"{spaced_script}"',
+              f'"{script}" ',
+              f"'{script}'",
+              script.replace("\\", "/"),
+              'echo "a\\\\b"',
+              'printf "%s" "x"',
+              'echo "q"',
+          ]
+          lines = [f"bash={bash}", f"cmdline-example={subprocess.list2cmdline([bash, '-c', cases[0]])}"]
+          for case in cases:
+              result = subprocess.run([bash, "-c", case], capture_output=True, encoding="utf-8", errors="replace")
+              lines.append(f"{case!r} -> rc={result.returncode} out={result.stdout.strip()!r} err={result.stderr.strip()[:200]!r}")
+          print("::notice title=quoting::" + "%0A".join(line.replace("%", "%25").replace("\r", "").replace("\n", " | ") for line in lines))
+          PYEOF
+
   lint:
     runs-on: ubuntu-latest
     timeout-minutes: 10
