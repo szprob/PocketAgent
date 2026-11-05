@@ -402,6 +402,9 @@ class Agent:
         except (asyncio.CancelledError, KeyboardInterrupt):
             context.turn.stop_reason = "interrupted"
             close_dangling_tool_calls(context.messages)
+            # 这一轮的检查点在后台拍，被停也让它拍完（见 wait_for_turn_checkpoint）；等它结束再往上抛，
+            # 停下来的任务不在后台留着 git——调用方接着删目录（Windows 上删不掉）或开下一轮（抢 index.lock）都会撞上它
+            await context.wait_for_turn_checkpoint()
             raise
         except Exception as error:
             context.turn.stop_reason = "error"
