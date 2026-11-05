@@ -13,7 +13,9 @@ MAX_FILE_BYTES = 20_000_000
 KEEP_DAYS = 7
 PRUNE_INTERVAL_SECONDS = 3600
 _UNSAFE_FILENAME_CHARACTERS = re.compile(r"[^A-Za-z0-9._-]")
-_last_prune_at = 0.0
+# None 表示这个进程还没扫过。不能拿 0.0 当「没扫过」：monotonic 从开机算起，
+# 开机不到一小时的机器（比如刚起的 CI 虚拟机）上第一次调用会被误当成「一小时内扫过」而跳过
+_last_prune_at: float | None = None
 
 
 def safe_name(value: str, fallback: str = "output") -> str:
@@ -53,7 +55,7 @@ def _prune_old_outputs(root: Path) -> None:
     """每小时最多扫一次，删掉 7 天前的日志；删任务时还会整个目录一起删。"""
     global _last_prune_at
     now = time.monotonic()
-    if now - _last_prune_at < PRUNE_INTERVAL_SECONDS:
+    if _last_prune_at is not None and now - _last_prune_at < PRUNE_INTERVAL_SECONDS:
         return
     _last_prune_at = now
     if not root.is_dir():

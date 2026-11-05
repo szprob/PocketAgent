@@ -168,6 +168,37 @@ class SlowCheckpointTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(harness.agent.checkpoints.all_checkpoints()), 1)
         self.assertEqual([change.path for change in await harness.agent.checkpoints.changes()], ["a.txt"])
 
+    async def test_stopping_the_turn_waits_for_the_snapshot(self) -> None:
+        """被停的一轮，检查点照样拍完，而且拍完才算停下：不能把 git 留在后台，调用方接着删目录会撞上。"""
+        model_called = asyncio.Event()
+        harness = build_harness(self.directories, [])
+        original_create = harness.agent.checkpoints.create
+        snapshot_finished = asyncio.Event()
+
+        async def slow_create(label, kind):
+            await asyncio.sleep(0.3)
+            checkpoint = await original_create(label, kind)
+            snapshot_finished.set()
+            return checkpoint
+
+        async def blocking_complete(messages, tools, listener):
+            model_called.set()
+            await asyncio.Event().wait()
+
+        harness.agent.checkpoints.create = slow_create
+        harness.provider.complete = blocking_complete
+        harness.agent.context.provider = harness.provider
+
+        turn = asyncio.create_task(harness.agent.run_turn("慢慢来"))
+        await model_called.wait()
+        turn.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await turn
+
+        self.assertTrue(snapshot_finished.is_set())
+        self.assertIsNone(harness.agent.context.pending_checkpoint)
+        self.assertEqual(len(harness.agent.checkpoints.all_checkpoints()), 1)
+
     async def test_read_only_batches_do_not_wait_but_the_first_write_does(self) -> None:
         """检查点被卡住时，只读的批次照样执行；读完才放行检查点，之后的写一定排在检查点后面。"""
         (self.directories.workspace / "notes.txt").write_text("hi\n", encoding="utf-8")

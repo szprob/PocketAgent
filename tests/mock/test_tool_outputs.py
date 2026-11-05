@@ -8,6 +8,7 @@ import sys
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from pocketagent.core.events import EventType
 from pocketagent.core.tool_outputs import save_tool_output
@@ -47,14 +48,16 @@ class ToolOutputStoreTest(unittest.TestCase):
         import pocketagent.core.tool_outputs as tool_outputs
 
         self.addCleanup(setattr, tool_outputs, "_last_prune_at", tool_outputs._last_prune_at)
-        tool_outputs._last_prune_at = 0.0
+        tool_outputs._last_prune_at = None
         old_path = self.directory / "old.log"
         old_path.parent.mkdir(parents=True, exist_ok=True)
         old_path.write_text("old", encoding="utf-8")
         old_timestamp = time.time() - 8 * 24 * 60 * 60
         os.utime(old_path, (old_timestamp, old_timestamp))
 
-        save_tool_output(self.directory, "new", "new")
+        # 模拟开机不到一小时的机器（CI 虚拟机就是这样）：进程里第一次落盘也要扫
+        with mock.patch.object(tool_outputs.time, "monotonic", return_value=100.0):
+            save_tool_output(self.directory, "new", "new")
 
         self.assertFalse(old_path.exists())
 

@@ -148,7 +148,9 @@ def parent_scope(directory: Path) -> Path:
     """
     parent = directory.parent
     home = Path.home()
-    if parent == directory or parent == home or parent in home.parents:
+    # 根目录的上一级是它自己。单看 home.parents 只认得家目录所在盘的根，Windows 上 D:\ 这种别的盘的根也要拦住
+    parent_is_root = parent.parent == parent
+    if parent == directory or parent_is_root or parent == home or parent in home.parents:
         return directory
     return parent
 

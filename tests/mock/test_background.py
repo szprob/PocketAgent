@@ -1,9 +1,13 @@
 import asyncio
+import json
 import sys
 import unittest
+from pathlib import Path
+from unittest import mock
 
-from pocketagent.safety.processes import process_exists
-from pocketagent.tools import ToolContext
+from pocketagent.safety.processes import bash_executable, process_exists
+from pocketagent.tools import ToolContext, background
+from pocketagent.tools import _background_supervisor as background_supervisor
 from pocketagent.tools.background import BackgroundTaskManager
 from pocketagent.tools.shell import BashOutputTool, BashTool, KillShellTool
 from tests.helpers import TemporaryDirectories
@@ -65,9 +69,10 @@ class BackgroundShellTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_extra_environment_reaches_background_commands(self) -> None:
         """沙箱联网白名单的代理地址是额外注入的环境变量，后台命令也要拿得到。"""
+        # 用和 bash 工具同一个 bash：Windows 上 PATH 里的 bash 可能是 WSL 的，拿 Windows 路径的工作目录跑不了
         record = await self.manager.start(
             "echo $POCKETAGENT_SANDBOX_TEST",
-            ["bash", "-c", "echo $POCKETAGENT_SANDBOX_TEST"],
+            [bash_executable(), "-c", "echo $POCKETAGENT_SANDBOX_TEST"],
             "",
             {"POCKETAGENT_SANDBOX_TEST": "proxied"},
         )
@@ -147,6 +152,49 @@ class BackgroundShellTest(unittest.IsolatedAsyncioTestCase):
                 break
             await asyncio.sleep(0.05)
         self.assertFalse(process_exists(child_pid))
+
+
+class MetadataSharingTest(unittest.TestCase):
+    """监督进程写 meta.json、主进程同时读：Windows 上撞上对方开着文件会报 PermissionError，要重试而不是直接失败。"""
+
+    def setUp(self) -> None:
+        self.directories = TemporaryDirectories()
+        self.path = self.directories.workspace / "meta.json"
+
+    def tearDown(self) -> None:
+        self.directories.cleanup()
+
+    def flaky_replace(self, failures: int):
+        original_replace = Path.replace
+        calls = {"count": 0}
+
+        def replace(source: Path, target: Path) -> Path:
+            calls["count"] += 1
+            if calls["count"] <= failures:
+                raise PermissionError(13, "The process cannot access the file because it is being used by another process")
+            return original_replace(source, target)
+
+        return replace
+
+    def test_replace_is_retried_on_windows(self) -> None:
+        for module in (background, background_supervisor):
+            with self.subTest(module=module.__name__):
+                with (
+                    mock.patch.object(sys, "platform", "win32"),
+                    mock.patch.object(Path, "replace", self.flaky_replace(failures=2)),
+                    mock.patch.object(module.time, "sleep"),
+                ):
+                    module._write_json(self.path, {"status": "running"})
+
+                self.assertEqual(json.loads(self.path.read_text(encoding="utf-8")), {"status": "running"})
+
+    def test_permission_error_is_not_retried_elsewhere(self) -> None:
+        with (
+            mock.patch.object(sys, "platform", "linux"),
+            mock.patch.object(Path, "replace", self.flaky_replace(failures=1)),
+        ):
+            with self.assertRaises(PermissionError):
+                background._write_json(self.path, {"status": "running"})
 
 
 if __name__ == "__main__":

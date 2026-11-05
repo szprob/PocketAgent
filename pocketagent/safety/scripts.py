@@ -14,7 +14,7 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
-from pocketagent.safety.processes import bash_executable, terminate_process_tree
+from pocketagent.safety.processes import bash_command_line, bash_executable, terminate_process_tree
 
 MIN_SCRIPT_TIMEOUT_SECONDS = 1
 MAX_SCRIPT_TIMEOUT_SECONDS = 600
@@ -64,9 +64,7 @@ async def run_script(
         process_environment.update(environment)
     try:
         process = await asyncio.create_subprocess_exec(
-            bash,
-            "-c",
-            command,
+            *bash_command_line(bash, command),
             cwd=cwd,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,

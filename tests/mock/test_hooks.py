@@ -2,6 +2,8 @@
 
 import asyncio
 import json
+import re
+import sys
 import unittest
 from pathlib import Path
 
@@ -226,7 +228,16 @@ class HookRunnerTest(unittest.IsolatedAsyncioTestCase):
             environment_path.read_text(encoding="utf-8").splitlines(),
             ["pre_tool_use", "bash", "session-9"],
         )
-        self.assertEqual(Path(directory_path.read_text(encoding="utf-8").strip()).resolve(), self.workspace.resolve())
+        printed_directory = bash_path_to_native(directory_path.read_text(encoding="utf-8").strip())
+        self.assertEqual(printed_directory.resolve(), self.workspace.resolve())
+
+
+def bash_path_to_native(text: str) -> Path:
+    """Git for Windows 的 pwd 打印的是 /c/Users/... 这种 MSYS 路径，换成 C:/Users/... 才能和 Python 的路径比。"""
+    drive_path = re.fullmatch(r"/([A-Za-z])(/.*)?", text)
+    if sys.platform == "win32" and drive_path:
+        return Path(f"{drive_path.group(1)}:{drive_path.group(2) or '/'}")
+    return Path(text)
 
 
 @unittest.skipUnless(HAS_BASH, "这台机器上没有 bash")

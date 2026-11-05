@@ -599,6 +599,8 @@ class SessionManager:
     async def shutdown(self) -> None:
         for web_session in self.sessions.values():
             await web_session.interrupt()
+            # interrupt 只是发出取消；等它收尾再往下走，服务退出后不在工作区里留着 git / 钩子进程
+            await web_session.wait_until_stopped()
             await web_session.close()
             for client in list(web_session.clients):
                 await client.close()

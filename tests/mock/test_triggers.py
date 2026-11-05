@@ -1,5 +1,6 @@
 """触发器：什么时候算到点、条件怎么判、引擎怎么去重和防环。"""
 
+import tempfile
 import unittest
 from dataclasses import dataclass
 from datetime import datetime
@@ -169,14 +170,16 @@ class ConditionTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue((await condition.check(task_end_occurrence(text="都已完成"), "/tmp")).passed)
         self.assertFalse((await condition.check(task_end_occurrence(text="还在跑"), "/tmp")).passed)
 
+    # 脚本条件真的会在这个目录里起进程，不能写死 /tmp（Windows 上没有）
     @unittest.skipUnless(HAS_BASH, "这台机器上没有 bash")
     async def test_shell_condition_uses_exit_code(self) -> None:
-        self.assertTrue((await ShellCondition(command="cat > /dev/null; exit 0").check(task_end_occurrence(), "/tmp")).passed)
-        self.assertFalse((await ShellCondition(command="exit 1").check(task_end_occurrence(), "/tmp")).passed)
+        directory = tempfile.gettempdir()
+        self.assertTrue((await ShellCondition(command="cat > /dev/null; exit 0").check(task_end_occurrence(), directory)).passed)
+        self.assertFalse((await ShellCondition(command="exit 1").check(task_end_occurrence(), directory)).passed)
 
     @unittest.skipUnless(HAS_BASH, "这台机器上没有 bash")
     async def test_shell_condition_reports_broken_script_as_problem(self) -> None:
-        result = await ShellCondition(command="exit 3").check(task_end_occurrence(), "/tmp")
+        result = await ShellCondition(command="exit 3").check(task_end_occurrence(), tempfile.gettempdir())
 
         self.assertFalse(result.passed)
         self.assertIn("退出码 3", result.problem)

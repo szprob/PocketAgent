@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# 同一分支 / 同一个 PR 又推了新提交，旧的那次就没必要跑完了
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      # 一个平台挂了也要看到其他平台的结果，才知道是不是平台相关的问题
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      # tests/mock/test_web_js.py 和 test_markdown_math.py 用 Node 直接 import 前端 ES 模块，没有 Node 会整组跳过
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+
+      - name: 安装（含 web、tui 两组可选依赖，否则对应测试会跳过）
+        run: python -m pip install -e ".[web,tui]"
+
+      # 和 Makefile 的 test 目标一致；Windows 上不一定有 make，所以直接调 python。tests/live 会调真实接口，不在 CI 跑
+      - name: mock 测试
+        run: python -m unittest discover -s tests/mock -t .
+
+      # mock 挂了也跑，两套的结果都要看到
+      - name: 上游 PocketFlow 测试
+        if: success() || failure()
+        run: python -m unittest discover -s tests/vendor_pocketflow -t .
+
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      # 固定版本：ruff 升级会改默认规则和规则细节，不固定的话哪天 CI 会无缘无故变红
+      - name: 安装 ruff
+        run: python -m pip install ruff==0.17.3
+
+      # 只开现在已经干净的规则（pyflakes + 语法 / 语句级错误 + 没用到的循环变量）；
+      # 格式化（ruff format）和其余风格规则不在 CI 里卡
+      - name: ruff check
+        run: ruff check --select F,E4,E7,E9,B007 .

@@ -9,7 +9,7 @@ import tempfile
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from pocketagent.llm import LLMResponse
 from pocketagent.safety.network_proxy import network_proxy
@@ -116,6 +116,17 @@ class SeatbeltSandboxTest(unittest.TestCase):
         self.assertNotIn("TOP-SECRET", secret.stdout)
         self.assertIn("Operation not permitted", secret.stderr)
         self.assertEqual(exception.stdout, "attachment")
+
+    def test_parents_of_exceptions_can_be_stat_but_not_listed(self) -> None:
+        """git 等工具解析真实路径会逐级 lstat；例外目录的父目录（就是密钥目录）只给 stat，不给列目录。"""
+        stat_parent = run_in_sandbox(f"stat -f %N '{self.secret}'", self.policy)
+        list_parent = run_in_sandbox(f"ls '{self.secret}'", self.policy)
+        stat_sibling = run_in_sandbox(f"stat -f %N '{self.secret / 'key'}'", self.policy)
+
+        self.assertEqual(stat_parent.returncode, 0, stat_parent.stderr)
+        self.assertNotEqual(list_parent.returncode, 0)
+        self.assertNotIn("key", list_parent.stdout)
+        self.assertNotEqual(stat_sibling.returncode, 0)
 
     def test_git_hooks_and_config_are_protected(self) -> None:
         subprocess.run(["git", "init", "-q"], cwd=self.workspace, check=True)
@@ -349,7 +360,8 @@ class PermissionCheckTest(unittest.TestCase):
         dirs_check = self.gate(ApprovalMode.ASK).check(ReadFileTool(), dirs)
         no_dirs_check = self.gate(ApprovalMode.ASK).check(BashTool(sandboxed=True), no_dirs)
 
-        self.assertIn("访问 /opt 下的所有目录", dirs_check.always_parents_label())
+        # 和上面一样，Path("/opt") 在 Windows 上是 \opt
+        self.assertIn(f"访问 {Path('/opt')} 下的所有目录", dirs_check.always_parents_label())
         self.assertEqual(no_dirs_check.always_parents_label(), "")
 
     def test_remembering_parents_covers_sibling_directories(self) -> None:
@@ -380,6 +392,13 @@ class PermissionCheckTest(unittest.TestCase):
                 check = self.gate(ApprovalMode.ASK).check(ReadFileTool(), ToolAccess(outside_paths=[path]))
                 self.assertEqual(check.always_parents_label(), "")
                 self.assertEqual(parent_scope(path.parent), path.parent)
+
+    def test_root_of_another_drive_counts_as_root(self) -> None:
+        """Windows 上别的盘的根（D:\\）不在家目录那条线上，也不能放行整个盘。"""
+        directory = PureWindowsPath("D:/opt")
+
+        self.assertEqual(parent_scope(directory), directory)
+        self.assertEqual(parent_scope(PureWindowsPath("D:/opt/elsewhere")), directory)
 
     def test_ask_remembers_parents_when_chosen(self) -> None:
         async def run() -> None:
