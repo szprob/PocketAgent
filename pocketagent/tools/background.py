@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import time
 import uuid
 from datetime import datetime
 from typing import Any
@@ -15,10 +16,43 @@ START_TIMEOUT_SECONDS = 10
 DEFAULT_READ_LIMIT_BYTES = 16_384
 MAX_READ_LIMIT_BYTES = 65_536
 ACTIVE_STATUSES = {"starting", "running"}
+# meta.json 由监督进程写、主进程轮询着读。Windows 上对方正开着这个文件的那一瞬间，替换或打开会报
+# PermissionError（共享冲突，POSIX 上没有这回事），稍等重试就好；_background_supervisor.py 里是同样的重试
+SHARING_RETRY_ATTEMPTS = 20
+SHARING_RETRY_SECONDS = 0.05
 
 
 def _now_text() -> str:
     return datetime.now().isoformat(timespec="seconds")
+
+
+def _is_transient_sharing_error(attempt: int) -> bool:
+    return sys.platform == "win32" and attempt < SHARING_RETRY_ATTEMPTS - 1
+
+
+def _replace_file(source: Path, target: Path) -> None:
+    attempt = 0
+    while True:
+        try:
+            source.replace(target)
+            return
+        except PermissionError:
+            if not _is_transient_sharing_error(attempt):
+                raise
+            attempt += 1
+            time.sleep(SHARING_RETRY_SECONDS)
+
+
+def _read_text(path: Path) -> str:
+    attempt = 0
+    while True:
+        try:
+            return path.read_text(encoding="utf-8")
+        except PermissionError:
+            if not _is_transient_sharing_error(attempt):
+                raise
+            attempt += 1
+            time.sleep(SHARING_RETRY_SECONDS)
 
 
 def _write_json(path: Path, data: dict[str, Any]) -> None:
@@ -26,7 +60,7 @@ def _write_json(path: Path, data: dict[str, Any]) -> None:
     descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(descriptor, "w", encoding="utf-8") as file:
         json.dump(data, file, ensure_ascii=False, indent=1)
-    temporary.replace(path)
+    _replace_file(temporary, path)
 
 
 class BackgroundTaskManager:
@@ -49,7 +83,7 @@ class BackgroundTaskManager:
     def _load(self, task_id: str) -> dict[str, Any]:
         path = self._metadata_path(task_id)
         try:
-            metadata = json.loads(path.read_text(encoding="utf-8"))
+            metadata = json.loads(_read_text(path))
         except (OSError, json.JSONDecodeError) as error:
             raise ValueError(f"后台任务不存在或状态不可读：{task_id}") from error
         if Path(metadata["workspace"]).resolve() != self.workspace:

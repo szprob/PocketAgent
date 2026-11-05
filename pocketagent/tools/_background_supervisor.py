@@ -5,11 +5,46 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 from datetime import datetime
+
+# 主进程在轮询读 meta.json。Windows 上它正开着文件的那一瞬间，替换或打开会报 PermissionError（共享冲突），
+# 稍等重试；和 background.py 里的重试一致（这个脚本单独启动，不能 import pocketagent）
+SHARING_RETRY_ATTEMPTS = 20
+SHARING_RETRY_SECONDS = 0.05
 
 
 def _now_text() -> str:
     return datetime.now().isoformat(timespec="seconds")
+
+
+def _is_transient_sharing_error(attempt: int) -> bool:
+    return sys.platform == "win32" and attempt < SHARING_RETRY_ATTEMPTS - 1
+
+
+def _replace_file(source: Path, target: Path) -> None:
+    attempt = 0
+    while True:
+        try:
+            source.replace(target)
+            return
+        except PermissionError:
+            if not _is_transient_sharing_error(attempt):
+                raise
+            attempt += 1
+            time.sleep(SHARING_RETRY_SECONDS)
+
+
+def _read_text(path: Path) -> str:
+    attempt = 0
+    while True:
+        try:
+            return path.read_text(encoding="utf-8")
+        except PermissionError:
+            if not _is_transient_sharing_error(attempt):
+                raise
+            attempt += 1
+            time.sleep(SHARING_RETRY_SECONDS)
 
 
 def _write_json(path: Path, data: dict) -> None:
@@ -17,11 +52,11 @@ def _write_json(path: Path, data: dict) -> None:
     descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(descriptor, "w", encoding="utf-8") as file:
         json.dump(data, file, ensure_ascii=False, indent=1)
-    temporary.replace(path)
+    _replace_file(temporary, path)
 
 
 def _load_json(path: Path) -> dict:
-    return json.loads(path.read_text(encoding="utf-8"))
+    return json.loads(_read_text(path))
 
 
 def _update_metadata(path: Path, **changes) -> None:
