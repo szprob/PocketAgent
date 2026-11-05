@@ -42,76 +42,12 @@ jobs:
 
       # 和 Makefile 的 test 目标一致；Windows 上不一定有 make，所以直接调 python。tests/live 会调真实接口，不在 CI 跑
       - name: mock 测试
-        shell: bash
-        run: python -m unittest discover -s tests/mock -t . 2>&1 | tee mock-test.log; exit ${PIPESTATUS[0]}
+        run: python -m unittest discover -s tests/mock -t .
 
       # mock 挂了也跑，两套的结果都要看到
       - name: 上游 PocketFlow 测试
         if: success() || failure()
-        shell: bash
-        run: python -m unittest discover -s tests/vendor_pocketflow -t . 2>&1 | tee vendor-test.log; exit ${PIPESTATUS[0]}
-
-      # DEBUG：临时把失败详情打成注解（不登录也能在运行页看到），调通后删掉
-      - name: 失败详情
-        if: failure()
-        shell: bash
-        run: |
-          python - <<'PYEOF'
-          import os, sys
-          sys.stdout.reconfigure(encoding="utf-8")
-          chunks = []
-          for name in ("mock-test.log", "vendor-test.log"):
-              if not os.path.exists(name):
-                  continue
-              text = open(name, encoding="utf-8", errors="replace").read()
-              start = text.find("=" * 70)
-              end = text.rfind("\nRan ")
-              tail = text[end:end + 300] if end >= 0 else text[-6000:]
-              body = text[start:end] if start >= 0 else ""
-              full = f"[{name}]\n{tail}\n{body}"
-              while full:
-                  chunks.append(full[:3800])
-                  full = full[3800:]
-          def escape(value):
-              return value.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
-          for index, chunk in enumerate(chunks[:30]):
-              level = ("error", "warning", "notice")[index // 10]
-              print(f"::{level} title=part {index}::" + escape(chunk))
-          PYEOF
-
-      # DEBUG：验证 Windows 上 bash -c 的引号问题，调通后删掉
-      - name: 引号实验
-        if: runner.os == 'Windows' && (success() || failure())
-        shell: bash
-        run: |
-          python - <<'PYEOF'
-          import os, subprocess, sys, tempfile
-          sys.stdout.reconfigure(encoding="utf-8")
-          from pocketagent.safety.processes import bash_executable
-          bash = bash_executable()
-          folder = tempfile.mkdtemp()
-          script = os.path.join(folder, "hello.sh")
-          open(script, "w", encoding="utf-8").write("#!/bin/bash\necho hello-from-script\n")
-          spaced = os.path.join(folder, "with space")
-          os.mkdir(spaced)
-          spaced_script = os.path.join(spaced, "hello.sh")
-          open(spaced_script, "w", encoding="utf-8").write("#!/bin/bash\necho hello-from-spaced\n")
-          cases = [
-              f'"{script}"',
-              f'"{spaced_script}"',
-              f'"{script}" ',
-              f"'{script}'",
-              script.replace("\\", "/"),
-              'echo "a\\\\b"',
-              'printf "%s" "x"',
-              'echo "q"',
-          ]
-          lines = [f"bash={bash}", f"cmdline-example={subprocess.list2cmdline([bash, '-c', cases[0]])}"]
-          for case in cases:
-              result = subprocess.run([bash, "-c", case], capture_output=True, encoding="utf-8", errors="replace")
-              lines.append(f"{case!r} -> rc={result.returncode} out={result.stdout.strip()!r} err={result.stderr.strip()[:200]!r}")
-          print("::notice title=quoting::" + "%0A".join(line.replace("%", "%25").replace("\r", "").replace("\n", " | ") for line in lines))
-          PYEOF
+        run: python -m unittest discover -s tests/vendor_pocketflow -t .
 
   lint:
     runs-on: ubuntu-latest

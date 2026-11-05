@@ -74,3 +74,9 @@ tests/
 ├── live/                    真实免费 API 联调（make test-live）
 └── vendor_pocketflow/       上游 PocketFlow 测试，别改
 ```
+
+`vendor_pocketflow/__init__.py` 不是上游的文件：它用 `load_tests` 在 Windows 上跳过两条假设并行分支按启动顺序完成的上游用例，
+升级上游时保留它。
+
+CI（`.github/workflows/ci.yml`）在 Linux / macOS / Windows × Python 3.11 / 3.12 上跑 mock 和 vendor_pocketflow 两套，
+不跑 live。只在某个平台上跑不了的用例用 `unittest.skipIf(sys.platform == ...)` 跳过并写明原因。

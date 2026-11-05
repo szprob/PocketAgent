@@ -6,9 +6,8 @@ from pathlib import Path
 from unittest import mock
 
 from pocketagent.safety.processes import bash_executable, process_exists
-from pocketagent.tools import ToolContext
+from pocketagent.tools import ToolContext, background
 from pocketagent.tools import _background_supervisor as background_supervisor
-from pocketagent.tools import background
 from pocketagent.tools.background import BackgroundTaskManager
 from pocketagent.tools.shell import BashOutputTool, BashTool, KillShellTool
 from tests.helpers import TemporaryDirectories

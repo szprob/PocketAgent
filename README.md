@@ -72,8 +72,8 @@ py -3.12 -m pocketagent --web -C D:\SZ\git\foo
 - `screenshot` / `computer` 只在 macOS 上注册
 - 桌面端默认用 `py -3` 启动后端；Python 装在别处就设 `POCKETAGENT_PYTHON`
 - 测试用 `py -m unittest discover -s tests/mock -t .` 和 `py -m unittest discover -s tests/vendor_pocketflow -t .`
-  （Windows 上不一定有 make）；`tests/vendor_pocketflow/` 里上游的并行 batch 测试依赖字典插入顺序，
-  在 Windows 上会挂，和本项目代码无关
+  （Windows 上不一定有 make）；`tests/vendor_pocketflow/` 里有两条上游的并行 batch 用例假设并行分支按启动顺序完成，
+  Windows 上计时精度粗、完成顺序不固定，和本项目代码无关，在 Windows 上自动跳过（见 `tests/vendor_pocketflow/__init__.py`）
 
 ## 文档
 
