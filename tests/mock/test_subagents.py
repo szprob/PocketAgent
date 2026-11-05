@@ -19,7 +19,10 @@ SUBAGENT_MARK = "# 你现在是子 agent"
 
 
 def git(repository: Path, *arguments: str) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", "-C", str(repository), *arguments], capture_output=True, text=True, check=True)
+    # git 输出是 UTF-8（提交说明有中文）；不写 encoding 时 Windows 上按本地代码页解码会失败
+    return subprocess.run(
+        ["git", "-C", str(repository), *arguments], capture_output=True, text=True, encoding="utf-8", check=True
+    )
 
 
 class TwoLevelProvider:
