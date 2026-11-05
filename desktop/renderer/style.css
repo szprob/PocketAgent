@@ -2164,7 +2164,7 @@ code.md-inline-code {
   max-width: 220px;
 }
 
-.busy-hint {.busy-hint {
+.busy-hint {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
