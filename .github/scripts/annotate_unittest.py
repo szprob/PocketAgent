@@ -48,6 +48,8 @@ def escape_property(text: str) -> str:
 
 
 def main(paths: list[str]) -> None:
+    # Windows 上 stdout 默认是 cp1252，回溯里的中文一打印就 UnicodeEncodeError，注解一条都出不来
+    sys.stdout.reconfigure(encoding="utf-8")
     shown = 0
     for path in paths:
         log_file = Path(path)
