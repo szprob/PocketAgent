@@ -27,6 +27,20 @@ def bash_executable() -> str | None:
     return shutil.which("bash")
 
 
+def bash_command_line(bash: str, command: str) -> list[str]:
+    """用 bash -c 跑一段命令的参数列表。
+
+    Windows 上 Python 按 MSVC 的规则把参数拼成一行命令行（list2cmdline），Git for Windows 的 bash 按 MSYS 的规则拆，
+    两边只在「整个参数被双引号包着」时一致：参数里没有空格 / 制表符时 list2cmdline 不加外层引号，
+    里面的 " 转成 \\"、' 原样留着，MSYS 在引号外不认 \\" 还会吃掉单引号——
+    钩子命令写成 "C:\\hooks\\check.sh" 就报引号不配对，写成 'C:\\hooks\\check.sh' 就把反斜杠当转义。
+    前面补一个空格逼 list2cmdline 加上外层引号；多一个前导空格对 bash 没有区别。
+    """
+    if sys.platform == "win32" and " " not in command and "\t" not in command:
+        command = " " + command
+    return [bash, "-c", command]
+
+
 def _windows_bash_candidates() -> list[Path]:
     """Git for Windows 常见的安装位置（系统级、64 位、32 位、用户级）。
 

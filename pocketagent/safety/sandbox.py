@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from pocketagent.safety.network_proxy import network_proxy
-from pocketagent.safety.processes import bash_executable
+from pocketagent.safety.processes import bash_command_line, bash_executable
 
 # 不管怎样都不让命令读的地方：密钥、凭据
 SECRET_PATHS = [
@@ -243,7 +243,7 @@ def wrap_command(command: str, policy: SandboxPolicy | None) -> SandboxCommand:
             "找不到 bash：Windows 上需要安装 Git for Windows（https://git-scm.com/download/win），"
             "已经装了就把 Git 的 bin 目录放进 PATH；macOS / Linux 上装好 bash 后重试"
         )
-    plain = [bash, "-c", command]
+    plain = bash_command_line(bash, command)
     if policy is None:
         return SandboxCommand(plain)
     kind = available_sandbox()
