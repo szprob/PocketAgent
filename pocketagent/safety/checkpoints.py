@@ -17,7 +17,9 @@ bash 改的、新建的、删的都看不见；撤销时还会拿「第一次见
 import asyncio
 import hashlib
 import os
+import re
 import shutil
+import tempfile
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -44,6 +46,9 @@ DEFAULT_EXCLUDES = [
     "*.egg-info/",
 ]
 EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+# 回放时把整个快照取出来：比拍快照慢（要写全部文件），给宽一点
+EXPORT_TIMEOUT_SECONDS = 300
+_COMMIT_PATTERN = re.compile(r"[0-9a-f]{7,64}")
 # 找嵌套 git 仓库时最多往下看几层、跳过哪些目录
 NESTED_REPO_MAX_DEPTH = 4
 NESTED_REPO_SKIPPED_DIRS = {"node_modules", ".venv", "venv", "__pycache__", "target", "dist", "build", ".git"}
@@ -87,13 +92,73 @@ def git_available() -> bool:
     return shutil.which("git") is not None
 
 
+def shadow_git_dir(shadow_root: Path, workspace: Path) -> Path:
+    """工作区对应的影子仓库目录：按工作区绝对路径的哈希分，换了路径就是另一个仓库。"""
+    digest = hashlib.sha1(str(workspace.resolve()).encode("utf-8")).hexdigest()[:16]
+    return shadow_root / digest
+
+
+def _shadow_git_environment(git_dir: Path, work_tree: Path, index_file: Path) -> dict[str, str]:
+    environment = dict(os.environ)
+    environment.update(
+        {
+            "GIT_DIR": str(git_dir),
+            "GIT_WORK_TREE": str(work_tree),
+            "GIT_INDEX_FILE": str(index_file),
+            # 不读用户的全局 / 系统配置
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_TERMINAL_PROMPT": "0",
+            "GIT_AUTHOR_NAME": "PocketAgent",
+            "GIT_AUTHOR_EMAIL": "pocketagent@localhost",
+            "GIT_COMMITTER_NAME": "PocketAgent",
+            "GIT_COMMITTER_EMAIL": "pocketagent@localhost",
+        }
+    )
+    return environment
+
+
+async def _run_shadow_git(
+    arguments: tuple[str, ...] | list[str],
+    cwd: Path,
+    environment: dict[str, str],
+    timeout: float = SNAPSHOT_TIMEOUT_SECONDS,
+    check: bool = True,
+) -> str:
+    process = await asyncio.create_subprocess_exec(
+        "git",
+        # 关掉 hooks；os.devnull 在 Windows 上是 nul，直接写 /dev/null 不一定被认
+        "-c", f"core.hooksPath={os.devnull}",
+        "-c", "commit.gpgsign=false",
+        "-c", "core.autocrlf=false",
+        "-c", "core.quotepath=false",
+        *arguments,
+        cwd=cwd,
+        env=environment,
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        await terminate_process_tree(process)
+        raise CheckpointError(f"git {arguments[0]} 超过 {timeout:.0f} 秒（工作区可能太大）")
+    except asyncio.CancelledError:
+        # 任务被停时快照可能还在拍：结束 git 并等它退出，不然进程和管道一直没人收
+        await terminate_process_tree(process)
+        raise
+    if check and process.returncode != 0:
+        raise CheckpointError(f"git {' '.join(arguments[:2])} 失败：{stderr.decode('utf-8', 'replace').strip()[:300]}")
+    return stdout.decode("utf-8", "replace")
+
+
 class ShadowRepo:
     """一个工作区对应一个影子仓库；session_id 决定用哪个 index 文件、提交挂在哪个 ref 上。"""
 
     def __init__(self, shadow_root: Path, workspace: Path, session_id: str) -> None:
         self.workspace = workspace.resolve()
-        digest = hashlib.sha1(str(self.workspace).encode("utf-8")).hexdigest()[:16]
-        self.git_dir = shadow_root / digest
+        self.git_dir = shadow_git_dir(shadow_root, self.workspace)
         self.session_id = session_id
         self.index_file = self.git_dir / f"index-{session_id}"
         self.ref = f"refs/pocketagent/{session_id}"
@@ -102,51 +167,10 @@ class ShadowRepo:
         return _REPO_LOCKS.setdefault(self.git_dir, asyncio.Lock())
 
     def _environment(self) -> dict[str, str]:
-        environment = dict(os.environ)
-        environment.update(
-            {
-                "GIT_DIR": str(self.git_dir),
-                "GIT_WORK_TREE": str(self.workspace),
-                "GIT_INDEX_FILE": str(self.index_file),
-                # 不读用户的全局 / 系统配置
-                "GIT_CONFIG_GLOBAL": os.devnull,
-                "GIT_CONFIG_NOSYSTEM": "1",
-                "GIT_TERMINAL_PROMPT": "0",
-                "GIT_AUTHOR_NAME": "PocketAgent",
-                "GIT_AUTHOR_EMAIL": "pocketagent@localhost",
-                "GIT_COMMITTER_NAME": "PocketAgent",
-                "GIT_COMMITTER_EMAIL": "pocketagent@localhost",
-            }
-        )
-        return environment
+        return _shadow_git_environment(self.git_dir, self.workspace, self.index_file)
 
     async def _git(self, *arguments: str, timeout: float = SNAPSHOT_TIMEOUT_SECONDS, check: bool = True) -> str:
-        process = await asyncio.create_subprocess_exec(
-            "git",
-            # 关掉 hooks；os.devnull 在 Windows 上是 nul，直接写 /dev/null 不一定被认
-            "-c", f"core.hooksPath={os.devnull}",
-            "-c", "commit.gpgsign=false",
-            "-c", "core.autocrlf=false",
-            "-c", "core.quotepath=false",
-            *arguments,
-            cwd=self.workspace,
-            env=self._environment(),
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        try:
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
-        except asyncio.TimeoutError:
-            await terminate_process_tree(process)
-            raise CheckpointError(f"git {arguments[0]} 超过 {timeout:.0f} 秒（工作区可能太大）")
-        except asyncio.CancelledError:
-            # 任务被停时快照可能还在拍：结束 git 并等它退出，不然进程和管道一直没人收
-            await terminate_process_tree(process)
-            raise
-        if check and process.returncode != 0:
-            raise CheckpointError(f"git {' '.join(arguments[:2])} 失败：{stderr.decode('utf-8', 'replace').strip()[:300]}")
-        return stdout.decode("utf-8", "replace")
+        return await _run_shadow_git(arguments, self.workspace, self._environment(), timeout=timeout, check=check)
 
     async def ensure_initialized(self) -> None:
         if (self.git_dir / "HEAD").is_file():
@@ -301,6 +325,62 @@ def _parse_name_status(output: str) -> dict[str, str]:
 
 def now_text() -> str:
     return datetime.now().isoformat(timespec="seconds")
+
+
+# ---- 把快照原样取出来（trace 回放用）----
+
+
+def is_commit_id(text: str) -> bool:
+    """提交号只认十六进制：它来自 trace 文件，拼进 git 命令之前先挡住「--xxx」这种会被当成选项的内容。"""
+    return bool(_COMMIT_PATTERN.fullmatch(text or ""))
+
+
+async def snapshot_exists(git_dir: Path, commit: str) -> bool:
+    """这个影子仓库里还有没有这次快照：任务删掉后 ref 就没了，对象过一阵会被 git 当垃圾清掉。"""
+    if not is_commit_id(commit) or not (git_dir / "HEAD").is_file():
+        return False
+    environment = _shadow_git_environment(git_dir, git_dir, git_dir / "index-lookup")
+    try:
+        await _run_shadow_git(["cat-file", "-e", f"{commit}^{{commit}}"], git_dir, environment)
+    except CheckpointError:
+        return False
+    return True
+
+
+async def find_snapshot(shadow_root: Path, commit: str, workspace_hints: list[Path] | None = None) -> Path | None:
+    """找这次快照在哪个影子仓库里，返回仓库目录；都没有返回 None。
+
+    老 trace 没记工作区，所以先看提示的工作区对应的仓库，找不到再挨个看（影子仓库一个工作区一个，数量不多）。
+    """
+    if not is_commit_id(commit) or not shadow_root.is_dir():
+        return None
+    candidates = [shadow_git_dir(shadow_root, hint) for hint in workspace_hints or []]
+    candidates += sorted(path for path in shadow_root.iterdir() if (path / "HEAD").is_file())
+    checked: set[Path] = set()
+    for git_dir in candidates:
+        if git_dir in checked:
+            continue
+        checked.add(git_dir)
+        if await snapshot_exists(git_dir, commit):
+            return git_dir
+    return None
+
+
+async def export_snapshot(git_dir: Path, commit: str, destination: Path) -> None:
+    """把快照里的文件写进 destination。
+
+    用一份临时 index：不碰影子仓库里各个任务自己的 index，destination 里也不会多出 .git。
+    嵌套仓库在快照里只是一个指针，这里只留一个空目录，内容要从它自己的影子仓库再取一次。
+    """
+    if not is_commit_id(commit):
+        raise CheckpointError(f"不是合法的提交号：{commit}")
+    destination.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="pocketagent-export-") as index_directory:
+        environment = _shadow_git_environment(git_dir, destination, Path(index_directory) / "index")
+        await _run_shadow_git(["read-tree", commit], destination, environment, timeout=EXPORT_TIMEOUT_SECONDS)
+        await _run_shadow_git(
+            ["checkout-index", "--all", "--force"], destination, environment, timeout=EXPORT_TIMEOUT_SECONDS
+        )
 
 
 class TaskCheckpoints:

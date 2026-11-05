@@ -32,7 +32,7 @@ from pocketagent.core.nodes import (
     start_background_compaction,
     wait_for_compaction,
 )
-from pocketagent.core.prompts import build_system_prompt
+from pocketagent.core.prompts import apply_system_prompt_template, build_system_prompt
 from pocketagent.core.session import Session, SessionJournal, SessionStore
 from pocketagent.core.subagents import attach_subagent_runner
 from pocketagent.core.tool_outputs import session_directory
@@ -233,6 +233,8 @@ class Agent:
         self.checkpoints = TaskCheckpoints(context.settings.shadow_dir, context.settings.workspace, context.session)
         # 工作模式跟着会话走：续跑时接着上次的模式
         self.context.permissions.agent_mode = self.agent_mode
+        # 回放 / 评测对比提示词时整份换掉系统提示（见 use_system_prompt_template）；平时是 None
+        self.system_prompt_template: str | None = None
         self.flow = build_agent_flow()
         self._attach_plan_callbacks()
         self.refresh_system_prompt()
@@ -299,19 +301,20 @@ class Agent:
     def refresh_system_prompt(self) -> None:
         """续跑旧会话时也重建系统提示：日期、AGENTS.md 可能已经变了。"""
         settings = self.context.settings
+        default_prompt = build_system_prompt(
+            settings.workspace,
+            settings.home_dir,
+            self.context.tools,
+            skills=self.skills,
+            sandbox=self.context.tool_context.sandbox,
+            memory_dir=self.context.tool_context.memory_dir,
+            ephemeral=settings.ephemeral,
+            worktree=settings.worktree,
+            agent_mode=self.agent_mode,
+        )
         system_message = {
             "role": "system",
-            "content": build_system_prompt(
-                settings.workspace,
-                settings.home_dir,
-                self.context.tools,
-                skills=self.skills,
-                sandbox=self.context.tool_context.sandbox,
-                memory_dir=self.context.tool_context.memory_dir,
-                ephemeral=settings.ephemeral,
-                worktree=settings.worktree,
-                agent_mode=self.agent_mode,
-            ),
+            "content": apply_system_prompt_template(self.system_prompt_template, default_prompt),
         }
         messages = self.context.messages
         if messages and messages[0].get("role") == "system":
@@ -321,6 +324,11 @@ class Agent:
         # 锚点记的是「旧系统提示 + 旧工具定义」的占用，提示换了（模式、日期、AGENTS.md、
         # MCP 工具）它就不准了，继续用会让压缩阈值判错，下一次估算从头算
         self.context.token_anchor = None
+
+    def use_system_prompt_template(self, template: str | None) -> None:
+        """换掉系统提示（None 换回默认）。之后换模式、MCP 工具变了重建提示时也一直用它。"""
+        self.system_prompt_template = template
+        self.refresh_system_prompt()
 
     async def _ensure_mcp_tools(self) -> None:
         """每一轮开跑前确认 MCP 服务器连着、工具都在注册表里（幂等，没配 mcp.json 时几乎不花时间）。
@@ -366,6 +374,11 @@ class Agent:
             message_id=message.get("_id"),
             user_text=display["text"],
             attachments=display["attachments"],
+            # trace 回放要知道这一轮在哪个工作区、用哪个模型跑的（见 evaluation/）
+            workspace=str(context.settings.workspace),
+            model=context.settings.model,
+            model_id=context.settings.model_profile_id,
+            model_name=context.settings.model_profile_name,
         )
         # 钩子先看这句话：session_start 用来准备环境（开服务、写日志头），user_prompt_submit 可以补一段上下文
         # （当前分支、相关工单），也可以直接拦住这一轮。都放在 TURN_START 之后：界面先把用户的话画出来

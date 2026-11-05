@@ -304,6 +304,8 @@ class ThinkNode(AgentNode):
             return "compact"
         await context.events.emit(
             EventType.LLM_RESPONSE,
+            # 一轮中途换了模型时，trace 里也能看出每一步是谁答的
+            model=context.settings.model,
             text=response.text,
             reasoning=response.reasoning,
             tool_calls=[{"name": call.name, "arguments": call.raw_arguments} for call in response.tool_calls],

@@ -158,3 +158,14 @@ def build_system_prompt(
     for instruction_file in load_instruction_files(workspace, home_dir):
         sections.append(f"以下是 {instruction_file.path} 里的说明，请遵守：\n\n{instruction_file.content.strip()}")
     return "\n\n".join(sections)
+
+
+# 回放 / 评测换系统提示词时，文件里写这个占位符就地换成默认拼出来的那份：只想加几句、不想丢掉工具和沙箱说明时用
+DEFAULT_PROMPT_PLACEHOLDER = "{{default_system_prompt}}"
+
+
+def apply_system_prompt_template(template: str | None, default_prompt: str) -> str:
+    """没有模板就用默认的系统提示；有模板就整份换掉（占位符处放回默认那份）。"""
+    if template is None:
+        return default_prompt
+    return template.replace(DEFAULT_PROMPT_PLACEHOLDER, default_prompt)

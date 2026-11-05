@@ -31,6 +31,8 @@ from pocketagent.safety.permissions import (
 )
 
 TOOL_RESULT_PREVIEW_LINES = 4
+# 第一个参数是这些词时走子命令（trace 回放、评测，见 cli/evaluation.py），不当成第一句话
+EVALUATION_COMMANDS = ("replay", "eval")
 # 这一轮为什么没说完：界面上要在回复末尾说一句，不然用户以为模型只是话说一半
 CUT_OFF_NOTES = {
     "filtered": "回复被上游内容审核掐断，上面是已经输出的部分",
@@ -459,7 +461,11 @@ def run_once(settings: Settings, session: Session | None, prompt: str, show_reas
 
 
 def _parse_arguments(argv: list[str] | None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(prog="pocketagent", description="基于 PocketFlow 的编程 agent")
+    parser = argparse.ArgumentParser(
+        prog="pocketagent",
+        description="基于 PocketFlow 的编程 agent",
+        epilog="trace 回放和评测：pocketagent replay -h / pocketagent eval -h",
+    )
     parser.add_argument("prompt", nargs="*", help="第一句话；配合 -p 时执行完就退出")
     parser.add_argument("-p", "--print", dest="print_mode", action="store_true", help="非交互：执行 prompt 后退出")
     parser.add_argument("-C", "--workspace", help="工作目录，默认当前目录")
@@ -544,6 +550,12 @@ def _run_tui(settings: Settings, session: Session | None, prompt: str, show_reas
 
 
 def main(argv: list[str] | None = None) -> None:
+    command_line = sys.argv[1:] if argv is None else list(argv)
+    if command_line and command_line[0] in EVALUATION_COMMANDS:
+        # 子命令单独一套参数；这里才 import，平时启动不用加载回放和评测的代码
+        from pocketagent.cli.evaluation import main as evaluation_main
+
+        sys.exit(evaluation_main(command_line))
     try:
         import readline  # noqa: F401  让 input() 支持方向键和历史
     except ImportError:

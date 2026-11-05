@@ -58,7 +58,8 @@
 - 优先级：命令行参数 > 配置文件 > 环境变量 > 默认值。环境变量（`POCKETAGENT_MODEL` / `POCKETAGENT_BASE_URL` /
   `POCKETAGENT_API_KEY` / `POCKETAGENT_PROTOCOL` 等，完整列表见 `pocketagent/config.py`）只在一个模型都没配时才用
 - `-m` 可以写配置里模型的名称、id 或模型名；都对不上就用默认模型的接口、只换模型名
-- 任务记录、trace、附件、影子仓库、后台命令、worktree、用量、自动化、工具输出都在 `~/.pocketagent/`（`POCKETAGENT_HOME` 可以改到别处）
+- 任务记录、trace、附件、影子仓库、后台命令、worktree、用量、自动化、工具输出、回放和评测的报告（`evals/`）都在 `~/.pocketagent/`
+  （`POCKETAGENT_HOME` 可以改到别处）
 
 ## 钩子
 

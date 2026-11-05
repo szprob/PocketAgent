@@ -34,6 +34,7 @@ pocketagent/
     console.py           原命令行入口、事件渲染、终端审批和 REPL
     controller.py        REPL / TUI 共用的会话、斜杠命令动作和模型切换
     tui.py               Textual 界面、事件渲染、审批 / 提问弹窗
+    evaluation.py        replay / eval 子命令：参数解析、进度和对比表
     __init__.py          兼容 pocketagent.cli:main 和原 Console* 导入；不提前加载 Textual
   config.py              配置文件（多个模型、默认值、工作区、沙箱、技能）和运行时 Settings
   core/                  agent 主循环
@@ -71,6 +72,13 @@ pocketagent/
   account/
     usage.py             token 用量记录和统计
     billing.py           查各家接口的账户余额
+  evaluation/            trace 回放和评测（只在命令行），见 docs/evaluation.md
+    trace_reader.py      把 JSONL trace 按轮整理成摘要：用户的话、模型、步数、工具调用结果、用量、耗时、起始检查点
+    workspace.py         临时工作区副本：从起始检查点（影子仓库）或一个目录复制出来，跑完删掉
+    runner.py            无人值守地跑一组话：auto_edit + 只放行沙箱里的 bash，关掉钩子 / MCP / 免问目录等
+    replay.py            pocketagent replay：重跑 trace 里的话，和原来那次并排对比
+    cases.py, evaluate.py  pocketagent eval：JSON 用例（提示词 + 样例目录 + 检查）逐个模型跑
+    report.py            对比表、JSON + Markdown 报告（~/.pocketagent/evals/<时间>/）
   server/                HTTP + WebSocket 后端，web、桌面端等所有前端共用（协议写在 __init__.py）
     app.py               组装和启动：token 鉴权、错误转 JSON、路由、web 前端的静态页面、定时任务调度
     routes/              按资源分的接口：sessions / workspace / settings / commands / automations / socket

@@ -7,7 +7,7 @@
 bash 沙箱、工作目录外的访问审批、影子 git 检查点（看变更、撤销、整体恢复）、技能（Agent Skills 标准）、项目记忆、
 流式事件、trace、会话续跑、后台自动压缩上下文、多模型配置（OpenAI 兼容 / Anthropic 两种协议，思考档位 / 上下文长度随模型走）、
 MCP、钩子（几个固定时机跑你自己的脚本，能拦住工具调用）、附件（图片 / 文件）、插话和排队、token 用量和缓存命中统计、
-自动化（到点 / 上一个任务跑完 / 外部 POST / 轮询检查都能当触发），
+自动化（到点 / 上一个任务跑完 / 外部 POST / 轮询检查都能当触发）、trace 回放和评测（换模型 / 提示词重跑、并排对比），
 以及命令行 REPL、全屏 TUI 和 web 三套界面。
 新任务默认就地编辑；前台任务派出的、会改文件的子 agent 自动在独立 git worktree 里做，互不干扰。grep / glob 优先用 ripgrep（遵守 .gitignore），没装 rg 时回退纯 Python 实现。
 
@@ -29,6 +29,8 @@ pocketagent -C ~/projects/foo --mode ai_auto
 pocketagent --scratch                # 不指定工作区：在 ~/.pocketagent/scratch 下建个临时目录跑
 pocketagent -c                      # 继续这个目录最近的会话
 pocketagent -m "DS 4.1 Flash" -p "跑一下测试，把失败的修好" --mode full_auto   # 指定模型、单次执行后退出
+pocketagent replay <任务 id 或 trace.jsonl> -m 模型A -m 模型B   # 在临时副本里重跑一次任务，和原来那次并排对比
+pocketagent eval examples/eval -m 模型A -m 模型B               # 跑评测用例（提示词 + 样例目录 + 检查）
 ```
 
 不安装也能用：在仓库根目录 `python -m pocketagent ...`。
@@ -86,6 +88,7 @@ py -3.12 -m pocketagent --web -C D:\SZ\git\foo
 | [技能与项目记忆](docs/knowledge.md) | Agent Skills 标准的技能、跨会话项目记忆 |
 | [运行机制](docs/runtime.md) | 临时任务、上下文压缩、工具输出落盘、会话持久化 |
 | [配置](docs/configuration.md) | config.json 全部字段、模型协议（OpenAI 兼容 / Anthropic） |
+| [回放和评测](docs/evaluation.md) | `pocketagent replay` 重跑 trace、`pocketagent eval` 跑用例、无人值守的审批、对比表和报告 |
 
 ## 怎么扩展
 
@@ -101,9 +104,10 @@ py -3.12 -m pocketagent --web -C D:\SZ\git\foo
 
 对照 Codex / Claude Code / WorkBuddy / Qoder，还缺这些，大致按优先级排：
 
-1. **trace 回放和评测**：拿 JSONL trace 重放、对比不同模型或提示词
-2. **界面**：IDE 插件；web 里搜索任务；一条自动化的触发时间线（什么时候被谁拉起来、条件卡在哪一步）
-3. **更多协议**：Anthropic 已经接上，Gemini 等其他原生协议按 `LLMProvider` 再加
+1. **界面**：IDE 插件；web 里搜索任务；一条自动化的触发时间线（什么时候被谁拉起来、条件卡在哪一步）
+2. **更多协议**：Anthropic 已经接上，Gemini 等其他原生协议按 `LLMProvider` 再加
+
+trace 回放和评测（原来的第 1 项）已经做了命令行版，见[回放和评测](docs/evaluation.md)；web 里看报告、按评测结果挑模型还没做。
 
 ## 测试
 
