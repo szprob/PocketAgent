@@ -12,7 +12,14 @@ from dataclasses import dataclass, field
 from pocketagent.core.events import EventType
 from pocketagent.llm import LLMResponse
 from pocketagent.safety.checkpoints import Checkpoint, TaskCheckpoints, find_nested_repos
-from tests.helpers import TemporaryDirectories, build_harness, tool_call, wait_for_pid_file, wait_until_process_gone
+from tests.helpers import (
+    WRITE_OWN_PID,
+    TemporaryDirectories,
+    build_harness,
+    tool_call,
+    wait_for_pid_file,
+    wait_until_process_gone,
+)
 
 
 @dataclass
@@ -249,7 +256,7 @@ class CancelledSnapshotTest(unittest.IsolatedAsyncioTestCase):
         fake_bin.mkdir(parents=True)
         self.pid_file = fake_bin / "git.pid"
         fake_git = fake_bin / "git"
-        fake_git.write_text(f'#!/bin/sh\necho $$ > "{self.pid_file}"\nexec sleep 30\n', encoding="utf-8")
+        fake_git.write_text(f'#!/bin/sh\n{WRITE_OWN_PID} > "{self.pid_file}"\nexec sleep 30\n', encoding="utf-8")
         fake_git.chmod(0o755)
         self.path_patch = mock.patch.dict(os.environ, {"PATH": f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}"})
         self.path_patch.start()

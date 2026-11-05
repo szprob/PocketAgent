@@ -15,7 +15,14 @@ from pocketagent.safety.hooks import HookDefinition, HookRunner, NotifyingApprov
 from pocketagent.safety.permissions import ApprovalAnswer, ApprovalMode, DenyAllApprover
 from pocketagent.safety.processes import bash_executable
 from pocketagent.safety.scripts import run_script
-from tests.helpers import TemporaryDirectories, build_harness, tool_call, wait_for_pid_file, wait_until_process_gone
+from tests.helpers import (
+    WRITE_OWN_PID,
+    TemporaryDirectories,
+    build_harness,
+    tool_call,
+    wait_for_pid_file,
+    wait_until_process_gone,
+)
 from tests.mock.test_subagents import TwoLevelProvider, spawn
 
 HAS_BASH = bash_executable() is not None
@@ -113,7 +120,7 @@ class HookRunnerTest(unittest.IsolatedAsyncioTestCase):
     async def test_stopping_the_task_kills_a_running_hook_script(self) -> None:
         """任务被停时钩子脚本还在跑：连它一起结束，不能留在后台。"""
         pid_file = self.workspace / "hook.pid"
-        command = write_script(self.workspace, "slow.sh", f'echo $$ > "{pid_file}"\nexec sleep 30\n')
+        command = write_script(self.workspace, "slow.sh", f'{WRITE_OWN_PID} > "{pid_file}"\nexec sleep 30\n')
         running = asyncio.create_task(run_script(command, payload={}, cwd=str(self.workspace), timeout_seconds=60))
         pid = await wait_for_pid_file(pid_file)
 

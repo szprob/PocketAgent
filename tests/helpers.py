@@ -126,8 +126,13 @@ def roles(messages: list[dict]) -> list[str]:
     return [message["role"] for message in messages]
 
 
+# 假脚本里记下自己 pid 的那一行 shell。Windows 的 Git bash（MSYS）里 $$ 是 MSYS 自己的编号，不是系统 pid，
+# 拿它去问系统「这个进程还在不在」会撞上毫不相干的进程（CI 上时好时坏）；真正的 pid 在 /proc/$$/winpid
+WRITE_OWN_PID = "if [ -r /proc/$$/winpid ]; then cat /proc/$$/winpid; else echo $$; fi"
+
+
 async def wait_for_pid_file(pid_file: Path, timeout_seconds: float = 5.0) -> int:
-    """等子进程把自己的 pid 写进文件（测试里的假脚本 echo $$），返回这个 pid。"""
+    """等子进程把自己的 pid 写进文件（测试里的假脚本用 WRITE_OWN_PID），返回这个 pid。"""
     deadline = asyncio.get_running_loop().time() + timeout_seconds
     while asyncio.get_running_loop().time() < deadline:
         if pid_file.exists() and pid_file.read_text(encoding="utf-8").strip():
