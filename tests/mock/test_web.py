@@ -361,6 +361,24 @@ class WebServerTest(WebTestBase):
         self.assertEqual(response.status, 409)
         self.assertIn("还在运行", (await response.json())["error"])
 
+    async def test_shutdown_waits_for_the_running_turn_to_wind_down(self) -> None:
+        """服务退出时停掉的那一轮要收完尾才算完：不然检查点的 git 还在工作区里跑，进程就退了。"""
+        gated = GatedProvider([LLMResponse(text="不会到这")])
+        self.provider_override = gated
+        session_id = await self._create_session()
+
+        async with self._connect(session_id) as socket_client:
+            await socket_client.receive_json()
+            await socket_client.send_json({"type": "user_message", "text": "慢慢来"})
+            await self._receive_until(socket_client, is_event("turn_start"))
+            web_session = self.app[MANAGER_KEY].sessions[session_id]
+            turn = web_session.background_task
+
+            await self.app[MANAGER_KEY].shutdown()
+
+        self.assertTrue(turn.done())
+        self.assertIsNone(web_session.agent.context.pending_checkpoint)
+
     async def test_interrupt_returns_pending_inputs_to_the_composer(self) -> None:
         self.responses.append(LLMResponse(tool_calls=[tool_call("call_1", "bash", '{"command": "touch never"}')]))
         session_id = await self._create_session()

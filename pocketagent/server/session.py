@@ -393,6 +393,12 @@ class WebSession:
         if self.running:
             self.background_task.cancel()
 
+    async def wait_until_stopped(self) -> None:
+        """等这一轮真正收尾：被停的一轮还要等后台检查点拍完、钩子脚本结束（见 Agent.run_turn）。"""
+        task = self.background_task
+        if task is not None:
+            await asyncio.gather(task, return_exceptions=True)
+
     # ---- 设置 ----
 
     async def set_mode(self, mode_name: str) -> None:
