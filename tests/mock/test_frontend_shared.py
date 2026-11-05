@@ -124,6 +124,8 @@ class SharedFrontendTest(unittest.TestCase):
             env=os.environ.copy(),
             capture_output=True,
             text=True,
+            # Node 输出总是 UTF-8；不写的话 Windows 上按本地代码页解码，中文会乱码或直接解码失败
+            encoding="utf-8",
             timeout=30,
             check=False,
         )
