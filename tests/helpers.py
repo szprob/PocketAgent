@@ -11,7 +11,7 @@ from pocketagent.core.agent import Agent, create_agent
 from pocketagent.core.compaction import MERGE_SUMMARY_INSTRUCTION, SUMMARY_INSTRUCTION
 from pocketagent.core.events import Event, EventType
 from pocketagent.core.session import Session
-from pocketagent.llm import ContextOverflowError, LLMResponse, ScriptedProvider, ToolCall
+from pocketagent.llm import LLMResponse, ScriptedProvider, ToolCall
 from pocketagent.safety.permissions import AllowAllApprover, ApprovalMode, Approver
 from pocketagent.tools import ToolRegistry
 

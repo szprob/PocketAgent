@@ -12,7 +12,6 @@ import asyncio
 import datetime
 import re
 import subprocess
-from pathlib import Path
 from typing import Any
 
 from pocketagent.tools.base import Tool, ToolContext, ToolKind, ToolResult

@@ -18,7 +18,7 @@ from pocketagent.account.usage import UsageLog
 from pocketagent.config import AppConfig, ConfigError, ModelProfile, Settings
 from pocketagent.core.agent import close_shared_mcp_managers, create_provider, shared_mcp_manager
 from pocketagent.core.events import Event, EventType
-from pocketagent.tools.mcp import McpError, McpManager, save_mcp_servers
+from pocketagent.tools.mcp import McpManager, save_mcp_servers
 from pocketagent.core.scratch import create_scratch_workspace, ensure_scratch_workspace
 from pocketagent.core.session import Session, SessionStore
 from pocketagent.core.tool_outputs import session_directory
@@ -136,7 +136,7 @@ class SessionManager:
         for summary in self.store.summaries():
             if summary.worktree and summary.workspace not in paths:
                 paths.append(summary.workspace)
-        for session_id, live in self.sessions.items():
+        for live in self.sessions.values():
             worktree = live.session.worktree
             if worktree and live.session.workspace not in paths:
                 paths.append(live.session.workspace)

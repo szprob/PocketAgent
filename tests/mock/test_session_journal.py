@@ -2,7 +2,6 @@
 
 import json
 import unittest
-from pathlib import Path
 
 from pocketagent.core.agent import INTERRUPTED_TOOL_RESULT
 from pocketagent.core.compaction import SUMMARY_PREFIX

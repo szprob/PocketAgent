@@ -12,7 +12,6 @@ from unittest.mock import patch
 from pocketagent.config import AppConfig
 from pocketagent.tools.base import ToolContext
 from pocketagent.tools.image import (
-    DEFAULT_IMAGE_SIZE,
     DownloadImageTool,
     GenerateImageTool,
     ImageGenSettings,

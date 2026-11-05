@@ -11,10 +11,8 @@ from pocketagent.server.triggers.engine import MAX_CHAIN_DEPTH, MAX_FIRES_PER_HO
 from pocketagent.server.triggers.model import (
     SOURCE_CLOCK,
     SOURCE_TASK_END,
-    SOURCE_WEBHOOK,
     AlwaysCondition,
     ClockSource,
-    ConditionResult,
     MatchCondition,
     Occurrence,
     PollSource,

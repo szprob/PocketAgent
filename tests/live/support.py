@@ -18,7 +18,7 @@ from pathlib import Path
 
 from pocketagent.config import AppConfig, ModelProfile, Settings, config_path, default_home_dir
 from pocketagent.core.agent import Agent, create_agent
-from pocketagent.llm.base import LLMProvider, StreamListener
+from pocketagent.llm.base import LLMProvider
 from pocketagent.safety.permissions import AllowAllApprover, ApprovalMode
 from pocketagent.tools.image import ImageGenSettings
 from pocketagent.tools.web import WebSearchSettings
