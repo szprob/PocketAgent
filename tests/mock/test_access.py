@@ -9,7 +9,7 @@ import tempfile
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from pocketagent.llm import LLMResponse
 from pocketagent.safety.network_proxy import network_proxy
@@ -392,6 +392,13 @@ class PermissionCheckTest(unittest.TestCase):
                 check = self.gate(ApprovalMode.ASK).check(ReadFileTool(), ToolAccess(outside_paths=[path]))
                 self.assertEqual(check.always_parents_label(), "")
                 self.assertEqual(parent_scope(path.parent), path.parent)
+
+    def test_root_of_another_drive_counts_as_root(self) -> None:
+        """Windows 上别的盘的根（D:\\）不在家目录那条线上，也不能放行整个盘。"""
+        directory = PureWindowsPath("D:/opt")
+
+        self.assertEqual(parent_scope(directory), directory)
+        self.assertEqual(parent_scope(PureWindowsPath("D:/opt/elsewhere")), directory)
 
     def test_ask_remembers_parents_when_chosen(self) -> None:
         async def run() -> None:
