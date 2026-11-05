@@ -360,7 +360,8 @@ class PermissionCheckTest(unittest.TestCase):
         dirs_check = self.gate(ApprovalMode.ASK).check(ReadFileTool(), dirs)
         no_dirs_check = self.gate(ApprovalMode.ASK).check(BashTool(sandboxed=True), no_dirs)
 
-        self.assertIn("访问 /opt 下的所有目录", dirs_check.always_parents_label())
+        # 和上面一样，Path("/opt") 在 Windows 上是 \opt
+        self.assertIn(f"访问 {Path('/opt')} 下的所有目录", dirs_check.always_parents_label())
         self.assertEqual(no_dirs_check.always_parents_label(), "")
 
     def test_remembering_parents_covers_sibling_directories(self) -> None:
