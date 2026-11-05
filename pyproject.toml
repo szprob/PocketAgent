@@ -28,3 +28,5 @@ include = ["pocketagent*", "pocketflow*"]
 
 [tool.ruff]
 line-length = 120
+# 原样复制的上游代码和上游测试不改（见 pocketflow/VENDORED.md），检查出来也没法修
+extend-exclude = ["pocketflow", "tests/vendor_pocketflow"]

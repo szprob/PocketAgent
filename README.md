@@ -1,5 +1,7 @@
 # PocketAgent
 
+[![CI](https://github.com/szprob/PocketAgent/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/szprob/PocketAgent/actions/workflows/ci.yml)
+
 基于 [PocketFlow](https://github.com/The-Pocket/PocketFlow) 的编程 agent，目标是做成 Codex / Claude Code / WorkBuddy / Qoder 这一类：
 在本地仓库里读代码、改文件、跑命令，用户在旁边审批。
 
@@ -120,6 +122,8 @@ make test PYTHON=~/env/s11/bin/python
 `tests/mock/` 不连网络，模型用 `ScriptedProvider` 按剧本返回；web 测试用 aiohttp 自带的测试客户端走真实的 HTTP 和 WebSocket，
 没装 aiohttp 时自动跳过；TUI 测试用 Textual 的 `run_test()` 无头驱动真实控件，没装 textual 时自动跳过；
 沙箱测试只在有 `sandbox-exec` 的 macOS 上跑。新功能必须补 mock 测试。
+
+CI（GitHub Actions，`.github/workflows/ci.yml`）每次推送和 PR 都在 Linux / macOS / Windows × Python 3.11 / 3.12 上跑 mock 和上游 PocketFlow 两套测试，另外跑一遍 `ruff check`。
 
 `tests/live/` 调真实免费接口（自动挑配置里带 `:free` 的模型、必应搜索、example.com、智谱免费生图），
 没有 `POCKETAGENT_LIVE=1` 时全部跳过，所以不会误花钱。两套怎么分工、怎么加用例见 [tests/README.md](tests/README.md)。
