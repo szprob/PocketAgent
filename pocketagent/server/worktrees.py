@@ -26,6 +26,9 @@ def _git(repository: Path, *arguments: str, check: bool = True) -> subprocess.Co
         ["git", "-C", str(repository), *arguments],
         capture_output=True,
         text=True,
+        # git 输出的路径和报错是 UTF-8；Windows 上默认按本地代码页解码，中文路径会乱码甚至解码失败
+        encoding="utf-8",
+        errors="replace",
         timeout=60,
         check=False,
     )
