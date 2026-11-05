@@ -1,10 +1,19 @@
-# 桌面端安装包：打 v 开头的 tag 或者在 Actions 页面手动运行时，三个系统各打一份，挂在这次运行的 Artifacts 里。
+# 桌面端安装包：三个系统各打一份，挂在这次运行的 Artifacts 里。什么时候打：
+# - 推 v 开头的 tag（tag 不看下面的 paths，总会打）
+# - main 上改了桌面端会用到的文件：顺便当作「三个系统都还能打包」的检查
+# - 在 Actions 页面手动运行
 # 没有签名：macOS 第一次打开要右键「打开」（或 xattr -cr PocketAgent.app），Windows 会提示未知发布者。
 name: desktop
 
 on:
   push:
+    branches: [main]
     tags: ["v*"]
+    paths:
+      - "desktop/**"
+      - "pocketagent/web/static/js/shared/**"
+      - "pocketagent/web/static/vendor/**"
+      - ".github/workflows/desktop.yml"
   workflow_dispatch:
 
 jobs:
@@ -38,3 +47,5 @@ jobs:
             desktop/dist/*.exe
             desktop/dist/*.AppImage
           if-no-files-found: error
+          # main 上每次改桌面端都会打一份，不用留太久；要长期保留的走 tag
+          retention-days: 14
