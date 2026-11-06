@@ -977,7 +977,15 @@ pre code { padding: 0; background: none; font-size: inherit; }
 .chip-remove { flex: none; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--text-muted); display: inline-flex; align-items: center; justify-content: center; }
 .chip-remove:hover { background: var(--surface); color: var(--text); }
 
-.composer-toolbar { display: flex; align-items: center; gap: 6px; }
+.composer-toolbar { display: flex; align-items: center; gap: 6px; container-type: inline-size; }
+/* 窗口窄时让几个下拉框缩成省略号，按钮一律不缩：停止和发送任何时候都得点得到。
+   万一还是挤不下，停止 / 发送也压在最上面：选模型那个外层是 relative，不抬高的话会盖住它们 */
+.composer-toolbar > .tool-button, .send-button, .stop-button { flex: none; position: relative; z-index: 1; }
+/* 侧栏、右栏都开着时聊天栏只剩两三百像素：下拉箭头也省掉，给停止 / 发送腾地方 */
+@container (max-width: 340px) {
+  .composer-toolbar .pill-chevron { display: none; }
+  .composer-toolbar .model-picker { min-width: 36px; }
+}
 
 .tool-button {
   display: inline-flex;
@@ -1425,7 +1433,9 @@ pre code { padding: 0; background: none; font-size: inherit; }
 
 /* ---------- 选模型面板 ---------- */
 
-.model-picker { position: relative; min-width: 0; }
+/* 外层也要是 flex：普通块里的按钮按文字全长排，外层被挤窄了按钮照样伸出去，盖住后面的停止 / 发送按钮。
+   不够宽时先缩模型名（最长），权限和模式那两个短的尽量留全 */
+.model-picker { position: relative; display: flex; flex-shrink: 6; min-width: 56px; }
 .model-trigger { border: 0; background: transparent; cursor: pointer; max-width: 260px; }
 .model-trigger .pill-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .model-trigger:disabled { cursor: default; opacity: 1; }

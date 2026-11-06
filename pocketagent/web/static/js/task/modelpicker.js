@@ -4,6 +4,7 @@
 import { sendJson } from "../core/api.js";
 import { button, el, formatTokens, icon } from "../ui/dom.js";
 import { state } from "../core/state.js";
+import { placePopover, resetPopoverPlacement } from "../shared/popover.js";
 
 export const REASONING_LABELS = {
   none: "关",
@@ -106,18 +107,10 @@ export class ModelPicker {
   _place() {
     if (window.matchMedia("(max-width: 860px)").matches) {
       // 窄屏是固定在底部的样式，由 CSS 管
-      this.popover.style.maxHeight = "";
+      resetPopoverPlacement(this.popover);
       return;
     }
-    const margin = 12;
-    const gap = 10;
-    const rect = this.trigger.getBoundingClientRect();
-    const spaceAbove = rect.top - gap - margin;
-    const spaceBelow = window.innerHeight - rect.bottom - gap - margin;
-    const natural = Math.min(560, this.popover.scrollHeight);
-    const opensDown = spaceAbove < natural && spaceBelow > spaceAbove;
-    this.popover.classList.toggle("opens-down", opensDown);
-    this.popover.style.maxHeight = `${Math.max(160, Math.min(560, opensDown ? spaceBelow : spaceAbove))}px`;
+    placePopover(this.popover, this.trigger, { gap: 10, maxHeight: 560 });
   }
 
   // ---- 渲染 ----
@@ -168,6 +161,7 @@ export class ModelPicker {
         this.picked = true;
         this._renderTrigger();
         this._renderPopover();
+        this._place();
         this.onSelectModel?.(model.id);
       });
       section.appendChild(item);

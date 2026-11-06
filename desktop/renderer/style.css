@@ -803,9 +803,12 @@ body.platform-darwin .app.sidebar-hidden .view-header {
   overflow-y: auto;
   width: min(760px, 100%);
   margin: 0 auto;
-  padding: 8vh 24px 40px;
+  /* 问候语和输入框放在偏上一点的正中：贴着顶部时上方空着一大片，选模型面板往上弹也没地方。
+     safe：窗口矮到放不下时退回从顶部排，不会把上面的内容推出滚动范围 */
+  padding: 24px 24px 12vh;
   display: flex;
   flex-direction: column;
+  justify-content: safe center;
   gap: 18px;
 }
 
@@ -2279,6 +2282,7 @@ code.md-inline-code {
   left: 0;
   bottom: calc(100% + 8px);
   width: 340px;
+  /* 实际的最大高度和往上 / 往下弹由 modelpicker.js 按按钮上下还剩多少空间算 */
   max-height: 480px;
   padding: 10px;
   display: flex;
@@ -2286,7 +2290,14 @@ code.md-inline-code {
   gap: 12px;
 }
 
+.picker-popover.opens-down {
+  top: calc(100% + 8px);
+  bottom: auto;
+}
+
 .picker-section {
+  /* 面板被限高时整个面板滚，不把模型列表挤扁 */
+  flex: none;
   display: flex;
   flex-direction: column;
   gap: 5px;
@@ -3672,7 +3683,7 @@ code.md-inline-code {
   }
 
   .new-task-body {
-    padding: 6vh 16px 32px;
+    padding: 16px 16px 10vh;
   }
 
   .view-header {

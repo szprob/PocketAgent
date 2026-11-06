@@ -109,6 +109,40 @@ results.image = await platform.imageSource("/api/file/raw?path=a.png");
 process.stdout.write(JSON.stringify(results));
 """
 
+POPOVER_SCRIPT = r"""
+const { placePopover, resetPopoverPlacement } = await import(`${shared}/popover.js`);
+// 只摆位置要用到的几样：祖先链、计算样式、矩形。弹层贴在按钮左边，宽 340
+const rectOf = (top, bottom, left = 0, right = 1000) => ({ top, bottom, left, right, width: right - left, height: bottom - top });
+const makeCase = ({ windowHeight, windowWidth = 1000, containerTop, anchorTop, anchorLeft = 100, natural }) => {
+  globalThis.document = { body: { tag: "body" } };
+  globalThis.window = { innerHeight: windowHeight, innerWidth: windowWidth, getComputedStyle: (node) => node.computed };
+  const container = { parentElement: document.body, computed: { overflowX: "hidden", overflowY: "auto" }, getBoundingClientRect: () => rectOf(containerTop, windowHeight, 0, windowWidth) };
+  const row = { parentElement: container, computed: { overflowX: "visible", overflowY: "visible" } };
+  const anchor = { parentElement: row, getBoundingClientRect: () => rectOf(anchorTop, anchorTop + 30, anchorLeft, anchorLeft + 120) };
+  const classes = new Set();
+  const popover = {
+    style: {},
+    scrollHeight: natural,
+    classList: { toggle: (name, on) => (on ? classes.add(name) : classes.delete(name)), remove: (name) => classes.delete(name) },
+    get offsetLeft() { return Number.parseFloat(this.style.left || "0"); },
+    getBoundingClientRect() { const left = anchorLeft + this.offsetLeft; return rectOf(0, 0, left, left + 340); },
+  };
+  const placement = placePopover(popover, anchor, { gap: 8, margin: 12, maxHeight: 480 });
+  return { placement, opensDown: classes.has("opens-down"), maxHeight: popover.style.maxHeight, left: popover.style.left, reset: () => { resetPopoverPlacement(popover); return { opensDown: classes.has("opens-down"), maxHeight: popover.style.maxHeight, left: popover.style.left }; } };
+};
+
+// 聊天页：输入框在底部，上面空间够，往上弹，高度按内容
+results.roomAbove = makeCase({ windowHeight: 880, containerTop: 0, anchorTop: 800, natural: 400 });
+// 新任务页：按窗口算上面还够，但滚动容器从 300 开始，往上弹会被切掉，要往下弹
+results.clippedByContainer = makeCase({ windowHeight: 880, containerTop: 300, anchorTop: 420, natural: 400 });
+// 窗口矮，上下都不够：挑大的那边，限高让面板自己滚
+results.tight = makeCase({ windowHeight: 460, containerTop: 64, anchorTop: 246, natural: 400 });
+// 按钮靠右，面板往右会伸出窗口：往左挪回来
+const shifted = makeCase({ windowHeight: 880, containerTop: 0, anchorTop: 800, anchorLeft: 800, natural: 300 });
+results.shifted = { ...shifted, afterReset: shifted.reset() };
+process.stdout.write(JSON.stringify(results));
+"""
+
 
 class SharedFrontendTest(unittest.TestCase):
     @classmethod
@@ -187,6 +221,22 @@ class SharedFrontendTest(unittest.TestCase):
         self.assertEqual(results["zeroText"], '<span class="count">0</span>')
         self.assertEqual(results["calls"], [["GET", "/api/info"], ["POST", "/api/workspaces", {"path": "/tmp"}]])
         self.assertEqual(results["image"], "/api/file/raw?path=a.png&token=t")
+
+    def test_popover_placement(self) -> None:
+        results = self.run_script(POPOVER_SCRIPT)
+
+        self.assertEqual(results["roomAbove"]["placement"], "above")
+        self.assertFalse(results["roomAbove"]["opensDown"])
+        self.assertEqual(results["roomAbove"]["maxHeight"], "480px")
+        # 只看窗口会判成往上弹；算上会裁内容的滚动容器才知道上面只剩 100 像素
+        self.assertEqual(results["clippedByContainer"]["placement"], "below")
+        self.assertTrue(results["clippedByContainer"]["opensDown"])
+        # 上面 246-64-20=162，下面 460-276-20=164：往下，限高 164
+        self.assertEqual(results["tight"]["placement"], "below")
+        self.assertEqual(results["tight"]["maxHeight"], "164px")
+        # 右边界 1000-12=988，面板本来到 800+340=1140：左移 152
+        self.assertEqual(results["shifted"]["left"], "-152px")
+        self.assertEqual(results["shifted"]["afterReset"], {"opensDown": False, "maxHeight": "", "left": ""})
 
 
 class StylesheetSyntaxTest(unittest.TestCase):

@@ -3,6 +3,7 @@
 import { sendJson } from "./api.js";
 import { button, el, formatTokens } from "./dom.js";
 import { icon } from "./icons.js";
+import { placePopover } from "./static/js/shared/popover.js";
 import { state } from "./state.js";
 
 export const REASONING_LABELS = {
@@ -42,6 +43,11 @@ export class ModelPicker {
     });
     this.popover.addEventListener("click", (event) => event.stopPropagation());
     document.addEventListener("click", () => this.close());
+    window.addEventListener("resize", () => {
+      if (this.isOpen()) {
+        this.place();
+      }
+    });
   }
 
   setModels(models, fallbackModel) {
@@ -54,6 +60,7 @@ export class ModelPicker {
     this.renderTrigger();
     if (this.isOpen()) {
       this.renderPopover();
+      this.place();
     }
   }
 
@@ -90,6 +97,12 @@ export class ModelPicker {
     }
     this.renderPopover();
     this.popover.classList.remove("hidden");
+    this.place();
+  }
+
+  // 往上还是往下弹看按钮上下哪边空间大：新任务页的输入框离顶上近，往上弹会被滚动容器切掉
+  place() {
+    placePopover(this.popover, this.trigger, { gap: 8, maxHeight: 480 });
   }
 
   selectedModel() {
@@ -135,6 +148,7 @@ export class ModelPicker {
         this.picked = true;
         this.renderTrigger();
         this.renderPopover();
+        this.place();
         this.onSelectModel?.(model.id);
       });
       section.append(item);
@@ -202,6 +216,7 @@ export class ModelPicker {
     this.renderTrigger();
     if (this.isOpen()) {
       this.renderPopover();
+      this.place();
     }
   }
 }
