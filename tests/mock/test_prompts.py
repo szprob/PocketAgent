@@ -42,6 +42,15 @@ class SystemPromptTest(unittest.TestCase):
         self.assertIn("可用工具：bash", prompt)
         self.assertIn("bash 命令不在沙箱里", prompt)
 
+    def test_general_identity_and_when_to_stop_searching(self) -> None:
+        """生活类问题不推脱；查资料够了就答，连着失败就停下来说卡在哪。偏弱的模型靠这几条才不会搜个没完。"""
+        prompt = self.build()
+
+        self.assertNotIn("代码仓库里工作的编程助手", prompt)
+        self.assertIn("不是编程问题也照常认真回答", prompt)
+        self.assertIn("搜两三次、拿到够用的信息就直接回答", prompt)
+        self.assertIn("连着失败两次", prompt)
+
     def test_git_repository_worktree_and_ephemeral_notes(self) -> None:
         (self.workspace / ".git").mkdir()
         worktree = {"origin": "/src/origin", "branch": "pocketagent/task", "base_commit": "abc123"}

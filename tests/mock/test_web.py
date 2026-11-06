@@ -1111,8 +1111,11 @@ class WebAccessTest(WebTestBase):
         self.assertTrue(config["sandbox_network"])
         if web_session.agent.context.tool_context.sandbox is not None:
             self.assertTrue(web_session.agent.context.tool_context.sandbox.allow_network)
-            self.assertEqual(web_session.agent.context.tool_context.sandbox.writable_roots, [trusted.resolve()])
-            self.assertIn(trusted.resolve(), web_session.agent.context.tool_context.sandbox.writable_roots)
+            # 和密钥目录重叠的那个免问目录不进；后面跟着的是项目记忆目录（见 sandbox_writable_roots）
+            writable_roots = web_session.agent.context.tool_context.sandbox.writable_roots
+            self.assertEqual(writable_roots[0], trusted.resolve())
+            self.assertNotIn(secret_home, writable_roots)
+            self.assertEqual(writable_roots[1:], [web_session.agent.context.tool_context.memory_dir])
 
 
 class WebSkillsMemoryTest(WebTestBase):

@@ -101,11 +101,10 @@ class AgentContext:
         return self.session.messages
 
     def record_usage(self, usage: Usage) -> None:
-        """模型刚回复完（assistant 消息已经追加进历史）时调用：真实占用 = 这次的输入 + 留在历史里的输出。
-        思考 token 不回传给模型，要减掉。"""
-        kept_output = max(usage.completion_tokens - usage.reasoning_tokens, 0)
+        """模型刚回复完（assistant 消息已经追加进历史）时调用：真实占用 = 这次的输入 + 这次的输出。
+        思考内容也留在历史里传回给模型，所以输出整个算上（OpenRouter 不传思考，会多估一点，下次回复就校正回来）。"""
         self.token_anchor = TokenAnchor(
-            tokens=usage.prompt_tokens + kept_output,
+            tokens=usage.prompt_tokens + usage.completion_tokens,
             message_count=len(self.messages),
             history_version=self.history_version,
         )

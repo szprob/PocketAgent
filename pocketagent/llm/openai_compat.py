@@ -14,7 +14,15 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from pocketagent.llm.base import ContextOverflowError, LLMResponse, StreamListener, ToolCall, Usage, is_context_overflow
+from pocketagent.llm.base import (
+    ContextOverflowError,
+    LLMResponse,
+    StreamListener,
+    ToolCall,
+    Usage,
+    is_context_overflow,
+    without_reasoning,
+)
 
 MAX_ATTEMPTS = 4
 BASE_DELAY_SECONDS = 1.0
@@ -194,6 +202,9 @@ class OpenAICompatibleProvider:
         return derived
 
     def _build_request(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
+        if self.reasoning_style == "openrouter":
+            # OpenRouter 保留思考要的是带签名的 reasoning_details，我们只存了纯文字，发了也用不上
+            messages = without_reasoning(messages)
         request: dict[str, Any] = {
             "model": self.model,
             "messages": messages,

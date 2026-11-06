@@ -263,10 +263,20 @@ def wrap_command(command: str, policy: SandboxPolicy | None) -> SandboxCommand:
     )
 
 
+# 沙箱里根本跑不起来的系统程序（setuid 或要特权），换什么写法都没用，只能到沙箱外跑
+PRIVILEGED_PROGRAMS = ("/bin/ps", "/usr/bin/crontab", "/usr/bin/top", "/usr/sbin/lsof", "kill: (")
+
+
 def denial_hint(output: str, policy: SandboxPolicy | None) -> str:
     if policy is None or not any(hint in output for hint in DENIAL_HINTS):
         return ""
+    if "Operation not permitted" in output and any(program in output for program in PRIVILEGED_PROGRAMS):
+        return (
+            "\n（ps、crontab、lsof、给别的进程发信号这类要特权的操作在沙箱里一律跑不了，不是写法问题；"
+            "需要的话直接用 outside_sandbox=true 执行。）"
+        )
     return (
-        f"\n（可能是被沙箱拦了：命令只能写工作目录、临时目录和缓存目录，{policy.network_summary()}，读不到密钥目录。"
-        "确实需要的话，用 outside_sandbox=true 再执行一次，会请用户确认。）"
+        f"\n（可能是被沙箱拦了：命令只能写工作目录、技能和记忆目录、临时目录和缓存目录，"
+        f"{policy.network_summary()}，读不到密钥目录（包括 PocketAgent 自己的配置目录）。"
+        "确实需要的话，用 outside_sandbox=true 再执行一次。）"
     )

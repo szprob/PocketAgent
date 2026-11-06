@@ -58,6 +58,24 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
     def tearDown(self) -> None:
         self.directories.cleanup()
 
+    async def test_reasoning_is_sent_back_on_the_next_step(self) -> None:
+        """带工具的多步里，模型下一步要看得到自己上一步的思考，不然每步都从头想、同样的搜索反复搜。"""
+        harness = build_harness(
+            self.directories,
+            [
+                LLMResponse(reasoning="先列目录看看有什么", tool_calls=[tool_call("call_1", "list_dir", "{}")]),
+                LLMResponse(text="看完了"),
+            ],
+        )
+
+        await harness.agent.run_turn("看看目录")
+
+        second_request = harness.provider.received_messages[1]
+        assistant = [message for message in second_request if message["role"] == "assistant"][0]
+        self.assertEqual(assistant["reasoning_content"], "先列目录看看有什么")
+        # 没有思考内容的回复不加这个字段
+        self.assertNotIn("reasoning_content", harness.agent.context.messages[-1])
+
     async def test_tool_call_then_final_answer(self) -> None:
         (self.directories.workspace / "hello.txt").write_text("hi there\n", encoding="utf-8")
         harness = build_harness(

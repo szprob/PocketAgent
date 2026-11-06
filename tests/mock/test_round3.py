@@ -32,6 +32,19 @@ class ReasoningStyleTest(unittest.TestCase):
         )
         return provider._build_request([{"role": "user", "content": "hi"}], [])
 
+    def test_reasoning_content_is_dropped_only_for_openrouter(self) -> None:
+        messages = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": None, "reasoning_content": "想一想", "tool_calls": []},
+        ]
+        for style, expected in (("top", True), ("openrouter", False)):
+            with self.subTest(style=style):
+                provider = OpenAICompatibleProvider(model="m", base_url="https://example.com/v1", api_key="k", reasoning_style=style)
+                sent = provider._build_request(messages, [])["messages"]
+                self.assertEqual("reasoning_content" in sent[1], expected)
+        # 原消息不动：会话里还要留着
+        self.assertEqual(messages[1]["reasoning_content"], "想一想")
+
     def test_top_level_style(self) -> None:
         request = self.build("top", "low")
 
@@ -166,6 +179,20 @@ class ShrinkForSummaryTest(unittest.TestCase):
         ids_called = {call["id"] for message in shrunk for call in message.get("tool_calls") or []}
         ids_answered = {message["tool_call_id"] for message in shrunk if message["role"] == "tool"}
         self.assertEqual(ids_called, ids_answered)
+
+
+    def test_reasoning_is_left_out_of_the_summary_request(self) -> None:
+        """思考过程不进摘要请求：摘要只要事实，而且按思考算长度会白丢对话。"""
+        messages = [
+            {"role": "system", "content": "s"},
+            {"role": "user", "content": "需求"},
+            {"role": "assistant", "content": "做完了", "reasoning_content": "想" * 50000},
+        ]
+
+        shrunk = shrink_for_summary(messages, limit_tokens=1500)
+
+        self.assertEqual(shrunk[-1], {"role": "assistant", "content": "做完了"})
+        self.assertIn("reasoning_content", messages[-1])
 
 
 class IncrementalCompactionTest(unittest.TestCase):

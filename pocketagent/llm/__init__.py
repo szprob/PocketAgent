@@ -7,6 +7,7 @@ from pocketagent.llm.base import (
     ToolCall,
     Usage,
     build_assistant_message,
+    without_reasoning,
 )
 from pocketagent.llm.scripted import ScriptedProvider
 
@@ -20,4 +21,5 @@ __all__ = [
     "ToolCall",
     "Usage",
     "build_assistant_message",
+    "without_reasoning",
 ]

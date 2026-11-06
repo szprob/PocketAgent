@@ -96,8 +96,26 @@ class LLMProvider(Protocol):
     ) -> LLMResponse: ...
 
 
+# assistant 消息里存模型思考内容的字段，用 OpenAI 兼容接口通行的名字。
+# 带工具的请求要把之前的思考原样传回（DeepSeek 文档明确要求，Kimi、GLM 的交错思考也一样）：
+# 不传的话模型每调一次工具都从头想一遍，忘了已经查到什么、本来打算怎么做，同样的搜索反复搜。
+# 不认这个字段、或者要的是别的格式的接口（OpenRouter 要带签名的 reasoning_details，Anthropic 要 thinking 块），
+# 由各自的 provider 在发送前用 without_reasoning 去掉。
+REASONING_FIELD = "reasoning_content"
+
+
+def without_reasoning(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """去掉 assistant 消息里的思考内容，不改原消息。"""
+    cleaned = []
+    for message in messages:
+        if REASONING_FIELD in message:
+            message = {key: value for key, value in message.items() if key != REASONING_FIELD}
+        cleaned.append(message)
+    return cleaned
+
+
 def build_assistant_message(response: LLMResponse) -> dict[str, Any]:
-    """把一次模型回复转成要追加进对话历史的 assistant 消息。思考内容不回传给模型。"""
+    """把一次模型回复转成要追加进对话历史的 assistant 消息，思考内容一起留下（见 REASONING_FIELD）。"""
     content: str | None = response.text
     if not content and response.tool_calls:
         # 只调工具不说话时 OpenAI 格式要求 content 为 null
@@ -112,4 +130,6 @@ def build_assistant_message(response: LLMResponse) -> dict[str, Any]:
             }
             for call in response.tool_calls
         ]
+    if response.reasoning:
+        message[REASONING_FIELD] = response.reasoning
     return message

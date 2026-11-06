@@ -11,6 +11,8 @@ import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path, PureWindowsPath
 
+from pocketagent.core.agent import sandbox_writable_roots
+from pocketagent.knowledge.skills import Skill
 from pocketagent.llm import LLMResponse
 from pocketagent.safety.network_proxy import network_proxy
 from pocketagent.safety.permissions import (
@@ -191,6 +193,46 @@ class SeatbeltSandboxTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((trusted / "a.txt").read_text(), "ok\n")
 
+    def test_skill_and_memory_dirs_are_writable_but_the_config_beside_them_is_not(self) -> None:
+        """技能脚本写自己的凭证缓存、bash 读写项目记忆都不该被拦；同在 ~/.pocketagent 下的配置（有 API Key）照旧读不到。"""
+        memory = self.secret / "projects" / "ws" / "memory"
+        memory.mkdir(parents=True)
+        (memory / "MEMORY.md").write_text("- 一条记忆", encoding="utf-8")
+        skill_dir = self.outside / "skills" / "report"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("---\nname: report\n---", encoding="utf-8")
+        skill = Skill(name="report", description="", path=skill_dir / "SKILL.md", source="用户")
+        roots = sandbox_writable_roots([], [self.secret], [skill], memory)
+        policy = SandboxPolicy(workspace=self.workspace, secret_dirs=[self.secret], writable_roots=roots)
+
+        token = run_in_sandbox(f"mkdir -p '{skill_dir}/outputs/_token' && echo t > '{skill_dir}/outputs/_token/token.lock'", policy)
+        memory_rw = run_in_sandbox(f"cat '{memory}/MEMORY.md' && echo new > '{memory}/note.md'", policy)
+        config = run_in_sandbox(f"cat '{self.secret / 'key'}'", policy)
+
+        self.assertEqual(token.returncode, 0, token.stderr)
+        self.assertEqual((skill_dir / "outputs" / "_token" / "token.lock").read_text(), "t\n")
+        self.assertEqual(memory_rw.returncode, 0, memory_rw.stderr)
+        self.assertIn("一条记忆", memory_rw.stdout)
+        self.assertNotIn("TOP-SECRET", config.stdout)
+        self.assertIn("Operation not permitted", config.stderr)
+
+
+class SandboxWritableRootsTest(unittest.TestCase):
+    def test_skills_and_memory_join_trusted_dirs_outside_secrets(self) -> None:
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, True)
+        secret = root / ".pocketagent"
+        trusted = root / "data"
+        skill = Skill(name="s", description="", path=root / "skills" / "s" / "SKILL.md", source="用户")
+        memory = secret / "projects" / "ws" / "memory"
+
+        roots = sandbox_writable_roots([trusted, secret], [secret], [skill], memory)
+        without_memory = sandbox_writable_roots([], [secret], [], None)
+
+        # 和密钥目录重叠的免问目录照旧不进；技能目录、记忆目录进
+        self.assertEqual(roots, [trusted.resolve(), root / "skills" / "s", memory])
+        self.assertEqual(without_memory, [])
+
 
 class ScratchWorkspaceSandboxTest(unittest.TestCase):
     """临时任务的工作区在 ~/.pocketagent 下，而那是密钥目录：沙箱要单独把它放开。"""
@@ -260,6 +302,8 @@ class BashSandboxIntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("outside_sandbox=true", denial_hint("touch: /x: Operation not permitted", policy))
         self.assertEqual(denial_hint("touch: /x: Operation not permitted", None), "")
         self.assertEqual(denial_hint("all good", policy), "")
+        # ps 这类在沙箱里根本跑不了：直说，别让模型换写法硬试
+        self.assertIn("要特权的操作", denial_hint("bash: /bin/ps: Operation not permitted", policy))
 
     @unittest.skipUnless(available_sandbox() == "seatbelt", "只在有 sandbox-exec 的 macOS 上测")
     async def test_bash_tool_injects_the_allowlist_proxy_environment(self) -> None:

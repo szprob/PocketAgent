@@ -17,7 +17,7 @@ from typing import Any
 
 from pocketagent.core.tokens import estimate_tokens
 from pocketagent.knowledge.skills import loaded_skill_blocks
-from pocketagent.llm.base import LLMProvider, LLMResponse, SilentListener
+from pocketagent.llm.base import LLMProvider, LLMResponse, SilentListener, without_reasoning
 
 SUMMARY_INSTRUCTION = """请把上面的对话压缩成一份交接摘要，让接手的人不看原始记录也能继续工作。必须包含：
 1. 用户的原始需求和后来补充的要求（尽量保留原话）
@@ -63,7 +63,8 @@ async def summarize_history(provider: LLMProvider, messages: list[dict[str, Any]
         # 只有旧摘要、没有新增对话，合并是白做一次还可能丢字，直接沿用
         return previous
     instruction = MERGE_SUMMARY_INSTRUCTION if previous is not None else SUMMARY_INSTRUCTION
-    request_messages = messages + [{"role": "user", "content": instruction}]
+    # 摘要要的是做了什么、查到什么，不需要思考过程；去掉也免得把这次请求撑得更大
+    request_messages = without_reasoning(messages) + [{"role": "user", "content": instruction}]
     # 摘要不往界面上流式输出
     response: LLMResponse = await provider.complete(request_messages, tools=[], listener=SilentListener())
     summary = response.text.strip()
@@ -101,10 +102,11 @@ def _drop_oldest_exchange(messages: list[dict[str, Any]], start: int) -> bool:
 def shrink_for_summary(messages: list[dict[str, Any]], limit_tokens: int, protected: int = 2) -> list[dict[str, Any]]:
     """要总结的历史本身可能已经超过上下文（接口报超长时就是这样）。
     先把每条长消息截短，还超就从最早开始丢；前 protected 条（系统提示和第一条用户消息，
-    或者系统提示和旧摘要）永不截短、永不丢。"""
+    或者系统提示和旧摘要）永不截短、永不丢。
+    思考内容先去掉（摘要用不上，见 summarize_history），不然按它算长度会白白多丢几段对话。"""
     shrunk = [
         message if index < protected else _truncated_copy(message)
-        for index, message in enumerate(messages)
+        for index, message in enumerate(without_reasoning(messages))
     ]
     while estimate_tokens(shrunk) > limit_tokens and _drop_oldest_exchange(shrunk, protected):
         pass

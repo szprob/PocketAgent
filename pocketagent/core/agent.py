@@ -120,6 +120,24 @@ def sandbox_network_text(settings: Settings) -> str:
     return "沙箱里不能联网"
 
 
+def sandbox_writable_roots(
+    trusted_dirs: list[Path], secret_dirs: list[Path], skills: list[Skill], memory_dir: Path | None
+) -> list[Path]:
+    """bash 在沙箱里除了工作目录还能写哪儿。
+
+    - 免问目录：和密钥目录有父子关系的不算，bash 在沙箱里照旧碰不到密钥。
+    - 技能自己的目录：技能脚本常把凭证、缓存、产物写在自己目录里（比如刷新登录凭证要写 outputs/_token/），
+      拦了模型就只能绕到沙箱外重跑一遍，白白多一轮还多一个报错。都是用户自己装的技能，和工作目录一样对待。
+    - 项目记忆目录：系统提示词里说它读写都不用确认，bash 也得能读能写（它在 ~/.pocketagent 下，
+      落在密钥目录里的可写目录会被单独放开读，见 SandboxPolicy.writable_inside_secret）。
+    """
+    roots = trusted_dirs_outside_secrets(trusted_dirs, secret_dirs)
+    roots += [skill.directory for skill in skills]
+    if memory_dir is not None:
+        roots.append(memory_dir)
+    return roots
+
+
 def build_tool_context(
     settings: Settings,
     session: Session,
@@ -151,8 +169,7 @@ def build_tool_context(
             network_allowlist=list(settings.sandbox_network_allowlist),
             secret_dirs=secret_dirs,
             readable_exceptions=extra_read_dirs,
-            # 免问目录和密钥目录重叠时不进沙箱的可写范围：bash 在沙箱里照旧碰不到密钥
-            writable_roots=trusted_dirs_outside_secrets(trusted_dirs, secret_dirs),
+            writable_roots=sandbox_writable_roots(trusted_dirs, secret_dirs, skills, memory_dir),
             worktree_git_dirs=[Path(path) for path in (settings.worktree or {}).get("git_dirs", [])],
         )
     return ToolContext(

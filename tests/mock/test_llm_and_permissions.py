@@ -70,6 +70,13 @@ class StreamAccumulatorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(message["tool_calls"][0]["function"]["arguments"], "{}")
         self.assertEqual(build_assistant_message(LLMResponse(text=""))["content"], "")
 
+    def test_assistant_message_keeps_reasoning_only_when_there_is_some(self) -> None:
+        with_reasoning = build_assistant_message(LLMResponse(text="好", reasoning="先想清楚"))
+        without = build_assistant_message(LLMResponse(text="好"))
+
+        self.assertEqual(with_reasoning["reasoning_content"], "先想清楚")
+        self.assertNotIn("reasoning_content", without)
+
 
 class PermissionModeTest(unittest.TestCase):
     def test_decision_table(self) -> None:

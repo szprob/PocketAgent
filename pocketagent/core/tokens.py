@@ -47,6 +47,8 @@ def _content_tokens(content: Any) -> int:
 
 def estimate_message_tokens(message: dict[str, Any]) -> int:
     total = MESSAGE_OVERHEAD_TOKENS + _content_tokens(message.get("content"))
+    # 思考内容随 assistant 消息传回给模型（见 llm/base.py 的 REASONING_FIELD），也占上下文
+    total += estimate_text_tokens(message.get("reasoning_content") or "")
     for call in message.get("tool_calls") or []:
         function = call.get("function", {})
         total += estimate_text_tokens(function.get("name", "")) + estimate_text_tokens(function.get("arguments", ""))

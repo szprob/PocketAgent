@@ -75,9 +75,9 @@ class TokenAnchorTest(unittest.TestCase):
         anchored = self.context.estimated_context_tokens()
         self.context.messages.append({"role": "tool", "tool_call_id": "c1", "content": "结果" * 50})
 
-        # 思考 token 不回传，不算进去
-        self.assertEqual(anchored, 5100)
-        self.assertEqual(self.context.estimated_context_tokens(), 5100 + 4 + 70)
+        # 思考内容也留在历史里传回给模型，整个输出都算进去
+        self.assertEqual(anchored, 5300)
+        self.assertEqual(self.context.estimated_context_tokens(), 5300 + 4 + 70)
 
     def test_anchor_is_dropped_when_history_is_replaced(self) -> None:
         self.context.record_usage(Usage(prompt_tokens=90000, completion_tokens=10))
