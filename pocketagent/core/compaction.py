@@ -18,6 +18,7 @@ from typing import Any
 from pocketagent.core.tokens import estimate_tokens
 from pocketagent.knowledge.skills import loaded_skill_blocks
 from pocketagent.llm.base import (
+    REASONING_FIELD,
     LLMProvider,
     LLMResponse,
     SilentListener,
@@ -25,18 +26,33 @@ from pocketagent.llm.base import (
     without_reasoning,
 )
 
-SUMMARY_INSTRUCTION = """请把上面的对话压缩成一份交接摘要，让接手的人不看原始记录也能继续工作。必须包含：
-1. 用户的原始需求和后来补充的要求（尽量保留原话）
-2. 已经完成了什么，改了哪些文件、关键改动是什么
-3. 读过的关键文件、重要发现、踩过的坑
-4. 还没做完的事和下一步计划
+# 摘要宁可详细：压缩之后模型只看得到它，漏掉的细节（路径、报错原文、用户原话、试过不行的办法）就再也找不回来，
+# 只能重新查、重新踩一遍坑。所以要求写具体、写依据，不限字数
+SUMMARY_DETAIL_RULES = """写法要求：
+- 宁可详细也不要漏，不用追求简短；内容多就写长，按上面几节分标题写
+- 写具体的东西：文件路径、函数名、命令、报错原文、关键数字、链接、配置项，照原样写，不要概括成「改了一些文件」「遇到了报错」
+- 结论要带依据：怎么确认的（跑了什么测试、看了哪段输出），没验证的标明没验证
+- assistant 消息里「〔当时的思考〕」是模型当时的思考过程，从里面提取定下的计划、排除过的方向和原因、还没验证的猜测，不要照抄推理过程"""
+
+SUMMARY_SECTIONS = """1. 用户的需求：原始需求和后来补充、纠正的要求，尽量保留原话；用户明确说过不要做的事
+2. 已经完成的工作：做了什么、改了哪些文件、每处关键改动是什么、怎么验证的
+3. 重要发现：读过的关键文件和其中的要点、查到的资料（带来源）、确认过的事实
+4. 试过但不行的办法和踩过的坑：为什么不行，免得接手后再试一遍
+5. 当时的计划和判断：思考里定下的做法、排除过的方向、还没验证的猜测
+6. 还没做完的事和下一步：具体到下一步要做什么、在哪个文件、还卡在什么地方"""
+
+SUMMARY_INSTRUCTION = f"""请把上面的对话压缩成一份交接摘要，让接手的人不看原始记录也能接着干，不用重新查一遍。包含：
+{SUMMARY_SECTIONS}
+
+{SUMMARY_DETAIL_RULES}
 只输出摘要本身，不要调用工具。"""
 
-MERGE_SUMMARY_INSTRUCTION = """上面带「（之前的对话已压缩，以下是摘要）」开头那条消息是上一次的交接摘要，它之后的消息是摘要之后新增的对话。请把两边合并成一份新的交接摘要，让接手的人不看原始记录也能继续工作：
-1. 旧摘要里的关键信息原样保留：用户的原始需求和补充要求、已完成的工作、改过的文件、读过的关键文件、踩过的坑，不要省略、不要改写成更模糊的说法
-2. 把新增对话里发生的事并进去：新完成的工作、新改的文件、新读的关键文件、新踩的坑
-3. 还没做完的事和下一步计划按最新情况更新
-4. 旧摘要和新增对话有出入时，以新增对话为准
+MERGE_SUMMARY_INSTRUCTION = f"""上面带「（之前的对话已压缩，以下是摘要）」开头那条消息是上一次的交接摘要，它之后的消息是摘要之后新增的对话。请把两边合并成一份新的交接摘要，让接手的人不看原始记录也能接着干：
+- 旧摘要里的信息原样保留，不要省略、不要改写成更模糊的说法；只有被新增对话推翻的才改，以新增对话为准
+- 把新增对话里发生的事按下面几节并进去，还没做完的事和下一步按最新情况更新
+{SUMMARY_SECTIONS}
+
+{SUMMARY_DETAIL_RULES}
 只输出合并后的摘要本身，不要调用工具。"""
 
 SUMMARY_PREFIX = "（之前的对话已压缩，以下是摘要）\n\n"
@@ -45,6 +61,12 @@ RESUME_HINT = "\n\n请根据摘要继续完成任务。"
 PRESERVED_SKILLS_HEADER = "\n\n（压缩前加载过的技能，完整说明原样保留如下）\n\n"
 # 给模型做摘要时，单条消息最多保留这么多字（长的工具输出头尾各留一半）
 SUMMARY_MESSAGE_LIMIT_CHARS = 4000
+# 每一步的思考最多带这么多字进摘要请求：思考动辄上万字，全带会把请求撑满、挤掉更早的对话；
+# 结论和计划多在后半段，所以尾巴留得多
+SUMMARY_REASONING_HEAD_CHARS = 1000
+SUMMARY_REASONING_TAIL_CHARS = 2000
+REASONING_LABEL = "〔当时的思考〕"
+REPLY_LABEL = "〔回复〕"
 
 
 def previous_summary_text(messages: list[dict[str, Any]]) -> str | None:
@@ -69,14 +91,49 @@ async def summarize_history(provider: LLMProvider, messages: list[dict[str, Any]
         # 只有旧摘要、没有新增对话，合并是白做一次还可能丢字，直接沿用
         return previous
     instruction = MERGE_SUMMARY_INSTRUCTION if previous is not None else SUMMARY_INSTRUCTION
-    # 摘要要的是做了什么、查到什么，不需要思考过程；去掉也免得把这次请求撑得更大
-    request_messages = without_reasoning(messages) + [{"role": "user", "content": instruction}]
+    request_messages = with_reasoning_as_text(messages) + [{"role": "user", "content": instruction}]
     # 摘要不往界面上流式输出
     response: LLMResponse = await provider.complete(request_messages, tools=[], listener=SilentListener())
     summary = response.text.strip()
     if not summary:
         raise RuntimeError("压缩失败：模型返回了空摘要")
     return summary
+
+
+def with_reasoning_as_text(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """做摘要时把每一步的思考（裁短后）写进 assistant 的正文，其他格式的思考字段去掉。不改原消息。
+
+    思考里有当时的计划、排除过的方向和还没验证的猜测，摘要要用。不能留在 reasoning_content 里交给接口：
+    有的接口直接忽略这个字段（DeepSeek 官方），OpenRouter / Claude 的加密块模型也读不出来，所以转成正文。
+    已经转过的消息没有思考字段了，再调一次不会重复加。"""
+    converted = []
+    for message, original in zip(without_reasoning(messages), messages):
+        reasoning = str(original.get(REASONING_FIELD) or "").strip()
+        if original.get("role") == "assistant" and reasoning:
+            reply = _content_text(message.get("content"))
+            parts = [f"{REASONING_LABEL}\n{_clip_reasoning(reasoning)}"]
+            if reply:
+                parts.append(f"{REPLY_LABEL}\n{reply}")
+            message = {**message, "content": "\n\n".join(parts)}
+        converted.append(message)
+    return converted
+
+
+def _clip_reasoning(text: str) -> str:
+    limit = SUMMARY_REASONING_HEAD_CHARS + SUMMARY_REASONING_TAIL_CHARS
+    if len(text) <= limit:
+        return text
+    omitted = len(text) - limit
+    head, tail = text[:SUMMARY_REASONING_HEAD_CHARS], text[-SUMMARY_REASONING_TAIL_CHARS:]
+    return f"{head}\n…（中间省略 {omitted} 字）…\n{tail}"
+
+
+def _content_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(str(part.get("text", "")) for part in content if part.get("type") == "text")
+    return ""
 
 
 def _truncated_copy(message: dict[str, Any]) -> dict[str, Any]:
@@ -109,11 +166,9 @@ def shrink_for_summary(messages: list[dict[str, Any]], limit_tokens: int, protec
     """要总结的历史本身可能已经超过上下文（接口报超长时就是这样）。
     先把每条长消息截短，还超就从最早开始丢；前 protected 条（系统提示和第一条用户消息，
     或者系统提示和旧摘要）永不截短、永不丢。
-    思考内容先去掉（摘要用不上，见 summarize_history），不然按它算长度会白白多丢几段对话。"""
-    shrunk = [
-        message if index < protected else _truncated_copy(message)
-        for index, message in enumerate(without_reasoning(messages))
-    ]
+    思考内容裁短后写进正文（见 with_reasoning_as_text），长度按转换后的算。"""
+    truncated = [message if index < protected else _truncated_copy(message) for index, message in enumerate(messages)]
+    shrunk = with_reasoning_as_text(truncated)
     while estimate_tokens(shrunk) > limit_tokens and _drop_oldest_exchange(shrunk, protected):
         pass
     return shrunk

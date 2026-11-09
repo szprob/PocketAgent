@@ -179,6 +179,10 @@ class CompactionDropsOldReasoningTest(unittest.IsolatedAsyncioTestCase):
         await harness.agent.compact()
 
         self.assertFalse(any("reasoning_content" in message for message in harness.agent.context.messages))
+        # 思考被压进摘要：做摘要的请求里，思考写进了 assistant 的正文
+        summary_request = harness.provider.received_messages[2]
+        self.assertIn("〔当时的思考〕\n第二轮的思考", [message.get("content", "").split("\n\n")[0] for message in summary_request])
+        self.assertIn("宁可详细也不要漏", summary_request[-1]["content"])
 
     def test_the_turn_in_progress_keeps_its_reasoning(self) -> None:
         messages = [

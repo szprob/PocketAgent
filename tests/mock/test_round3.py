@@ -15,6 +15,7 @@ from pocketagent.core.compaction import (
     estimate_tokens,
     previous_summary_text,
     shrink_for_summary,
+    with_reasoning_as_text,
 )
 from pocketagent.core.nodes import _snapshot_length
 from pocketagent.core.session import SessionStore
@@ -262,18 +263,32 @@ class ShrinkForSummaryTest(unittest.TestCase):
         self.assertEqual(ids_called, ids_answered)
 
 
-    def test_reasoning_is_left_out_of_the_summary_request(self) -> None:
-        """思考过程不进摘要请求：摘要只要事实，而且按思考算长度会白丢对话。"""
+    def test_reasoning_goes_into_the_summary_request_as_clipped_text(self) -> None:
+        """思考里有计划和排除过的方向，要进摘要；裁短后写进正文（有的接口忽略 reasoning_content），
+        按裁短后的长度算，不至于为了一大段思考丢掉更早的对话。"""
+        thinking = "先" + "想" * 50000 + "决定改 a.py"
         messages = [
             {"role": "system", "content": "s"},
             {"role": "user", "content": "需求"},
-            {"role": "assistant", "content": "做完了", "reasoning_content": "想" * 50000},
+            {"role": "assistant", "content": "做完了", "reasoning_content": thinking, "reasoning_details": [{"data": "x"}]},
+            {"role": "assistant", "content": None, "reasoning_content": "再查一下", "tool_calls": [{"id": "c1"}]},
         ]
 
-        shrunk = shrink_for_summary(messages, limit_tokens=1500)
+        shrunk = shrink_for_summary(messages, limit_tokens=3000)
 
-        self.assertEqual(shrunk[-1], {"role": "assistant", "content": "做完了"})
-        self.assertIn("reasoning_content", messages[-1])
+        reply = shrunk[2]["content"]
+        self.assertTrue(reply.startswith("〔当时的思考〕\n先"))
+        self.assertIn("决定改 a.py", reply)
+        self.assertIn("中间省略", reply)
+        self.assertTrue(reply.endswith("〔回复〕\n做完了"))
+        self.assertLess(len(reply), 4000)
+        self.assertNotIn("reasoning_content", shrunk[2])
+        self.assertNotIn("reasoning_details", shrunk[2])
+        self.assertEqual(shrunk[3]["content"], "〔当时的思考〕\n再查一下")
+        self.assertEqual(len(shrunk), 4)
+        # 原消息不动；再转一次不会重复加
+        self.assertEqual(messages[2]["reasoning_content"], thinking)
+        self.assertEqual(with_reasoning_as_text(shrunk), shrunk)
 
 
 class IncrementalCompactionTest(unittest.TestCase):

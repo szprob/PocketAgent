@@ -56,7 +56,7 @@
   各家要的格式不一样，按接口挑着发：OpenRouter 传回它返回的 `reasoning_details`（带签名 / 加密的思考块，流式时按 index 拼回去），
   Anthropic 传回带签名的 thinking / redacted_thinking 块并放回原位置，Gemini（Google 的 OpenAI 兼容接口）传回工具调用上的
   `extra_content.google.thought_signature`。压缩时旧的思考一律去掉（「跨轮保留」开着也一样，正在跑的这一轮除外），
-  做摘要时也不带。直连 OpenAI 的 GPT 走 Chat Completions，接口本身不返回思考，传不了
+  去掉之前先压进摘要：做摘要时每一步的思考裁到 3000 字左右写进正文，让模型提取里面的计划、排除过的方向和没验证的猜测。直连 OpenAI 的 GPT 走 Chat Completions，接口本身不返回思考，传不了
 - `visible: false` 的模型不出现在会话的模型列表里（已经在用它的任务不受影响）
 - 沙箱联网：`sandbox_network` 是整个打开；关着时 `sandbox_network_allowlist` 里的域名仍然可以访问
   （走 PocketAgent 进程里的本地代理，只认 HTTP(S)；`*.example.com` 连 `example.com` 和子域名一起放行，
