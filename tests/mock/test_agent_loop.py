@@ -76,6 +76,30 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
         # 没有思考内容的回复不加这个字段
         self.assertNotIn("reasoning_content", harness.agent.context.messages[-1])
 
+    async def test_earlier_turns_reasoning_is_sent_only_when_the_setting_is_on(self) -> None:
+        """之前几轮的思考默认不发（各家说法不一），设置里打开才发；这一轮工具调用之间的思考始终照发。"""
+        for across_turns, expected in [(False, None), (True, "上一轮的思考")]:
+            with self.subTest(reasoning_across_turns=across_turns):
+                harness = build_harness(
+                    self.directories,
+                    [
+                        LLMResponse(reasoning="上一轮的思考", text="第一轮答完"),
+                        LLMResponse(reasoning="这一轮先列目录", tool_calls=[tool_call("call_1", "list_dir", "{}")]),
+                        LLMResponse(text="第二轮答完"),
+                    ],
+                    reasoning_across_turns=across_turns,
+                )
+
+                await harness.agent.run_turn("第一个问题")
+                await harness.agent.run_turn("第二个问题")
+
+                last_request = harness.provider.received_messages[-1]
+                assistants = [message for message in last_request if message["role"] == "assistant"]
+                self.assertEqual(assistants[0].get("reasoning_content"), expected)
+                self.assertEqual(assistants[1]["reasoning_content"], "这一轮先列目录")
+                # 历史里照样留着，打开设置后就能发
+                self.assertEqual(harness.agent.context.messages[2]["reasoning_content"], "上一轮的思考")
+
     async def test_tool_call_then_final_answer(self) -> None:
         (self.directories.workspace / "hello.txt").write_text("hi there\n", encoding="utf-8")
         harness = build_harness(

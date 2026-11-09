@@ -6,7 +6,8 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from pocketagent.config import AppConfig, ConfigError, ModelProfile
+from pocketagent.config import AppConfig, ConfigError, ModelProfile, Settings
+from pocketagent.core.agent import openai_extra_body
 from pocketagent.core.compaction import (
     PRESERVED_SKILLS_HEADER,
     RESUME_HINT,
@@ -64,6 +65,30 @@ class ReasoningStyleTest(unittest.TestCase):
         self.assertNotIn("extra_body", request)
 
 
+class ReasoningAcrossTurnsExtraBodyTest(unittest.TestCase):
+    """智谱标准接口默认每轮清掉之前的思考，打开「跨轮保留」时要显式关掉 clear_thinking。"""
+
+    @staticmethod
+    def _settings(base_url: str, across_turns: bool, extra_body: dict | None = None) -> Settings:
+        settings = Settings()
+        settings.use_profile(ModelProfile.from_dict({"model": "m", "base_url": base_url, "extra_body": extra_body or {}}))
+        settings.reasoning_across_turns = across_turns
+        return settings
+
+    def test_bigmodel_gets_preserved_thinking_only_when_turned_on(self) -> None:
+        glm = "https://open.bigmodel.cn/api/paas/v4"
+        self.assertEqual(
+            openai_extra_body(self._settings(glm, True)), {"thinking": {"type": "enabled", "clear_thinking": False}}
+        )
+        self.assertEqual(openai_extra_body(self._settings(glm, False)), {})
+        self.assertEqual(openai_extra_body(self._settings("https://api.deepseek.com", True)), {})
+
+    def test_user_written_thinking_wins(self) -> None:
+        settings = self._settings("https://open.bigmodel.cn/api/paas/v4", True, {"thinking": {"type": "disabled"}})
+
+        self.assertEqual(openai_extra_body(settings), {"thinking": {"type": "disabled"}})
+
+
 class ReasoningChoicesTest(unittest.TestCase):
     def test_choices_follow_provider_and_can_be_overridden(self) -> None:
         glm = ModelProfile.from_dict({"model": "glm-5.3-flash", "base_url": "https://open.bigmodel.cn/api/paas/v4"})
@@ -96,6 +121,9 @@ class ReasoningChoicesTest(unittest.TestCase):
 
         self.assertFalse(reloaded.auto_compact)
         self.assertEqual(reloaded.compact_threshold_percent, 60)
+        # 跨轮保留思考默认关
+        self.assertFalse(reloaded.reasoning_across_turns)
+        self.assertTrue(AppConfig.from_dict({**config.to_dict(), "reasoning_across_turns": True}).reasoning_across_turns)
         self.assertEqual(reloaded.web_search_settings().api_key, "glm-key")
         self.assertEqual(reloaded.web_search_settings().engine, "search_pro")
         with self.assertRaises(ConfigError):

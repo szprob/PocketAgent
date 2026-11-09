@@ -275,6 +275,12 @@
                 <div class="field-hint">接口报「上下文超长」时，不管开没开自动压缩，都会先压缩再重试。</div>
               </fieldset>
               <fieldset class="radio-group">
+                <legend>思考内容</legend>
+                <label class="checkbox-field"><input type="checkbox" id="reasoning-across-turns-input">
+                  <span>跨轮保留思考内容</span></label>
+                <div class="field-hint">关闭时，模型的思考内容只在同一轮的工具调用之间传回（各家都要求这样做）；打开后，之前几轮的思考也一起发给模型（DeepSeek、智谱、Kimi 等），前后更连贯，但更占上下文。智谱会同时开启它的「保留式思考」。</div>
+              </fieldset>
+              <fieldset class="radio-group">
                 <legend>子 agent</legend>
                 <div class="field-row">
                   <label class="field"><span>子 agent 用的模型</span>

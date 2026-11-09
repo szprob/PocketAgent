@@ -1,7 +1,7 @@
 import unittest
 from types import SimpleNamespace
 
-from pocketagent.llm import LLMResponse, build_assistant_message
+from pocketagent.llm import LLMResponse, build_assistant_message, without_earlier_reasoning
 from pocketagent.llm.openai_compat import StreamAccumulator, _consume_delta
 from pocketagent.safety.permissions import ApprovalMode, Decision, decide_by_mode
 from pocketagent.tools import ToolKind
@@ -69,6 +69,21 @@ class StreamAccumulatorTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(message["content"])
         self.assertEqual(message["tool_calls"][0]["function"]["arguments"], "{}")
         self.assertEqual(build_assistant_message(LLMResponse(text=""))["content"], "")
+
+    def test_without_earlier_reasoning_keeps_only_the_current_turn(self) -> None:
+        messages = [
+            {"role": "user", "content": "第一问"},
+            {"role": "assistant", "content": "答", "reasoning_content": "旧的"},
+            {"role": "user", "content": "第二问"},
+            {"role": "assistant", "content": None, "reasoning_content": "新的", "tool_calls": []},
+            {"role": "tool", "tool_call_id": "c1", "content": "结果"},
+        ]
+
+        cleaned = without_earlier_reasoning(messages)
+
+        self.assertNotIn("reasoning_content", cleaned[1])
+        self.assertEqual(cleaned[3]["reasoning_content"], "新的")
+        self.assertEqual(messages[1]["reasoning_content"], "旧的")
 
     def test_assistant_message_keeps_reasoning_only_when_there_is_some(self) -> None:
         with_reasoning = build_assistant_message(LLMResponse(text="好", reasoning="先想清楚"))

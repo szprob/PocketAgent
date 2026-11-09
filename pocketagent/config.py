@@ -447,6 +447,8 @@ class AppConfig:
     # 上下文占用超过窗口的这个百分比就自动压缩
     auto_compact: bool = True
     compact_threshold_percent: int = DEFAULT_COMPACT_THRESHOLD_PERCENT
+    # 之前几轮的思考内容也发给模型（默认只发这一轮工具调用之间的），见 llm/base.py 的 REASONING_FIELD
+    reasoning_across_turns: bool = False
     # 联网：web_search 默认抓必应（免费），也可以换成智谱 Web Search（按次计费，密钥空着就用智谱模型的密钥）
     web_search_enabled: bool = True
     web_search_provider: str = "bing"
@@ -531,6 +533,7 @@ class AppConfig:
             fold_tool_calls=_boolean_with_default(data, "fold_tool_calls", True),
             auto_compact=_boolean_with_default(data, "auto_compact", True),
             compact_threshold_percent=_compact_threshold_percent(data),
+            reasoning_across_turns=_boolean_with_default(data, "reasoning_across_turns", False),
             web_search_enabled=_boolean_with_default(data, "web_search_enabled", True),
             web_search_provider=_web_search_provider(data.get("web_search_provider")),
             web_search_engine=_web_search_engine(data.get("web_search_engine")),
@@ -591,6 +594,7 @@ class AppConfig:
             "fold_tool_calls": self.fold_tool_calls,
             "auto_compact": self.auto_compact,
             "compact_threshold_percent": self.compact_threshold_percent,
+            "reasoning_across_turns": self.reasoning_across_turns,
             "web_search_enabled": self.web_search_enabled,
             "web_search_provider": self.web_search_provider,
             "web_search_engine": self.web_search_engine,
@@ -641,6 +645,7 @@ class AppConfig:
             "fold_tool_calls": self.fold_tool_calls,
             "auto_compact": self.auto_compact,
             "compact_threshold_percent": self.compact_threshold_percent,
+            "reasoning_across_turns": self.reasoning_across_turns,
             "web_search_enabled": self.web_search_enabled,
             "web_search_provider": self.web_search_provider,
             "web_search_engine": self.web_search_engine,
@@ -825,6 +830,10 @@ class Settings:
     supports_images: bool = False
     # 思考档位怎么传：openrouter 用 reasoning.effort，其他用顶层 reasoning_effort
     reasoning_style: str = "top"
+    # 模型厂商（ModelProfile.provider：deepseek / bigmodel / openrouter ...），有的厂商要额外参数
+    model_kind: str = ""
+    # 之前几轮的思考内容也发给模型；默认只发这一轮工具调用之间的
+    reasoning_across_turns: bool = False
     # 当前模型能选的思考档位（审批、子 agent 选「最低」时从这里取）；环境变量配的模型不知道，空着
     reasoning_choices: list[str] = field(default_factory=list)
     # AI 审批用的模型（None = 跟任务的模型一样）和思考档位（lowest / inherit / 具体档位）
@@ -935,6 +944,7 @@ class Settings:
         self.extra_body = dict(profile.extra_body)
         self.supports_images = profile.supports_images
         self.reasoning_style = "openrouter" if profile.provider == "openrouter" else "top"
+        self.model_kind = profile.provider
         self.max_output_tokens = profile.max_output_tokens
         self.model_profile_id = profile.id
         self.model_profile_name = profile.name
@@ -948,6 +958,7 @@ class Settings:
         """配置文件里和模型无关的那些：步数上限、自动压缩、联网、沙箱、技能、记忆。"""
         self.max_steps = app_config.max_steps
         self.apply_compaction(app_config)
+        self.reasoning_across_turns = app_config.reasoning_across_turns
         self.web_search = app_config.web_search_settings()
         self.web_fetch = app_config.web_fetch_enabled
         self.image_gen = app_config.image_gen_settings()

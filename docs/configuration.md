@@ -17,6 +17,7 @@
   "fold_tool_calls": true,
   "auto_compact": true,
   "compact_threshold_percent": 80,
+  "reasoning_across_turns": false,
   "web_search_enabled": true,
   "web_search_provider": "bing",
   "web_search_engine": "search_std",
@@ -49,8 +50,10 @@
 - 思考档位、上下文长度、温度、额外参数、能不能看图都跟着模型走，换模型就一起换。思考档位按接口实测过能用的值来选
   （DeepSeek：关 / 低 / 高 / 最高；智谱：低 / 高 / 最高；OpenRouter：关 / 低 / 中 / 高），OpenRouter 用它自己的
   `reasoning.effort` 写法，其他用顶层 `reasoning_effort`
-- 模型的思考内容留在历史里，下一步原样传回（`reasoning_content`）：DeepSeek 文档要求带工具的请求这样做，
-  不传的话每调一次工具都从头想。OpenRouter 和 Anthropic 不传，压缩摘要时也去掉
+- 模型的思考内容留在历史里，同一轮的工具调用之间原样传回（`reasoning_content`）：DeepSeek、智谱、Kimi 都要求带工具的请求这样做，
+  不传的话每调一次工具都从头想。之前几轮的思考默认不发（各家说法不一），⚙ 设置 → 智能体 →「跨轮保留思考内容」
+  （`reasoning_across_turns`）打开才发，智谱会同时带上 `thinking.clear_thinking: false` 开启它的「保留式思考」。
+  OpenRouter 和 Anthropic 不传，压缩摘要时也去掉
 - `visible: false` 的模型不出现在会话的模型列表里（已经在用它的任务不受影响）
 - 沙箱联网：`sandbox_network` 是整个打开；关着时 `sandbox_network_allowlist` 里的域名仍然可以访问
   （走 PocketAgent 进程里的本地代理，只认 HTTP(S)；`*.example.com` 连 `example.com` 和子域名一起放行，

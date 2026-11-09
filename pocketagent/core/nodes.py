@@ -26,9 +26,17 @@ from pocketagent.interaction.attachments import (
     AttachmentStore,
     materialize_messages,
     message_display,
+    omit_old_tool_images,
     tool_message_content,
 )
-from pocketagent.llm.base import ContextOverflowError, LLMProvider, LLMResponse, ToolCall, build_assistant_message
+from pocketagent.llm.base import (
+    ContextOverflowError,
+    LLMProvider,
+    LLMResponse,
+    ToolCall,
+    build_assistant_message,
+    without_earlier_reasoning,
+)
 from pocketagent.safety.permissions import ApprovalRequest, Decision, PermissionCheck
 from pocketagent.safety.reviewer import ReviewResult, review_tool_call
 from pocketagent.tools.base import (
@@ -41,6 +49,9 @@ from pocketagent.tools.base import (
     truncate_middle,
 )
 
+# 主 agent 一轮里自己用这些工具每满这么多次，就提醒它把调研交给子 agent
+WEB_RESEARCH_TOOLS = {"web_search", "web_fetch"}
+DELEGATE_RESEARCH_EVERY = 3
 # 一轮里最多压缩几次：系统提示本身就很长时，再压也压不下去，别一直压
 MAX_COMPACTIONS_PER_TURN = 3
 # 做摘要时给历史留的上下文比例（剩下的留给摘要指令和输出）
@@ -56,8 +67,12 @@ CUT_OFF_FINISH_REASONS = {
 
 
 def messages_for_model(context: AgentContext) -> list[dict[str, Any]]:
-    """发给模型的消息：去掉内部字段，展开附件引用（不能看图的模型拿到的是文字说明）。"""
-    return materialize_messages(context.messages, context.attachments_root, context.settings.supports_images)
+    """发给模型的消息：去掉内部字段，展开附件引用（不能看图的模型拿到的是文字说明）；
+    没开「跨轮保留思考内容」时，之前几轮的思考不发；较早的截图换成一句说明，只留最近几张。"""
+    messages = omit_old_tool_images(context.messages)
+    if not context.settings.reasoning_across_turns:
+        messages = without_earlier_reasoning(messages)
+    return materialize_messages(messages, context.attachments_root, context.settings.supports_images)
 
 
 class AgentNode(AsyncNode):
@@ -703,6 +718,7 @@ async def execute_prepared(prepared: PreparedCall, context: AgentContext) -> Too
     outcome.result.content = await _render_tool_result(context, call, outcome.result.content)
     if ran_tool:
         await _run_post_tool_hook(outcome, context)
+        outcome.result.content += _delegate_research_hint(context, call)
     await context.events.emit(
         EventType.TOOL_RESULT,
         call_id=call.id,
@@ -793,6 +809,23 @@ async def _render_tool_result(context: AgentContext, call: ToolCall, content: st
     return (
         f"{truncated}\n\n（完整输出 {len(content)} 字符，已保存到 {path}；"
         "需要时用 grep 搜索或 read_file 带 offset 分段查看，不要整份读进上下文）"
+    )
+
+
+def _delegate_research_hint(context: AgentContext, call: ToolCall) -> str:
+    """主 agent 自己搜了好几次时，在结果末尾提醒它把剩下的调研交给子 agent。
+    搜索结果和网页全文一条条堆在主上下文里，很快就把上下文撑大；子 agent 读完只交回结论。"""
+    if call.name not in WEB_RESEARCH_TOOLS or context.tool_context.spawn_subagent is None:
+        return ""
+    if context.tools.get("subagent") is None:
+        return ""
+    context.turn.web_tool_calls += 1
+    count = context.turn.web_tool_calls
+    if count % DELEGATE_RESEARCH_EVERY != 0:
+        return ""
+    return (
+        f"\n\n（这一轮你已经自己搜索、读网页 {count} 次了。信息够了就直接回答；还要接着查的话，"
+        "把剩下的调研整个交给 subagent（type=explore），让它把结论和来源交回来，免得搜索结果把你的上下文塞满。）"
     )
 
 

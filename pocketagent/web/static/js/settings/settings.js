@@ -80,6 +80,7 @@ export function initSettings() {
     busyModeInputs: [...document.querySelectorAll('input[name="busy-input-mode"]')],
     autoCompact: byId("auto-compact-input"),
     compactThreshold: byId("compact-threshold-select"),
+    reasoningAcrossTurns: byId("reasoning-across-turns-input"),
     webSearchEnabled: byId("web-search-enabled"),
     webSearchProvider: byId("web-search-provider"),
     webSearchEngine: byId("web-search-engine"),
@@ -386,6 +387,7 @@ export async function openSettings(tabName) {
   }
   elements.autoCompact.checked = config.auto_compact;
   elements.compactThreshold.value = String(config.compact_threshold_percent);
+  elements.reasoningAcrossTurns.checked = Boolean(config.reasoning_across_turns);
   elements.webSearchEnabled.checked = config.web_search_enabled;
   elements.webSearchProvider.value = config.web_search_provider || "bing";
   elements.webSearchEngine.value = config.web_search_engine;
@@ -744,6 +746,7 @@ async function saveSettings() {
     fold_tool_calls: elements.foldToolCalls.checked,
     auto_compact: elements.autoCompact.checked,
     compact_threshold_percent: elements.compactThreshold.value,
+    reasoning_across_turns: elements.reasoningAcrossTurns.checked,
     web_search_enabled: elements.webSearchEnabled.checked,
     web_search_provider: elements.webSearchProvider.value,
     web_search_engine: elements.webSearchEngine.value,

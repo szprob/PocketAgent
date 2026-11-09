@@ -720,6 +720,16 @@ def create_agent(
     return Agent(context, session_store, usage_log, skills=skills)
 
 
+def openai_extra_body(settings: Settings) -> dict[str, Any]:
+    """模型配置里的 extra_body，再按设置补上厂商自己的参数。"""
+    extra_body = dict(settings.extra_body)
+    if settings.reasoning_across_turns and settings.model_kind == "bigmodel" and "thinking" not in extra_body:
+        # 智谱标准接口默认每轮清掉之前的思考（clear_thinking 默认开），要跨轮保留得显式关掉；
+        # 用户在 extra_body 里自己写了 thinking 就听用户的
+        extra_body["thinking"] = {"type": "enabled", "clear_thinking": False}
+    return extra_body
+
+
 def create_provider(settings: Settings) -> LLMProvider:
     """按设置里的协议造 provider：默认 OpenAI 兼容接口，选 anthropic 就走 Messages 接口。"""
     if settings.protocol == "anthropic":
@@ -741,7 +751,7 @@ def create_provider(settings: Settings) -> LLMProvider:
         api_key=settings.api_key,
         temperature=settings.temperature,
         reasoning_effort=settings.reasoning_effort,
-        extra_body=settings.extra_body,
+        extra_body=openai_extra_body(settings),
         reasoning_style=settings.reasoning_style,
         max_output_tokens=settings.max_output_tokens,
     )

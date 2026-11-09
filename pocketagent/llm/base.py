@@ -101,6 +101,8 @@ class LLMProvider(Protocol):
 # 不传的话模型每调一次工具都从头想一遍，忘了已经查到什么、本来打算怎么做，同样的搜索反复搜。
 # 不认这个字段、或者要的是别的格式的接口（OpenRouter 要带签名的 reasoning_details，Anthropic 要 thinking 块），
 # 由各自的 provider 在发送前用 without_reasoning 去掉。
+# 之前几轮（最后一条用户消息之前）的思考各家说法不一：DeepSeek 不需要，智谱要另开「保留式思考」才用得上，
+# 所以默认只传这一轮的（without_earlier_reasoning），设置里打开「跨轮保留思考内容」才全部传。
 REASONING_FIELD = "reasoning_content"
 
 
@@ -112,6 +114,16 @@ def without_reasoning(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
             message = {key: value for key, value in message.items() if key != REASONING_FIELD}
         cleaned.append(message)
     return cleaned
+
+
+def without_earlier_reasoning(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """只留最后一条用户消息之后（这一轮工具调用之间）的思考内容，更早的去掉。不改原消息。"""
+    last_user_index = -1
+    for index, message in enumerate(messages):
+        if message.get("role") == "user":
+            last_user_index = index
+    earlier = without_reasoning(messages[: last_user_index + 1])
+    return earlier + messages[last_user_index + 1 :]
 
 
 def build_assistant_message(response: LLMResponse) -> dict[str, Any]:

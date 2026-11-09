@@ -51,6 +51,15 @@ class SystemPromptTest(unittest.TestCase):
         self.assertIn("搜两三次、拿到够用的信息就直接回答", prompt)
         self.assertIn("连着失败两次", prompt)
 
+    def test_research_goes_to_subagents_and_gui_prefers_commands(self) -> None:
+        """要搜好几次的调研交给子 agent，主上下文不被网页塞满；操作电脑能用命令就不点像素。"""
+        prompt = self.build()
+
+        self.assertIn("联网调研", prompt)
+        self.assertIn("只把结论和来源交回来", prompt)
+        self.assertIn("open_url", prompt)
+        self.assertIn("会自动附一张新截图", prompt)
+
     def test_git_repository_worktree_and_ephemeral_notes(self) -> None:
         (self.workspace / ".git").mkdir()
         worktree = {"origin": "/src/origin", "branch": "pocketagent/task", "base_commit": "abc123"}

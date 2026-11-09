@@ -12,6 +12,7 @@ from pocketagent.core.subagents import subagent_tools
 from pocketagent.llm import LLMResponse
 from pocketagent.safety.permissions import ApprovalAnswer, ApprovalMode
 from pocketagent.tools import ToolContext, ToolKind, default_tool_registry
+from pocketagent.tools.base import Tool, ToolRegistry, ToolResult
 from pocketagent.tools.subagent import SubagentTool
 from tests.helpers import TemporaryDirectories, build_harness, tool_call
 
@@ -57,6 +58,16 @@ class TwoLevelProvider:
         if response.text:
             await listener.on_text(response.text)
         return response
+
+
+class FakeSearchTool(Tool):
+    name = "web_search"
+    description = "假的搜索"
+    kind = ToolKind.READ
+    parameters = {"type": "object", "properties": {"query": {"type": "string"}}}
+
+    async def run(self, arguments, context: ToolContext) -> ToolResult:
+        return ToolResult(f"搜到了：{arguments.get('query')}")
 
 
 def spawn(call_id: str, description: str, prompt: str, kind: str = "explore"):
@@ -351,3 +362,36 @@ class SubagentRunTest(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DelegateResearchHintTest(unittest.IsolatedAsyncioTestCase):
+    """主 agent 自己连着搜了几次，就提醒它把剩下的调研交给子 agent；子 agent 自己搜不提醒。"""
+
+    def setUp(self) -> None:
+        self.directories = TemporaryDirectories()
+
+    def tearDown(self) -> None:
+        self.directories.cleanup()
+
+    async def test_main_agent_is_nudged_on_the_third_search_and_the_child_is_not(self) -> None:
+        def search(call_id: str) -> LLMResponse:
+            return LLMResponse(tool_calls=[tool_call(call_id, "web_search", json.dumps({"query": call_id}))])
+
+        provider = TwoLevelProvider(
+            [search("p1"), search("p2"), search("p3"), LLMResponse(tool_calls=[spawn("p4", "接着查", "查完给结论")]), LLMResponse(text="好了")],
+            {"接着查": [search("c1"), search("c2"), search("c3"), LLMResponse(text="结论和来源")]},
+        )
+        harness = build_harness(
+            self.directories, [], provider=provider, tools=ToolRegistry([FakeSearchTool(), SubagentTool()])
+        )
+
+        await harness.agent.run_turn("查一下这件事")
+
+        main_results = [m["content"] for m in harness.agent.context.messages if m["role"] == "tool"]
+        self.assertNotIn("subagent", main_results[0])
+        self.assertNotIn("subagent", main_results[1])
+        self.assertIn("已经自己搜索、读网页 3 次", main_results[2])
+        child_messages = provider.child_requests["接着查"][-1]["messages"]
+        child_results = [m["content"] for m in child_messages if m["role"] == "tool"]
+        self.assertEqual(len(child_results), 3)
+        self.assertFalse(any("subagent" in content for content in child_results))
