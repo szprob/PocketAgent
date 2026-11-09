@@ -53,7 +53,9 @@
 - 模型的思考内容留在历史里，同一轮的工具调用之间原样传回（`reasoning_content`）：DeepSeek、智谱、Kimi 都要求带工具的请求这样做，
   不传的话每调一次工具都从头想。之前几轮的思考默认不发（各家说法不一），⚙ 设置 → 智能体 →「跨轮保留思考内容」
   （`reasoning_across_turns`）打开才发，智谱会同时带上 `thinking.clear_thinking: false` 开启它的「保留式思考」。
-  OpenRouter 和 Anthropic 不传，压缩摘要时也去掉
+  各家要的格式不一样，按接口挑着发：OpenRouter 传回它返回的 `reasoning_details`（带签名 / 加密的思考块，流式时按 index 拼回去），
+  Anthropic 传回带签名的 thinking / redacted_thinking 块并放回原位置，Gemini（Google 的 OpenAI 兼容接口）传回工具调用上的
+  `extra_content.google.thought_signature`。压缩摘要时都去掉。直连 OpenAI 的 GPT 走 Chat Completions，接口本身不返回思考，传不了
 - `visible: false` 的模型不出现在会话的模型列表里（已经在用它的任务不受影响）
 - 沙箱联网：`sandbox_network` 是整个打开；关着时 `sandbox_network_allowlist` 里的域名仍然可以访问
   （走 PocketAgent 进程里的本地代理，只认 HTTP(S)；`*.example.com` 连 `example.com` 和子域名一起放行，
@@ -138,6 +140,9 @@
 - **Anthropic**：`/v1/messages`，接口地址留空就用 `https://api.anthropic.com`；网关上的 Anthropic 入口把
   `base_url` 写到 `/v1` 或 `/messages` 都认。密钥放在 `api_key`，请求头按官方的 `x-api-key` 发
 - 工具调用、流式输出、图片、用量（含缓存命中）都会在 provider 里转成 Anthropic 的 content blocks / usage；
-  Anthropic 的 thinking 块要求原样带回历史，当前消息格式存不下，所以先不接思考档位（界面上只有「默认」）
+  思考档位看型号：4.6 及以后用 `thinking: adaptive`（显示摘要）+ `output_config.effort`（低 / 中 / 高 / 最高，Opus 4.7 起还有超高）；
+  4.5 及以前用 `enabled` + `budget_tokens`，选了档位才开（低 4096 / 中 10000 / 高 16000 / 最高 24000，必要时调大 `max_tokens`），
+  带工具时加 interleaved-thinking 的 beta 头。开了思考就不发 `temperature`。认不出的型号（网关上的其他模型）不发思考参数，
+  extra_body 里自己写了 `thinking` 就听你的
 - 单次输出上限默认 32000（`max_output_tokens` 可以按模型改）。新一代 Claude 都能出这么多，
   老一代只能出 8k 的模型要调小，不然接口会报 `max_tokens` 超过上限

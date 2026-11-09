@@ -33,18 +33,71 @@ class ReasoningStyleTest(unittest.TestCase):
         )
         return provider._build_request([{"role": "user", "content": "hi"}], [])
 
-    def test_reasoning_content_is_dropped_only_for_openrouter(self) -> None:
+    def test_each_endpoint_gets_only_the_reasoning_fields_it_understands(self) -> None:
+        details = [{"type": "reasoning.encrypted", "data": "abc", "format": "xai-responses-v1", "index": 0}]
+        thinking = [{"position": 0, "block": {"type": "thinking", "thinking": "嗯", "signature": "sig"}}]
+        signature = {"google": {"thought_signature": "g-sig"}}
+        call = {"id": "c1", "type": "function", "function": {"name": "f", "arguments": "{}"}, "extra_content": signature}
         messages = [
             {"role": "user", "content": "hi"},
-            {"role": "assistant", "content": None, "reasoning_content": "想一想", "tool_calls": []},
+            {
+                "role": "assistant",
+                "content": None,
+                "reasoning_content": "想一想",
+                "reasoning_details": details,
+                "thinking_blocks": thinking,
+                "tool_calls": [call],
+            },
+            {"role": "tool", "tool_call_id": "c1", "content": "ok"},
+            {"role": "assistant", "content": "好", "reasoning_content": "只有文字"},
         ]
-        for style, expected in (("top", True), ("openrouter", False)):
-            with self.subTest(style=style):
-                provider = OpenAICompatibleProvider(model="m", base_url="https://example.com/v1", api_key="k", reasoning_style=style)
-                sent = provider._build_request(messages, [])["messages"]
-                self.assertEqual("reasoning_content" in sent[1], expected)
+
+        def sent(base_url: str, style: str) -> list[dict]:
+            provider = OpenAICompatibleProvider(model="m", base_url=base_url, api_key="k", reasoning_style=style)
+            return provider._build_request(messages, [])["messages"]
+
+        deepseek = sent("https://api.deepseek.com", "top")
+        self.assertEqual(deepseek[1]["reasoning_content"], "想一想")
+        self.assertNotIn("reasoning_details", deepseek[1])
+        self.assertNotIn("thinking_blocks", deepseek[1])
+        self.assertNotIn("extra_content", deepseek[1]["tool_calls"][0])
+
+        openrouter = sent("https://openrouter.ai/api/v1", "openrouter")
+        # 有完整的块就只发块；只有文字的发文字（OpenRouter 认 reasoning_content 这个别名）
+        self.assertEqual(openrouter[1]["reasoning_details"], details)
+        self.assertNotIn("reasoning_content", openrouter[1])
+        self.assertEqual(openrouter[3]["reasoning_content"], "只有文字")
+        self.assertNotIn("thinking_blocks", openrouter[1])
+
+        gemini = sent("https://generativelanguage.googleapis.com/v1beta/openai/", "top")
+        self.assertEqual(gemini[1]["tool_calls"][0]["extra_content"], signature)
         # 原消息不动：会话里还要留着
         self.assertEqual(messages[1]["reasoning_content"], "想一想")
+        self.assertEqual(messages[1]["tool_calls"][0]["extra_content"], signature)
+
+    def test_gemini_gets_a_placeholder_signature_for_calls_made_by_another_model(self) -> None:
+        """这一轮里换到 Gemini 之前的工具调用没有签名，Gemini 会 400；用它文档给的占位值跳过校验。"""
+        plain_call = {"id": "c1", "type": "function", "function": {"name": "f", "arguments": "{}"}}
+        messages = [
+            {"role": "user", "content": "上一轮"},
+            {"role": "assistant", "content": None, "tool_calls": [plain_call]},
+            {"role": "tool", "tool_call_id": "c1", "content": "ok"},
+            {"role": "user", "content": "这一轮"},
+            {"role": "assistant", "content": None, "tool_calls": [dict(plain_call, id="c2"), dict(plain_call, id="c3")]},
+            {"role": "tool", "tool_call_id": "c2", "content": "ok"},
+            {"role": "tool", "tool_call_id": "c3", "content": "ok"},
+        ]
+        provider = OpenAICompatibleProvider(
+            model="gemini-3-flash", base_url="https://generativelanguage.googleapis.com/v1beta/openai/", api_key="k"
+        )
+
+        sent = provider._build_request(messages, [])["messages"]
+
+        self.assertNotIn("extra_content", sent[1]["tool_calls"][0])
+        self.assertEqual(
+            sent[4]["tool_calls"][0]["extra_content"], {"google": {"thought_signature": "skip_thought_signature_validator"}}
+        )
+        self.assertNotIn("extra_content", sent[4]["tool_calls"][1])
 
     def test_top_level_style(self) -> None:
         request = self.build("top", "low")

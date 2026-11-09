@@ -4,15 +4,20 @@ from unittest import mock
 
 import httpx
 
+from pocketagent.config import ModelProfile
 from pocketagent.llm.anthropic import (
     DEFAULT_MAX_TOKENS,
     AnthropicAPIError,
     AnthropicProvider,
+    AnthropicStreamAccumulator,
+    claude_reasoning_choices,
+    claude_thinking_mode,
+    consume_event,
     convert_messages,
     convert_tools,
     messages_url,
 )
-from pocketagent.llm.base import ContextOverflowError
+from pocketagent.llm.base import ContextOverflowError, build_assistant_message
 
 
 def sse_bytes(events: list[dict]) -> bytes:
@@ -304,3 +309,117 @@ class AnthropicProviderTest(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ThinkingRequestTest(unittest.TestCase):
+    """怎么开思考看型号：4.6 起 adaptive + effort，4.5 及以前按预算（选了档位才开），认不出的不发。"""
+
+    TOOLS = [{"type": "function", "function": {"name": "read_file", "parameters": {"type": "object", "properties": {}}}}]
+
+    def test_adaptive_models_think_with_effort_and_drop_temperature(self) -> None:
+        provider = AnthropicProvider(model="claude-opus-4-6", base_url=None, api_key="k", temperature=0.3, reasoning_effort="high")
+
+        request = provider.build_request([], self.TOOLS)
+
+        self.assertEqual(request["thinking"], {"type": "adaptive", "display": "summarized"})
+        self.assertEqual(request["output_config"], {"effort": "high"})
+        self.assertNotIn("temperature", request)
+        self.assertNotIn("anthropic-beta", provider._headers(request))
+
+    def test_adaptive_without_effort_uses_the_model_default(self) -> None:
+        request = AnthropicProvider(model="claude-opus-5-5", base_url=None, api_key="k").build_request([], [])
+
+        self.assertEqual(request["thinking"]["type"], "adaptive")
+        self.assertNotIn("output_config", request)
+
+    def test_budget_models_think_only_when_a_level_is_picked(self) -> None:
+        thinking = AnthropicProvider(model="claude-sonnet-4-5-20250929", base_url=None, api_key="k", reasoning_effort="high")
+        plain = AnthropicProvider(model="claude-sonnet-4-5-20250929", base_url=None, api_key="k", temperature=0.2)
+
+        request = thinking.build_request([], self.TOOLS)
+
+        self.assertEqual(request["thinking"], {"type": "enabled", "budget_tokens": 16000})
+        self.assertGreater(request["max_tokens"], 16000)
+        self.assertEqual(thinking._headers(request)["anthropic-beta"], "interleaved-thinking-2025-05-14")
+        plain_request = plain.build_request([], self.TOOLS)
+        self.assertNotIn("thinking", plain_request)
+        self.assertEqual(plain_request["temperature"], 0.2)
+
+    def test_unknown_models_and_user_written_thinking_are_left_alone(self) -> None:
+        gateway = AnthropicProvider(model="deepseek-chat", base_url="https://example.com", api_key="k", reasoning_effort="high")
+        custom = AnthropicProvider(
+            model="claude-opus-4-6", base_url=None, api_key="k", reasoning_effort="high", extra_body={"thinking": {"type": "disabled"}}
+        )
+
+        self.assertNotIn("thinking", gateway.build_request([], []))
+        self.assertEqual(custom.build_request([], [])["thinking"], {"type": "disabled"})
+        self.assertNotIn("output_config", custom.build_request([], []))
+
+    def test_reasoning_choices_follow_the_model(self) -> None:
+        self.assertEqual(claude_thinking_mode("claude-opus-4-20250514"), "budget")
+        self.assertEqual(claude_thinking_mode("anthropic/claude-sonnet-4.6"), "adaptive")
+        self.assertEqual(claude_reasoning_choices("claude-opus-4-6"), ["low", "medium", "high", "max"])
+        self.assertIn("xhigh", claude_reasoning_choices("claude-sonnet-5-5"))
+        self.assertEqual(claude_reasoning_choices("claude-haiku-4-5")[0], "none")
+        self.assertEqual(claude_reasoning_choices("glm-5.3"), [])
+        profile = ModelProfile.from_dict({"model": "claude-opus-4-6", "base_url": "https://api.anthropic.com"})
+        self.assertEqual(profile.available_reasoning_choices(), ["low", "medium", "high", "max"])
+
+
+class ThinkingBlocksRoundTripTest(unittest.IsolatedAsyncioTestCase):
+    """思考块连同签名存进历史，下一步原样放回原位置；不传的话带工具时这一步的思考会被接口悄悄关掉。"""
+
+    async def _response(self, events: list[dict]):
+        accumulator = AnthropicStreamAccumulator()
+        listener = RecordingListener()
+        for event in events:
+            await consume_event(event, accumulator, listener)
+        return accumulator.build_response(), listener
+
+    async def test_signed_blocks_go_back_in_their_original_order(self) -> None:
+        response, listener = await self._response(
+            [
+                {"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": "", "signature": ""}},
+                {"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "先读文件"}},
+                {"type": "content_block_delta", "index": 0, "delta": {"type": "signature_delta", "signature": "sig-0"}},
+                {"type": "content_block_start", "index": 1, "content_block": {"type": "redacted_thinking", "data": "R"}},
+                {"type": "content_block_start", "index": 2, "content_block": {"type": "tool_use", "id": "t1", "name": "read_file", "input": {}}},
+                {"type": "content_block_start", "index": 3, "content_block": {"type": "thinking", "thinking": "", "signature": ""}},
+                {"type": "content_block_delta", "index": 3, "delta": {"type": "thinking_delta", "thinking": "再搜一下"}},
+                {"type": "content_block_delta", "index": 3, "delta": {"type": "signature_delta", "signature": "sig-3"}},
+                {"type": "content_block_start", "index": 4, "content_block": {"type": "tool_use", "id": "t2", "name": "grep", "input": {}}},
+                {"type": "content_block_start", "index": 5, "content_block": {"type": "thinking", "thinking": "", "signature": ""}},
+                {"type": "content_block_delta", "index": 5, "delta": {"type": "thinking_delta", "thinking": "没签名"}},
+                {"type": "message_delta", "delta": {"stop_reason": "tool_use"}, "usage": {"output_tokens": 3}},
+            ]
+        )
+
+        self.assertEqual(listener.reasoning, ["先读文件", "再搜一下", "没签名"])
+        message = build_assistant_message(response)
+        _, converted = convert_messages([{"role": "user", "content": "hi"}, message])
+
+        blocks = converted[1]["content"]
+        self.assertEqual(
+            [(block["type"], block.get("signature") or block.get("data") or block.get("id")) for block in blocks],
+            [("thinking", "sig-0"), ("redacted_thinking", "R"), ("tool_use", "t1"), ("thinking", "sig-3"), ("tool_use", "t2")],
+        )
+        self.assertEqual(blocks[0]["thinking"], "先读文件")
+        # 存的是原样的块，发出去不带内部的位置信息
+        self.assertNotIn("position", blocks[0])
+
+    async def test_omitted_display_still_round_trips_the_signature(self) -> None:
+        response, _ = await self._response(
+            [
+                {"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": "", "signature": ""}},
+                {"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": ""}},
+                {"type": "content_block_delta", "index": 0, "delta": {"type": "signature_delta", "signature": "sig"}},
+                {"type": "content_block_start", "index": 1, "content_block": {"type": "text", "text": ""}},
+                {"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "好"}},
+                {"type": "message_delta", "delta": {"stop_reason": "end_turn"}},
+            ]
+        )
+
+        _, converted = convert_messages([{"role": "user", "content": "hi"}, build_assistant_message(response)])
+
+        self.assertEqual(converted[1]["content"][0], {"type": "thinking", "thinking": "", "signature": "sig"})
+        self.assertEqual(converted[1]["content"][1], {"type": "text", "text": "好"})

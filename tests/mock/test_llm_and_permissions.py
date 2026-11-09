@@ -50,6 +50,40 @@ class StreamAccumulatorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.tool_calls[0].arguments, {"path": "a.py"})
         self.assertEqual(response.tool_calls[1].arguments, {"pattern": "x"})
 
+    async def test_openrouter_reasoning_details_are_stitched_back_by_index(self) -> None:
+        """OpenRouter 把一段思考按 index 拆成很多片下发（实测 nemotron / dots 这样），签名在最后一片；拼回去才能原样传回。"""
+        accumulator = StreamAccumulator()
+        pieces = [
+            [{"type": "reasoning.text", "text": "先查", "format": "anthropic-claude-v1", "index": 0}],
+            [{"type": "reasoning.text", "text": "日期", "signature": None, "index": 0}],
+            [{"type": "reasoning.text", "text": "", "signature": "sig-1", "index": 0}],
+            [{"type": "reasoning.encrypted", "data": "ENC", "format": "anthropic-claude-v1", "index": 1}],
+        ]
+        for details in pieces:
+            await _consume_delta(SimpleNamespace(content=None, reasoning="x", tool_calls=None, reasoning_details=details), accumulator, RecordingListener())
+
+        response = accumulator.build_response()
+
+        self.assertEqual(
+            response.reasoning_details,
+            [
+                {"type": "reasoning.text", "text": "先查日期", "format": "anthropic-claude-v1", "index": 0, "signature": "sig-1"},
+                {"type": "reasoning.encrypted", "data": "ENC", "format": "anthropic-claude-v1", "index": 1},
+            ],
+        )
+        message = build_assistant_message(response)
+        self.assertEqual(message["reasoning_details"], response.reasoning_details)
+
+    async def test_gemini_signature_on_a_tool_call_is_kept(self) -> None:
+        accumulator = StreamAccumulator()
+        signature = {"google": {"thought_signature": "g-sig"}}
+        first = SimpleNamespace(index=0, id="c1", function=SimpleNamespace(name="f", arguments="{}"), extra_content=signature)
+
+        await _consume_delta(content_delta(tool_calls=[first]), accumulator, RecordingListener())
+
+        message = build_assistant_message(accumulator.build_response())
+        self.assertEqual(message["tool_calls"][0]["extra_content"], signature)
+
     def test_invalid_json_arguments_are_flagged_not_raised(self) -> None:
         accumulator = StreamAccumulator()
         accumulator.add_tool_call_delta(tool_delta(0, None, "bash", '{"command": "ls'))

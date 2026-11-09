@@ -365,10 +365,14 @@ class ModelProfile:
         return "anthropic" if self.protocol == "anthropic" else provider_kind(self.base_url)
 
     def available_reasoning_choices(self) -> list[str]:
-        # Anthropic 的思考块要原样带回历史里，当前消息格式存不下，所以先不提供思考档位
+        if self.reasoning_choices:
+            return self.reasoning_choices
         if self.protocol == "anthropic":
-            return []
-        return self.reasoning_choices or REASONING_CHOICES_BY_PROVIDER[self.provider]
+            # Claude 能选哪些档看型号（4.6 起 adaptive + effort，4.5 及以前按预算）；认不出的型号不提供
+            from pocketagent.llm.anthropic import claude_reasoning_choices
+
+            return claude_reasoning_choices(self.model)
+        return REASONING_CHOICES_BY_PROVIDER[self.provider]
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ModelProfile":

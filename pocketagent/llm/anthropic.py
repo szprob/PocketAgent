@@ -8,8 +8,13 @@
 重试和 OpenAI 兼容 provider 一致：429 / 5xx / 529 / 连接断开重试，400 / 401 直接报；
 服务端给了 Retry-After 就按它等。SDK 不用，直接用 httpx 读 SSE，少一个依赖。
 
-Anthropic 的 thinking 块要求原样带回历史，当前消息格式（OpenAI chat）存不下，
-所以这里不主动开思考，reasoning_effort 不发给接口；extra_body 里自己写了 thinking 也不做特殊处理。
+思考：
+- 回复里的 thinking / redacted_thinking 块连同签名存进 assistant 消息的 thinking_blocks（记着每块在原回复里排第几），
+  下一步原样放回原来的位置。Anthropic 要求带工具时必须这样传回，不传的话这一步的思考会被接口悄悄关掉
+- 怎么开思考看型号（claude_thinking_mode）：4.6 及以后用 adaptive + output_config.effort，
+  4.5 及以前用 enabled + budget_tokens（选了档位才开）；认不出的型号（兼容网关上的其他模型）不发思考参数，
+  它自己返回了带签名的思考块照样传回。extra_body 里自己写了 thinking 就听用户的
+- 开了思考就不发 temperature（接口不允许两个一起改）
 """
 
 import asyncio
@@ -17,13 +22,22 @@ import copy
 import email.utils
 import json
 import random
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
 
-from pocketagent.llm.base import ContextOverflowError, LLMResponse, StreamListener, ToolCall, Usage, is_context_overflow
+from pocketagent.llm.base import (
+    THINKING_BLOCKS_FIELD,
+    ContextOverflowError,
+    LLMResponse,
+    StreamListener,
+    ToolCall,
+    Usage,
+    is_context_overflow,
+)
 
 DEFAULT_BASE_URL = "https://api.anthropic.com"
 ANTHROPIC_VERSION = "2023-06-01"
@@ -38,6 +52,14 @@ MAX_DELAY_SECONDS = 30.0
 RETRY_AFTER_CAP_SECONDS = 60.0
 RETRYABLE_STATUS_CODES = {408, 409, 429, 500, 502, 503, 504, 529}
 
+# 4.5 及以前的型号按档位给思考预算（budget_tokens 必须小于 max_tokens，另外留出写回答的余量）
+THINKING_BUDGET_TOKENS = {"low": 4096, "medium": 10000, "high": 16000, "max": 24000}
+MIN_ANSWER_TOKENS = 8000
+# 4.5 及以前的型号要这个 beta 头才能在两次工具调用之间思考；Claude API 对不支持的型号会忽略它
+INTERLEAVED_THINKING_BETA = "interleaved-thinking-2025-05-14"
+ADAPTIVE_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+CLAUDE_MODEL_PATTERN = re.compile(r"claude-(opus|sonnet|haiku|fable|mythos)-(\d+)(?:[.-](\d{1,2})(?!\d))?")
+
 # Anthropic 的 stop_reason → 内部用的 finish_reason。max_tokens 要走「被截断」的补救流程。
 FINISH_REASONS = {
     "end_turn": "stop",
@@ -46,6 +68,53 @@ FINISH_REASONS = {
     "tool_use": "tool_calls",
     "refusal": "content_filter",
 }
+
+
+def claude_thinking_mode(model: str) -> str:
+    """adaptive（4.6 及以后、Mythos Preview）/ budget（4.5 及以前、3.7）/ unknown（认不出，不发思考参数）。"""
+    name = model.lower()
+    if "claude-mythos-preview" in name:
+        return "adaptive"
+    if "claude-3-7-sonnet" in name or "claude-3.7-sonnet" in name:
+        return "budget"
+    match = CLAUDE_MODEL_PATTERN.search(name)
+    if match is None:
+        return "unknown"
+    major, minor = int(match.group(2)), int(match.group(3) or 0)
+    if major >= 5 or (major == 4 and minor >= 6):
+        return "adaptive"
+    return "budget"
+
+
+def claude_reasoning_choices(model: str) -> list[str]:
+    """界面上能选的思考档位。xhigh 从 Opus 4.7 起才有；4.5 及以前「默认」和 none 都是不思考，选了档位才开。"""
+    mode = claude_thinking_mode(model)
+    if mode == "adaptive":
+        match = CLAUDE_MODEL_PATTERN.search(model.lower())
+        if match and int(match.group(2)) == 4 and int(match.group(3) or 0) == 6:
+            return ["low", "medium", "high", "max"]
+        return list(ADAPTIVE_EFFORTS)
+    if mode == "budget":
+        return ["none", "low", "medium", "high", "max"]
+    return []
+
+
+def thinking_request_fields(model: str, reasoning_effort: str | None, max_tokens: int) -> dict[str, Any]:
+    """按型号和思考档位要加进请求的字段（thinking / output_config / 调大的 max_tokens）；不开思考返回空。"""
+    mode = claude_thinking_mode(model)
+    if mode == "adaptive":
+        # display=summarized：新型号默认不返回思考文字（omitted），界面上就看不到它在想什么
+        fields: dict[str, Any] = {"thinking": {"type": "adaptive", "display": "summarized"}}
+        if reasoning_effort in ADAPTIVE_EFFORTS:
+            fields["output_config"] = {"effort": reasoning_effort}
+        return fields
+    if mode == "budget" and reasoning_effort in THINKING_BUDGET_TOKENS:
+        budget = THINKING_BUDGET_TOKENS[reasoning_effort]
+        return {
+            "thinking": {"type": "enabled", "budget_tokens": budget},
+            "max_tokens": max(max_tokens, budget + MIN_ANSWER_TOKENS),
+        }
+    return {}
 
 
 class AnthropicAPIError(RuntimeError):
@@ -126,6 +195,17 @@ def _content_blocks(content: Any) -> list[dict[str, Any]]:
 
 def _assistant_blocks(message: dict[str, Any]) -> list[dict[str, Any]]:
     blocks = _content_blocks(message.get("content"))
+    blocks += _tool_use_blocks(message)
+    # 思考块插回它在原回复里的位置：同一条回复里连着的思考块顺序必须和模型生成时一样
+    for item in sorted(message.get(THINKING_BLOCKS_FIELD) or [], key=lambda entry: entry.get("position", 0)):
+        block = item.get("block")
+        if isinstance(block, dict):
+            blocks.insert(min(int(item.get("position", 0)), len(blocks)), copy.deepcopy(block))
+    return blocks
+
+
+def _tool_use_blocks(message: dict[str, Any]) -> list[dict[str, Any]]:
+    blocks = []
     for index, call in enumerate(message.get("tool_calls") or []):
         function = call.get("function") or {}
         raw_arguments = function.get("arguments") or "{}"
@@ -240,6 +320,8 @@ class AnthropicStreamAccumulator:
     text_parts: list[str] = field(default_factory=list)
     reasoning_parts: list[str] = field(default_factory=list)
     tool_blocks: dict[int, _PartialToolBlock] = field(default_factory=dict)
+    # 内容块序号 → thinking / redacted_thinking 块（带签名，要原样传回）
+    thinking_blocks: dict[int, dict[str, Any]] = field(default_factory=dict)
     finish_reason: str | None = None
     input_tokens: int = 0
     cache_read_tokens: int = 0
@@ -272,7 +354,17 @@ class AnthropicStreamAccumulator:
             tool_calls=tool_calls,
             finish_reason=self.finish_reason,
             usage=usage,
+            thinking_blocks=self._signed_thinking_blocks(),
         )
+
+    def _signed_thinking_blocks(self) -> list[dict[str, Any]]:
+        """没签名的思考块（流断在中途）传回去会被拒，不留。"""
+        kept = []
+        for position in sorted(self.thinking_blocks):
+            block = self.thinking_blocks[position]
+            if block.get("type") == "redacted_thinking" or block.get("signature"):
+                kept.append({"position": position, "block": block})
+        return kept
 
 
 async def consume_event(
@@ -287,7 +379,19 @@ async def consume_event(
         accumulator.cache_creation_tokens = int(usage.get("cache_creation_input_tokens") or 0)
     elif event_type == "content_block_start":
         block = event.get("content_block") or {}
-        if block.get("type") == "tool_use":
+        block_type = block.get("type")
+        if block_type == "thinking":
+            accumulator.thinking_blocks[int(event.get("index") or 0)] = {
+                "type": "thinking",
+                "thinking": str(block.get("thinking") or ""),
+                "signature": str(block.get("signature") or ""),
+            }
+        elif block_type == "redacted_thinking":
+            accumulator.thinking_blocks[int(event.get("index") or 0)] = {
+                "type": "redacted_thinking",
+                "data": str(block.get("data") or ""),
+            }
+        if block_type == "tool_use":
             index = int(event.get("index") or 0)
             accumulator.tool_blocks[index] = _PartialToolBlock(
                 id=str(block.get("id") or ""),
@@ -307,8 +411,16 @@ async def consume_event(
             await listener.on_text(text)
         elif delta_type == "thinking_delta":
             thinking = str(delta.get("thinking") or "")
-            accumulator.reasoning_parts.append(thinking)
-            await listener.on_reasoning(thinking)
+            thinking_block = accumulator.thinking_blocks.get(int(event.get("index") or 0))
+            if thinking_block is not None:
+                thinking_block["thinking"] += thinking
+            if thinking:
+                accumulator.reasoning_parts.append(thinking)
+                await listener.on_reasoning(thinking)
+        elif delta_type == "signature_delta":
+            thinking_block = accumulator.thinking_blocks.get(int(event.get("index") or 0))
+            if thinking_block is not None:
+                thinking_block["signature"] = str(delta.get("signature") or "")
         elif delta_type == "input_json_delta":
             index = int(event.get("index") or 0)
             block = accumulator.tool_blocks.setdefault(index, _PartialToolBlock())
@@ -386,7 +498,7 @@ class AnthropicProvider:
         self.base_url = base_url
         self.api_key = api_key
         self.temperature = temperature
-        # 保留字段让 attach_auxiliary_providers 的接口一致；Anthropic 这边不用它
+        # 思考档位：怎么发看型号，见 thinking_request_fields
         self.reasoning_effort = reasoning_effort
         self.extra_body = extra_body or {}
         self.max_output_tokens = max_output_tokens
@@ -397,10 +509,13 @@ class AnthropicProvider:
         derived.reasoning_effort = reasoning_effort
         return derived
 
-    def _headers(self) -> dict[str, str]:
+    def _headers(self, request: dict[str, Any]) -> dict[str, str]:
         headers = {"anthropic-version": ANTHROPIC_VERSION, "content-type": "application/json"}
         if self.api_key:
             headers["x-api-key"] = self.api_key
+        thinking = request.get("thinking") or {}
+        if thinking.get("type") == "enabled" and request.get("tools") and claude_thinking_mode(self.model) == "budget":
+            headers["anthropic-beta"] = INTERLEAVED_THINKING_BETA
         return headers
 
     def build_request(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
@@ -415,7 +530,11 @@ class AnthropicProvider:
             request["system"] = system
         if tools:
             request["tools"] = convert_tools(tools)
-        if self.temperature is not None:
+        thinking_fields = {}
+        if "thinking" not in self.extra_body:
+            thinking_fields = thinking_request_fields(self.model, self.reasoning_effort, request["max_tokens"])
+        request.update(thinking_fields)
+        if self.temperature is not None and "thinking" not in thinking_fields:
             request["temperature"] = self.temperature
         request.update(self.extra_body)
         return request
@@ -447,7 +566,7 @@ class AnthropicProvider:
     ) -> LLMResponse:
         url = messages_url(self.base_url)
         request = self.build_request(messages, tools)
-        async with self.client.stream("POST", url, headers=self._headers(), json=request) as response:
+        async with self.client.stream("POST", url, headers=self._headers(request), json=request) as response:
             if response.status_code >= 400:
                 body = (await response.aread()).decode("utf-8", "replace")
                 message = _error_message(body)
