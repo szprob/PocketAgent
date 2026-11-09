@@ -92,11 +92,13 @@ class AgentModeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((self.directories.workspace / "a.txt").read_text(encoding="utf-8"), "done")
         modes = [event.data["mode"] for event in harness.recorder.of_type(EventType.AGENT_MODE)]
         self.assertEqual(modes, ["plan", "agent"])
-        # 计划模式期间发给模型的系统提示是计划模式那一套，批准后恢复 Agent 模式
-        plan_prompt = harness.provider.received_messages[1][0]["content"]
-        after_prompt = harness.provider.received_messages[4][0]["content"]
-        self.assertIn("现在处于【计划模式】", plan_prompt)
-        self.assertNotIn("现在处于【计划模式】", after_prompt)
+        # 系统提示整轮不变（改了前缀缓存失效）；切到计划模式、批准后切回，都是在对话末尾追加一条提示
+        system_prompts = {request[0]["content"] for request in harness.provider.received_messages}
+        self.assertEqual(len(system_prompts), 1)
+        plan_notice = harness.provider.received_messages[1][-1]["content"]
+        after_notice = harness.provider.received_messages[3][-1]["content"]
+        self.assertIn("现在处于【计划模式】", plan_notice)
+        self.assertIn("现在回到【Agent 模式】", after_notice)
         saved = SessionStore(self.directories.home_dir / "sessions").load(harness.agent.session.id)
         self.assertEqual(saved.agent_mode, "agent")
         self.assertEqual(saved.plan_status, "approved")

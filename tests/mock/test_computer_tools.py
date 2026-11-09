@@ -1,4 +1,4 @@
-"""computer use 工具的单元测试：按键拼脚本、PNG 头解析、坐标换算、截图尺寸、图片进工具结果消息、旧截图省略。
+"""computer use 工具的单元测试：按键拼脚本、PNG 头解析、坐标换算、截图尺寸、图片进工具结果消息。
 
 真的会截屏 / 点鼠标的路径不测（要权限、会动真屏幕）。
 """
@@ -12,7 +12,7 @@ from pathlib import Path
 from unittest import mock
 
 from pocketagent.core.nodes import ToolCallOutcome, append_tool_messages
-from pocketagent.interaction.attachments import AttachmentStore, omit_old_tool_images, tool_message_content
+from pocketagent.interaction.attachments import AttachmentStore, tool_message_content
 from pocketagent.tools import default_tool_registry
 from pocketagent.tools.base import ToolContext, ToolResult
 from pocketagent.tools.computer import (
@@ -331,52 +331,3 @@ class ToolImagesInHistoryTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(message["content"][0], {"type": "text", "text": "已截屏"})
         self.assertEqual(message["content"][1]["type"], "image_url")
 
-
-class OmitOldToolImagesTest(unittest.TestCase):
-    """历史里只给模型看最近几张截图，按批省略，用户自己附的图不动。"""
-
-    @staticmethod
-    def _shot(index: int) -> dict:
-        return {
-            "role": "tool",
-            "tool_call_id": f"call_{index}",
-            "content": [
-                {"type": "text", "text": f"第 {index} 张"},
-                {"type": "image_url", "image_url": {"url": f"pocketagent-attachment:s/{index}"}, "_name": f"shot{index}.png"},
-            ],
-        }
-
-    def _history(self, count: int) -> list[dict]:
-        user_image = {"type": "image_url", "image_url": {"url": "pocketagent-attachment:s/user"}, "_name": "mine.png"}
-        return [{"role": "user", "content": [{"type": "text", "text": "看图"}, user_image]}] + [
-            self._shot(index) for index in range(count)
-        ]
-
-    @staticmethod
-    def _image_count(messages: list[dict]) -> int:
-        return sum(
-            1
-            for message in messages
-            if isinstance(message.get("content"), list)
-            for part in message["content"]
-            if part.get("type") == "image_url"
-        )
-
-    def test_keeps_everything_until_a_full_batch_is_surplus(self) -> None:
-        messages = self._history(5)
-
-        self.assertIs(omit_old_tool_images(messages), messages)
-
-    def test_omits_the_oldest_batch_and_leaves_user_images(self) -> None:
-        messages = self._history(7)
-
-        result = omit_old_tool_images(messages)
-
-        # 7 张截图多出 4 张，省掉最早的 3 张（整批），剩 4 张截图 + 用户的 1 张
-        self.assertEqual(self._image_count(result), 5)
-        self.assertEqual(result[1]["content"][1]["type"], "text")
-        self.assertIn("shot0.png", result[1]["content"][1]["text"])
-        self.assertEqual(result[4]["content"][1]["type"], "image_url")
-        self.assertEqual(result[0]["content"][1]["type"], "image_url")
-        # 原消息不改
-        self.assertEqual(self._image_count(messages), 8)

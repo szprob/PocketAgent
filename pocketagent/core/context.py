@@ -67,6 +67,13 @@ class AgentContext:
     token_anchor: TokenAnchor | None = None
     # agent 干活时用户插的话（完整的 user 消息），下一次调用模型前由 GuardNode 放进对话
     pending_interjections: list[dict[str, Any]] = field(default_factory=list)
+    # 发给模型的工具定义。两次压缩之间冻结：中途改工具定义（和系统提示）会让接口的前缀缓存从头失效。
+    # None 表示下一次调模型时按当时的工具注册表定下来
+    tool_schemas: list[dict[str, Any]] | None = None
+    # 下一次调模型前追加进对话的提示（模式切换、日期变了），同一个 key 只留最新的一条
+    pending_notices: dict[str, str] = field(default_factory=dict)
+    # 历史被压缩换掉之后调：主 agent 借这个时机重建系统提示和工具定义；子 agent 不设
+    on_history_replaced: Callable[[], None] | None = None
     # 后台正在做的压缩；历史每被压缩换掉一次版本号加一
     pending_compaction: PendingCompaction | None = None
     history_version: int = 0

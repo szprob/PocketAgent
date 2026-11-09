@@ -63,6 +63,9 @@ def history_items(messages: list[dict[str, Any]], tools: ToolRegistry) -> list[d
     tool_items_by_call_id: dict[str, dict[str, Any]] = {}
     for message in messages:
         role = message.get("role")
+        if role == "user" and message.get("_kind") == "context":
+            # 模式切换、日期这类只给模型看的提示，界面上不显示
+            continue
         if role == "user":
             items.append(_user_item(message))
         elif role == "assistant":

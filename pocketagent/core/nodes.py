@@ -26,7 +26,6 @@ from pocketagent.interaction.attachments import (
     AttachmentStore,
     materialize_messages,
     message_display,
-    omit_old_tool_images,
     tool_message_content,
 )
 from pocketagent.llm.base import (
@@ -68,8 +67,8 @@ CUT_OFF_FINISH_REASONS = {
 
 def messages_for_model(context: AgentContext) -> list[dict[str, Any]]:
     """发给模型的消息：去掉内部字段，展开附件引用（不能看图的模型拿到的是文字说明）；
-    没开「跨轮保留思考内容」时，之前几轮的思考不发；较早的截图换成一句说明，只留最近几张。"""
-    messages = omit_old_tool_images(context.messages)
+    没开「跨轮保留思考内容」时，之前几轮的思考不发。"""
+    messages = context.messages
     if not context.settings.reasoning_across_turns:
         messages = without_earlier_reasoning(messages)
     return materialize_messages(messages, context.attachments_root, context.settings.supports_images)
@@ -103,6 +102,7 @@ class GuardNode(AgentNode):
     async def post_async(self, context: AgentContext, prep_result: Any, exec_result: Any) -> str:
         await _apply_interjections(context)
         await apply_finished_compaction(context)
+        _apply_notices(context)
         if context.turn.step_count >= context.settings.max_steps:
             context.turn.stop_reason = "step_limit"
             await context.events.emit(EventType.STEP_LIMIT, max_steps=context.settings.max_steps)
@@ -240,6 +240,17 @@ def _after_history_replaced(context: AgentContext) -> None:
     context.history_version += 1
     context.token_anchor = None
     context.turn.compactions += 1
+    # 历史已经整个换掉、缓存反正要重建，攒着的系统提示和工具定义变化在这时一起生效
+    if context.on_history_replaced is not None:
+        context.on_history_replaced()
+
+
+def _apply_notices(context: AgentContext) -> None:
+    """模式切换、日期变了这类提示追加在对话末尾，而不是改系统提示：改系统提示会让前缀缓存从头失效。
+    _kind=context：界面重放历史时不显示（模式切换界面上本来就看得到）。"""
+    for text in context.pending_notices.values():
+        context.messages.append({"role": "user", "content": text, "_kind": "context"})
+    context.pending_notices.clear()
 
 
 async def _apply_interjections(context: AgentContext) -> None:
@@ -291,10 +302,13 @@ class ThinkNode(AgentNode):
 
     async def prep_async(self, context: AgentContext) -> ThinkRequest:
         context.turn.step_count += 1
+        if context.tool_schemas is None:
+            # 工具定义在这时定下来，到下一次压缩之前不再变（见 AgentContext.tool_schemas）
+            context.tool_schemas = context.tools.openai_schemas()
         return ThinkRequest(
             provider=context.provider,
             messages=messages_for_model(context),
-            tool_schemas=context.tools.openai_schemas(),
+            tool_schemas=context.tool_schemas,
             events=context.events,
         )
 

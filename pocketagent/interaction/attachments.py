@@ -280,42 +280,6 @@ def _materialize_part(
     return [{"type": "image_url", "image_url": {"url": data_url}}, {"type": "text", "text": note}]
 
 
-# 历史里只给模型看最近几张工具返回的图（截图）：截图又大又多，旧的早就过时了，每一步都重发很费 token。
-# 按批省略（多出来攒够一批才一起省），被省掉的那几张不会每一步都变，接口的前缀缓存才不会每一步都失效。
-RECENT_TOOL_IMAGES = 3
-TOOL_IMAGE_OMIT_BATCH = 3
-
-
-def omit_old_tool_images(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """把较早的工具结果图片换成一句说明，只留最近几张。用户自己附的图不动。不改原消息。"""
-    positions: list[tuple[int, int]] = []
-    for message_index, message in enumerate(messages):
-        content = message.get("content")
-        if message.get("role") != "tool" or not isinstance(content, list):
-            continue
-        for part_index, part in enumerate(content):
-            if part.get("type") == "image_url":
-                positions.append((message_index, part_index))
-    surplus = len(positions) - RECENT_TOOL_IMAGES
-    if surplus < TOOL_IMAGE_OMIT_BATCH:
-        return messages
-    omitted_count = surplus // TOOL_IMAGE_OMIT_BATCH * TOOL_IMAGE_OMIT_BATCH
-    omitted_by_message: dict[int, set[int]] = {}
-    for message_index, part_index in positions[:omitted_count]:
-        omitted_by_message.setdefault(message_index, set()).add(part_index)
-    result = list(messages)
-    for message_index, part_indexes in omitted_by_message.items():
-        message = messages[message_index]
-        parts = []
-        for part_index, part in enumerate(message["content"]):
-            if part_index in part_indexes:
-                name = part.get("_name") or "图片"
-                part = {"type": "text", "text": f"[这里原来是一张截图（{name}），已经过时，为节省上下文省略了；要看现在的屏幕就重新截图]"}
-            parts.append(part)
-        result[message_index] = {**message, "content": parts}
-    return result
-
-
 def materialize_messages(
     messages: list[dict[str, Any]], attachments_root: Path | None, supports_images: bool
 ) -> list[dict[str, Any]]:

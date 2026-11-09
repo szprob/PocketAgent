@@ -11,6 +11,8 @@ class ScriptedProvider:
         self.remaining_responses = list(responses)
         # 每次调用时模型看到的消息，测试里拿来断言
         self.received_messages: list[list[dict[str, Any]]] = []
+        # 每次调用时模型看到的工具定义
+        self.received_tools: list[list[dict[str, Any]]] = []
 
     async def complete(
         self,
@@ -19,6 +21,7 @@ class ScriptedProvider:
         listener: StreamListener,
     ) -> LLMResponse:
         self.received_messages.append(copy.deepcopy(messages))
+        self.received_tools.append(copy.deepcopy(tools))
         if not self.remaining_responses:
             raise RuntimeError("ScriptedProvider 的剧本已经用完")
         response = self.remaining_responses.pop(0)

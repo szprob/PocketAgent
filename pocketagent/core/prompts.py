@@ -90,6 +90,21 @@ DESIGN_MODE_PROMPT = """现在处于【设计模式】：先把方案设计清�
 - 用户可以要求继续完善：按意见补充调研、改设计后再次提交。"""
 
 
+AGENT_MODE_NOTICE = "现在回到【Agent 模式】：可以正常读写文件、执行命令，按用户的要求动手。"
+
+
+def mode_switch_notice(mode: AgentMode) -> str:
+    """切换模式后追加进对话的提示。系统提示到下一次压缩才重建，这条以后以它为准。"""
+    instructions = MODE_PROMPTS.get(mode, NORMAL_PLAN_HINT)
+    if mode is AgentMode.AGENT:
+        instructions = f"{AGENT_MODE_NOTICE}\n{NORMAL_PLAN_HINT}"
+    return f"（工作模式切换了，以这条为准，系统提示里写的模式已经过时）\n{instructions}"
+
+
+def date_notice(today: str) -> str:
+    return f"（今天是 {today}，系统提示里写的日期已经过时，以这条为准）"
+
+
 MODE_PROMPTS = {
     AgentMode.AGENT: NORMAL_PLAN_HINT,
     AgentMode.ASK: ASK_MODE_PROMPT,

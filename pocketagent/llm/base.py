@@ -134,10 +134,11 @@ def without_tool_call_extras(tool_calls: list[dict[str, Any]]) -> list[dict[str,
 
 
 def without_earlier_reasoning(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """只留最后一条用户消息之后（这一轮工具调用之间）的思考内容，更早的去掉。不改原消息。"""
+    """只留最后一条用户消息之后（这一轮工具调用之间）的思考内容，更早的去掉。不改原消息。
+    PocketAgent 自己插的提示（_kind：模式切换、截断说明等）不算用户消息，不当成新一轮的开始。"""
     last_user_index = -1
     for index, message in enumerate(messages):
-        if message.get("role") == "user":
+        if message.get("role") == "user" and not message.get("_kind"):
             last_user_index = index
     earlier = without_reasoning(messages[: last_user_index + 1])
     return earlier + messages[last_user_index + 1 :]

@@ -12,7 +12,9 @@
 
 import asyncio
 import copy
+import re
 import uuid
+from datetime import date
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -32,7 +34,12 @@ from pocketagent.core.nodes import (
     start_background_compaction,
     wait_for_compaction,
 )
-from pocketagent.core.prompts import apply_system_prompt_template, build_system_prompt
+from pocketagent.core.prompts import (
+    apply_system_prompt_template,
+    build_system_prompt,
+    date_notice,
+    mode_switch_notice,
+)
 from pocketagent.core.session import Session, SessionJournal, SessionStore
 from pocketagent.core.subagents import attach_subagent_runner
 from pocketagent.core.tool_outputs import session_directory
@@ -254,7 +261,14 @@ class Agent:
         self.system_prompt_template: str | None = None
         self.flow = build_agent_flow()
         self._attach_plan_callbacks()
-        self.refresh_system_prompt()
+        # 系统提示里写的「今天」；过了一天在下一轮开头补一条提示，不改系统提示
+        self._prompt_date = _today()
+        self.context.on_history_replaced = self.rebuild_system_prompt
+        if self._model_has_seen_history() and self.context.messages[0].get("role") == "system":
+            # 续跑的会话沿用存下来的系统提示：接口那边可能还缓存着这段前缀，重建会让它整段失效
+            self._prompt_date = _date_in_prompt(str(self.context.messages[0].get("content") or "")) or self._prompt_date
+        else:
+            self.rebuild_system_prompt()
 
     @property
     def session(self) -> Session:
@@ -279,7 +293,11 @@ class Agent:
         self.session.agent_mode = target.value
         self.context.permissions.agent_mode = target
         self.session_store.save(self.session)
-        self.refresh_system_prompt()
+        if self._model_has_seen_history():
+            # 不改系统提示（改了前缀缓存从头失效）：下一次调模型前在对话末尾告诉它，权限门禁照常立刻按新模式拦
+            self.context.pending_notices["mode"] = mode_switch_notice(target)
+        else:
+            self.rebuild_system_prompt()
         await self.context.events.emit(EventType.AGENT_MODE, mode=target.value)
 
     async def suggest_plan_mode(self, reason: str) -> bool:
@@ -315,8 +333,18 @@ class Agent:
             await self.set_agent_mode(AgentMode.AGENT)
         return decision
 
-    def refresh_system_prompt(self) -> None:
-        """续跑旧会话时也重建系统提示：日期、AGENTS.md 可能已经变了。"""
+    def _model_has_seen_history(self) -> bool:
+        """模型已经回过话：接口那边缓存了「系统提示 + 工具定义 + 历史」这段前缀。"""
+        return any(message.get("role") == "assistant" for message in self.context.messages)
+
+    def rebuild_system_prompt(self) -> None:
+        """重建系统提示，工具定义在下一次调模型时按当时的注册表重新定下来。
+
+        只在这几个时候调：还没调过模型（新任务、刚连上 MCP）、压缩换掉历史之后、换提示词模板（回放 / 评测）。
+        两次压缩之间系统提示和工具定义都不动：哪怕改一个字，接口的前缀缓存也从头失效，整段历史按原价重算。
+        这期间的变化：模式切换、日期变了追加一条提示（pending_notices）；工具增删（改设置、MCP）先换注册表，
+        模型看到的定义等下一次压缩；调到已经关掉的工具会报「没有这个工具」。
+        """
         settings = self.context.settings
         default_prompt = build_system_prompt(
             settings.workspace,
@@ -338,14 +366,23 @@ class Agent:
             messages[0] = system_message
         else:
             messages.insert(0, system_message)
-        # 锚点记的是「旧系统提示 + 旧工具定义」的占用，提示换了（模式、日期、AGENTS.md、
-        # MCP 工具）它就不准了，继续用会让压缩阈值判错，下一次估算从头算
+        self.context.tool_schemas = None
+        # 新的系统提示里已经是当前的模式和日期，攒着的提示用不着了
+        self.context.pending_notices.pop("mode", None)
+        self.context.pending_notices.pop("date", None)
+        self._prompt_date = _today()
+        # 锚点记的是「旧系统提示 + 旧工具定义」的占用，提示换了它就不准了，继续用会让压缩阈值判错
         self.context.token_anchor = None
 
+    def _rebuild_unless_cached(self) -> None:
+        """工具清单变了：模型还没回过话就直接重建；回过了就等下一次压缩（能执行的工具以注册表为准）。"""
+        if not self._model_has_seen_history():
+            self.rebuild_system_prompt()
+
     def use_system_prompt_template(self, template: str | None) -> None:
-        """换掉系统提示（None 换回默认）。之后换模式、MCP 工具变了重建提示时也一直用它。"""
+        """换掉系统提示（None 换回默认）。回放 / 评测在开跑前调，之后压缩重建提示时也一直用它。"""
         self.system_prompt_template = template
-        self.refresh_system_prompt()
+        self.rebuild_system_prompt()
 
     async def _ensure_mcp_tools(self) -> None:
         """每一轮开跑前确认 MCP 服务器连着、工具都在注册表里（幂等，没配 mcp.json 时几乎不花时间）。
@@ -364,8 +401,8 @@ class Agent:
             problems = [f"MCP 出错：{type(error).__name__}: {error}"]
             tools_before = tools_after = 0
         if tools_after != tools_before:
-            # 工具清单变了，系统提示里的「可用工具」也要跟着变
-            self.refresh_system_prompt()
+            # 工具清单变了：模型还没回过话就重建系统提示，不然等下一次压缩
+            self._rebuild_unless_cached()
         for problem in problems:
             if problem in self._mcp_problems_reported:
                 continue
@@ -378,6 +415,7 @@ class Agent:
         # 上一次进程可能崩在工具执行中间：先把没拿到结果的 tool_call 补上，不然请求会 400
         close_dangling_tool_calls(context.messages)
         context.turn = TurnState()
+        self._queue_date_notice()
         # 续跑的会话 turns 不是 0，不算新任务：session_start 只在第一次开跑时出现
         first_turn = context.session.turns == 0
         context.session.turns += 1
@@ -571,7 +609,7 @@ class Agent:
         self._attach_plan_callbacks()
         if self.context.mcp_manager is not None:
             self.context.mcp_manager.register_tools(self.context.tools)
-        self.refresh_system_prompt()
+        self._rebuild_unless_cached()
 
     async def attach_mcp(self, manager: McpManager) -> list[str]:
         """连上 manager 里的 MCP 服务器，把它们的工具注册进当前注册表（幂等）。
@@ -581,11 +619,28 @@ class Agent:
         """
         problems = await manager.ensure_connected()
         problems += manager.register_tools(self.context.tools)
-        self.refresh_system_prompt()
+        self._rebuild_unless_cached()
         return problems
 
     async def _emit_todos_updated(self, todos: list[dict[str, Any]]) -> None:
         await self.context.events.emit(EventType.TODOS_UPDATED, todos=todos)
+
+    def _queue_date_notice(self) -> None:
+        """跨天续跑：系统提示里的日期不改（改了缓存失效），这一轮开头补一条「今天是几号」。"""
+        today = _today()
+        if today != self._prompt_date:
+            self.context.pending_notices["date"] = date_notice(today)
+            self._prompt_date = today
+
+
+def _today() -> str:
+    return date.today().isoformat()
+
+
+def _date_in_prompt(prompt: str) -> str | None:
+    """系统提示「运行环境」里写的日期（见 prompts._environment_section）。"""
+    match = re.search(r"今天：(\d{4}-\d{2}-\d{2})", prompt)
+    return match.group(1) if match else None
 
 
 def _as_user_message(user_input: str | dict[str, Any]) -> dict[str, Any]:
