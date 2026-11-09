@@ -18,6 +18,7 @@ from pocketagent.core.compaction import (
     rebuild_with_summary_and_tail,
     shrink_for_summary,
     summarize_history,
+    without_old_reasoning,
 )
 from pocketagent.core.context import AgentContext
 from pocketagent.core.events import EventBus, EventType
@@ -237,6 +238,9 @@ def _keep_title(context: AgentContext) -> None:
 
 
 def _after_history_replaced(context: AgentContext) -> None:
+    # 后台压缩原样留下的末尾几条里也不带旧思考；这一轮还在跑（调过模型、还没停）就留着这一轮的
+    turn_in_progress = context.turn.step_count > 0 and not context.turn.stop_reason
+    context.session.messages = without_old_reasoning(context.messages, turn_in_progress)
     context.history_version += 1
     context.token_anchor = None
     context.turn.compactions += 1

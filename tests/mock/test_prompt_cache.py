@@ -7,6 +7,7 @@
 import unittest
 from unittest import mock
 
+from pocketagent.core.compaction import without_old_reasoning
 from pocketagent.core.session import Session
 from pocketagent.interaction.modes import AgentMode
 from pocketagent.llm import LLMResponse, without_earlier_reasoning
@@ -153,3 +154,38 @@ class NoticesDoNotStartANewTurnTest(unittest.TestCase):
         ]
 
         self.assertEqual(without_earlier_reasoning(messages)[1]["reasoning_content"], "这一轮的思考")
+
+
+class CompactionDropsOldReasoningTest(unittest.IsolatedAsyncioTestCase):
+    """压缩时旧思考一律去掉（「跨轮保留」开着也一样）；平时按设置来。正在跑的这一轮的思考留着。"""
+
+    async def test_idle_compaction_strips_reasoning_even_when_keeping_it_across_turns(self) -> None:
+        directories = TemporaryDirectories()
+        self.addCleanup(directories.cleanup)
+        harness = build_harness(
+            directories,
+            [
+                LLMResponse(reasoning="第一轮的思考", text="一"),
+                LLMResponse(reasoning="第二轮的思考", text="二"),
+                LLMResponse(text="这是摘要"),
+            ],
+            reasoning_across_turns=True,
+        )
+        await harness.agent.run_turn("第一个问题")
+        await harness.agent.run_turn("第二个问题")
+        # 平时按设置：跨轮保留开着，第二轮请求里带着第一轮的思考
+        self.assertEqual(harness.provider.received_messages[1][2]["reasoning_content"], "第一轮的思考")
+
+        await harness.agent.compact()
+
+        self.assertFalse(any("reasoning_content" in message for message in harness.agent.context.messages))
+
+    def test_the_turn_in_progress_keeps_its_reasoning(self) -> None:
+        messages = [
+            {"role": "system", "content": "系统"},
+            {"role": "user", "content": "（之前的对话已压缩，以下是摘要）\n\n…"},
+            {"role": "assistant", "content": None, "reasoning_content": "这一轮还在用", "tool_calls": []},
+        ]
+
+        self.assertEqual(without_old_reasoning(messages, turn_in_progress=True)[2]["reasoning_content"], "这一轮还在用")
+        self.assertNotIn("reasoning_content", without_old_reasoning(messages, turn_in_progress=False)[2])

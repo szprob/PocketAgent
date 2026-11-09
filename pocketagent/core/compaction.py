@@ -17,7 +17,13 @@ from typing import Any
 
 from pocketagent.core.tokens import estimate_tokens
 from pocketagent.knowledge.skills import loaded_skill_blocks
-from pocketagent.llm.base import LLMProvider, LLMResponse, SilentListener, without_reasoning
+from pocketagent.llm.base import (
+    LLMProvider,
+    LLMResponse,
+    SilentListener,
+    without_earlier_reasoning,
+    without_reasoning,
+)
 
 SUMMARY_INSTRUCTION = """请把上面的对话压缩成一份交接摘要，让接手的人不看原始记录也能继续工作。必须包含：
 1. 用户的原始需求和后来补充的要求（尽量保留原话）
@@ -124,6 +130,14 @@ class PendingCompaction:
     history_version: int
     reason: str
     tokens_before: int
+
+
+def without_old_reasoning(messages: list[dict[str, Any]], turn_in_progress: bool) -> list[dict[str, Any]]:
+    """压缩后留下的消息里不带旧的思考内容，不管「跨轮保留思考内容」开没开：压缩本来就要重建缓存，正好清掉。
+    正在进行的这一轮还要接着调工具，这一轮的思考得照常传回，留着。不改原消息。"""
+    if turn_in_progress:
+        return without_earlier_reasoning(messages)
+    return without_reasoning(messages)
 
 
 def rebuild_with_summary_and_tail(
