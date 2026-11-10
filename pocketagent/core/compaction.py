@@ -7,7 +7,9 @@
   接口的前缀缓存能整段命中，这次请求几乎只为输出付钱。工具定义照带（换了就不命中缓存），指令里要求只写文字。
 - 请求放不下（接口报超长）或模型没给出文字时退回老办法：不带工具、不发图片，长消息截短、思考裁短写进正文，
   还放不下就从最早的对话开始丢。
-- 换上摘要时把还要用的东西原样接在后面：加载过的技能正文、任务清单、计划。
+- 换上摘要时把还要用的东西原样接在后面：加载过的技能正文、任务清单、计划，
+  还有最近读过、改过的几个文件现在的内容（和 Claude Code / Qoder 一样：最多 5 个、每个约 5k token），
+  接着改代码不用先把文件重读一遍。
 
 默认在后台压缩，不挡着对话（见 nodes.py 的 GuardNode）：
 - 占用超过阈值：拿当时的历史快照在后台做摘要，这一轮照常往下跑；
@@ -16,10 +18,12 @@
 """
 
 import asyncio
+import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
+from pocketagent.core.tokens import estimate_text_tokens as estimate_tokens_of_text
 from pocketagent.core.tokens import estimate_tokens
 from pocketagent.knowledge.skills import loaded_skill_blocks
 from pocketagent.llm.base import (
@@ -64,6 +68,12 @@ LEGACY_RESUME_HINTS = ("\n\n请根据摘要继续完成任务。",)
 PRESERVED_SKILLS_HEADER = "\n\n（压缩前加载过的技能，完整说明原样保留如下）\n\n"
 TODOS_HEADER = "\n\n（压缩前的任务清单，原样保留）\n"
 PLAN_HEADER = "\n\n（压缩前的计划，原样保留）\n"
+RESTORED_FILES_HEADER = "\n\n（压缩前最近读过、改过的文件，下面是它们现在的内容，行号和 read_file 一样；没列全的部分需要时再读）\n"
+# 压缩后重新附上的文件：从这几个工具的调用里找，越近的越先放
+FILE_TOOL_NAMES = ("read_file", "edit_file", "write_file")
+RESTORE_FILE_COUNT = 5
+RESTORE_FILE_MAX_TOKENS = 5000
+RESTORE_TOTAL_MAX_TOKENS = 50_000
 # 退回老办法时，单条消息最多保留这么多字（长的工具输出头尾各留一半）
 SUMMARY_MESSAGE_LIMIT_CHARS = 4000
 # 退回老办法时每一步的思考最多带这么多字：思考动辄上万字，全带会把请求撑满、挤掉更早的对话；
@@ -92,7 +102,7 @@ def previous_summary_text(messages: list[dict[str, Any]]) -> str | None:
         if body.endswith(hint):
             body = body[: -len(hint)]
     # 摘要后面原样接着的技能、任务清单、计划不算摘要正文
-    for header in (PRESERVED_SKILLS_HEADER, TODOS_HEADER, PLAN_HEADER):
+    for header in (PRESERVED_SKILLS_HEADER, TODOS_HEADER, PLAN_HEADER, RESTORED_FILES_HEADER):
         position = body.find(header)
         if position != -1:
             body = body[:position]
@@ -222,11 +232,62 @@ def without_old_reasoning(messages: list[dict[str, Any]], turn_in_progress: bool
 
 
 @dataclass
+class RestoredFile:
+    """压缩后重新附上的一个文件：路径（模型当时怎么写的就怎么写）和现在的内容（带行号，可能截了尾）。"""
+
+    path: str
+    content: str
+
+
+@dataclass
 class PreservedState:
     """换上摘要时原样接在后面的东西：摘要难免走样，这些后面还要照着做。"""
 
     todos: list[dict[str, Any]] | None = None
     plan: str = ""
+    files: list[RestoredFile] = field(default_factory=list)
+
+
+def recent_file_paths(messages: list[dict[str, Any]], limit: int | None = RESTORE_FILE_COUNT) -> list[str]:
+    """最近读过、改过的文件路径，越近越靠前、不重复；从 read_file / edit_file / write_file 的调用参数里找。"""
+    paths: list[str] = []
+    for message in reversed(messages):
+        for call in reversed(message.get("tool_calls") or []):
+            path = _file_tool_path(call)
+            if path and path not in paths:
+                paths.append(path)
+                if limit is not None and len(paths) >= limit:
+                    return paths
+    return paths
+
+
+def _file_tool_path(call: dict[str, Any]) -> str:
+    function = call.get("function") or {}
+    if function.get("name") not in FILE_TOOL_NAMES:
+        return ""
+    try:
+        arguments = json.loads(function.get("arguments") or "{}")
+    except json.JSONDecodeError:
+        return ""
+    path = arguments.get("path") if isinstance(arguments, dict) else None
+    return path.strip() if isinstance(path, str) else ""
+
+
+def clip_to_tokens(numbered_text: str, max_tokens: int) -> str:
+    """带行号的文件内容超过预算时按整行截尾，末尾说明从哪行接着读。"""
+    if estimate_tokens_of_text(numbered_text) <= max_tokens:
+        return numbered_text
+    kept: list[str] = []
+    used = 0
+    for line in numbered_text.splitlines():
+        cost = estimate_tokens_of_text(line) + 1
+        if used + cost > max_tokens:
+            break
+        kept.append(line)
+        used += cost
+    next_line = len(kept) + 1
+    kept.append(f"（后面还有，需要时用 read_file 从 offset={next_line} 接着读）")
+    return "\n".join(kept)
 
 
 def rebuild_with_summary_and_tail(
@@ -266,4 +327,7 @@ def _preserved_text(preserved: PreservedState | None) -> str:
         text += TODOS_HEADER + "\n".join(lines)
     if preserved.plan.strip():
         text += PLAN_HEADER + preserved.plan.strip()
+    if preserved.files:
+        blocks = [f"### {restored.path}\n{restored.content}" for restored in preserved.files]
+        text += RESTORED_FILES_HEADER + "\n\n".join(blocks)
     return text

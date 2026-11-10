@@ -4,10 +4,17 @@
 追加一条提示；工具增删先换注册表，模型看到的定义等下一次压缩；压缩时一起重建。
 """
 
+import json
 import unittest
 from unittest import mock
 
-from pocketagent.core.compaction import SUMMARY_INSTRUCTION, clean_summary, previous_summary_text, without_old_reasoning
+from pocketagent.core.compaction import (
+    SUMMARY_INSTRUCTION,
+    clean_summary,
+    previous_summary_text,
+    recent_file_paths,
+    without_old_reasoning,
+)
 from pocketagent.core.session import Session
 from pocketagent.interaction.modes import AgentMode
 from pocketagent.llm import ContextOverflowError, LLMResponse, without_earlier_reasoning
@@ -267,3 +274,64 @@ class FallbackProvider:
                 raise self.first_reply
             return self.first_reply
         return LLMResponse(text="截短后的摘要")
+
+
+class RestoredFilesTest(unittest.IsolatedAsyncioTestCase):
+    """压缩后把最近读过、改过的文件按现在的内容重新附上（Claude Code / Qoder 都这样），接着改不用先重读。"""
+
+    def setUp(self) -> None:
+        self.directories = TemporaryDirectories()
+        self.workspace = self.directories.workspace
+
+    def tearDown(self) -> None:
+        self.directories.cleanup()
+
+    async def test_recent_files_come_back_with_their_current_content(self) -> None:
+        (self.workspace / "a.py").write_text("print('old')\n", encoding="utf-8")
+        (self.workspace / "big.txt").write_text("一行很长的内容\n" * 3000, encoding="utf-8")
+        (self.workspace / "AGENTS.md").write_text("项目说明\n", encoding="utf-8")
+        harness = build_harness(
+            self.directories,
+            [
+                LLMResponse(
+                    tool_calls=[
+                        tool_call("c1", "read_file", '{"path": "a.py"}'),
+                        tool_call("c2", "read_file", '{"path": "AGENTS.md"}'),
+                        tool_call("c3", "read_file", '{"path": "big.txt"}'),
+                        tool_call("c4", "read_file", '{"path": "gone.txt"}'),
+                    ]
+                ),
+                LLMResponse(text="看完了"),
+                LLMResponse(text="这是摘要"),
+            ],
+        )
+        await harness.agent.run_turn("看看这几个文件")
+        # 读完之后文件又被改了：附上的应该是现在的内容
+        (self.workspace / "a.py").write_text("print('new')\n", encoding="utf-8")
+
+        await harness.agent.compact()
+
+        summary = harness.agent.context.messages[1]["content"]
+        self.assertIn("### a.py\n     1\tprint('new')", summary)
+        self.assertNotIn("print('old')", summary)
+        # 系统提示里已经有的、已经不在的不附
+        self.assertNotIn("### AGENTS.md", summary)
+        self.assertNotIn("gone.txt", summary.split("（压缩前最近读过")[1])
+        # 大文件截尾，告诉模型从哪行接着读
+        self.assertIn("### big.txt", summary)
+        self.assertIn("接着读）", summary)
+        # 附上的文件不算摘要正文
+        self.assertEqual(previous_summary_text(harness.agent.context.messages), "这是摘要")
+
+    def test_recent_file_paths_newest_first_without_duplicates(self) -> None:
+        def call(name: str, path: str) -> dict:
+            return {"id": path, "type": "function", "function": {"name": name, "arguments": json.dumps({"path": path})}}
+
+        messages = [
+            {"role": "assistant", "content": None, "tool_calls": [call("read_file", "a.py"), call("grep", "x")]},
+            {"role": "assistant", "content": None, "tool_calls": [call("edit_file", "b.py")]},
+            {"role": "assistant", "content": None, "tool_calls": [call("read_file", "a.py"), call("write_file", "c.py")]},
+        ]
+
+        self.assertEqual(recent_file_paths(messages), ["c.py", "a.py", "b.py"])
+        self.assertEqual(recent_file_paths(messages, limit=2), ["c.py", "a.py"])

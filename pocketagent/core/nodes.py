@@ -13,9 +13,14 @@ from typing import Any
 from pocketflow import AsyncNode
 
 from pocketagent.core.compaction import (
+    RESTORE_FILE_MAX_TOKENS,
+    RESTORE_TOTAL_MAX_TOKENS,
     PendingCompaction,
     PreservedState,
+    RestoredFile,
     SummaryFailed,
+    clip_to_tokens,
+    recent_file_paths,
     rebuild_messages_with_summary,
     rebuild_with_summary_and_tail,
     shrink_for_summary,
@@ -42,6 +47,8 @@ from pocketagent.llm.base import (
 )
 from pocketagent.safety.permissions import ApprovalRequest, Decision, PermissionCheck
 from pocketagent.safety.reviewer import ReviewResult, review_tool_call
+from pocketagent.core.prompts import load_instruction_files
+from pocketagent.tools.files import READ_DEFAULT_LINE_LIMIT, read_numbered_lines
 from pocketagent.tools.base import (
     Tool,
     ToolKind,
@@ -230,8 +237,9 @@ async def apply_finished_compaction(context: AgentContext) -> bool:
         return False
     tokens_before = context.estimated_context_tokens()
     _keep_title(context)
+    snapshot, kept = context.messages[: pending.snapshot_length], context.messages[pending.snapshot_length :]
     context.session.messages = rebuild_with_summary_and_tail(
-        context.messages, pending.snapshot_length, pending.task.result(), _preserved_state(context)
+        context.messages, pending.snapshot_length, pending.task.result(), _preserved_state(context, snapshot, kept)
     )
     _after_history_replaced(context)
     await context.events.emit(
@@ -267,11 +275,57 @@ def _keep_title(context: AgentContext) -> None:
         context.session.title = context.session.display_title()
 
 
-def _preserved_state(context: AgentContext) -> PreservedState:
-    """换上摘要时原样接在后面的任务清单和计划（还在用的才带：计划被拒或者没有就不带）。"""
+def _preserved_state(
+    context: AgentContext, summarized: list[dict[str, Any]], kept: list[dict[str, Any]]
+) -> PreservedState:
+    """换上摘要时原样接在后面的：任务清单、计划（还在用的才带：计划被拒或者没有就不带）、最近读过改过的文件。
+    summarized 是被摘要替换掉的消息，kept 是原样接在摘要后面的消息。"""
     session = context.session
     plan = session.plan if session.plan and session.plan_status in ("pending", "approved") else ""
-    return PreservedState(todos=list(session.todos or []), plan=plan or "")
+    return PreservedState(todos=list(session.todos or []), plan=plan or "", files=_restored_files(context, summarized, kept))
+
+
+def _restored_files(
+    context: AgentContext, summarized: list[dict[str, Any]], kept: list[dict[str, Any]]
+) -> list[RestoredFile]:
+    """被摘要替换掉的那段里最近读过、改过的几个文件，按磁盘上现在的内容重新附上。
+    跳过：原样留下的消息里本来就有的、系统提示里已经有的（AGENTS.md / CLAUDE.md、记忆目录）、
+    密钥目录里的、已经不在的、二进制的。总量不超过上下文的十分之一。"""
+    tool_context = context.tool_context
+    still_visible = set(recent_file_paths(kept, limit=None))
+    skipped = _paths_already_in_system_prompt(context)
+    budget = min(RESTORE_TOTAL_MAX_TOKENS, context.settings.context_window_tokens // 10)
+    restored: list[RestoredFile] = []
+    for raw_path in recent_file_paths(summarized):
+        if raw_path in still_visible:
+            continue
+        path = tool_context.resolve_path(raw_path)
+        if path in skipped or _inside(path, tool_context.memory_dir) or not path.is_file():
+            continue
+        if tool_context.path_access([path], write=False).secret_paths:
+            continue
+        result = read_numbered_lines(path, 1, READ_DEFAULT_LINE_LIMIT)
+        if result.is_error:
+            continue
+        content = clip_to_tokens(result.content, min(RESTORE_FILE_MAX_TOKENS, budget))
+        cost = estimate_text_tokens(content)
+        if cost > budget:
+            break
+        budget -= cost
+        restored.append(RestoredFile(path=raw_path, content=content))
+    return restored
+
+
+def _paths_already_in_system_prompt(context: AgentContext) -> set[Path]:
+    settings = context.settings
+    return {instruction.path.resolve() for instruction in load_instruction_files(settings.workspace, settings.home_dir)}
+
+
+def _inside(path: Path, directory: Path | None) -> bool:
+    if directory is None:
+        return False
+    root = directory.resolve()
+    return path == root or root in path.parents
 
 
 def _after_history_replaced(context: AgentContext) -> None:
@@ -918,7 +972,8 @@ class CompactNode(AgentNode):
     async def post_async(self, context: AgentContext, request: CompactRequest, summary: str) -> None:
         tokens_before = context.estimated_context_tokens()
         _keep_title(context)
-        context.session.messages = rebuild_messages_with_summary(context.messages, summary, preserved=_preserved_state(context))
+        preserved = _preserved_state(context, context.messages, [])
+        context.session.messages = rebuild_messages_with_summary(context.messages, summary, preserved=preserved)
         _after_history_replaced(context)
         reason = context.turn.compact_reason or "manual"
         context.turn.compact_reason = ""
