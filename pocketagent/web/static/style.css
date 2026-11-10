@@ -562,6 +562,12 @@ body.resizing {
   font-weight: 600;
 }
 
+/* 还没被后端确认的消息：淡一点，让人一眼看出它还在路上 */
+.message-user.pending-send {
+  opacity: 0.72;
+  border: 1px dashed var(--border, rgba(128, 128, 128, 0.45));
+}
+
 /* 用户消息上的「恢复到这里」：平时藏起来，鼠标移上去才露出来 */
 .message-rewind {
   align-self: flex-end;

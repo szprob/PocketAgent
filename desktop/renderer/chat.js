@@ -84,6 +84,9 @@ export class ChatView {
     // 本轮从哪个子元素开始画的、回复里已经内联引用过哪些图，用来决定要不要自动贴图
     this.turnStartChildCount = null;
     this.turnImagePaths = new Set();
+    // 已经交给 socket、后端还没确认的消息（client_id -> {text, node, tag}）。
+    // 先画个淡的占位，所以打出去的字不会在等确认的时候人间蒸发。
+    this.pendingSends = new Map();
 
     this.transcript.addEventListener("scroll", () => {
       this.stickToBottom = this.isNearBottom();
@@ -99,6 +102,10 @@ export class ChatView {
     this.finishStreamingBlocks();
     this.hideActivity();
     clear(this.inner);
+    if (sessionId !== this.sessionId) {
+      // 换任务了：上一个任务的待发送占位属于那条连接，不跟过来（真没发出去的已经还给输入框）
+      this.pendingSends.clear();
+    }
     this.toolCards.clear();
     this.approvalCards.clear();
     this.questionCards.clear();
@@ -155,7 +162,16 @@ export class ChatView {
       case "returned_inputs":
         this.callbacks.onReturnedInputs?.(message.inputs || []);
         break;
+      case "ack":
+        // 后端确认收到（已经开跑 / 排队 / 插话）：占位先标成已送达，等真实那条画出来再撤掉
+        this.confirmPending(message.client_id);
+        break;
       case "error":
+        if (message.client_id) {
+          // 这条消息后端明确没收：占位撤掉，原话交回去重新编辑，别让用户白打一遍
+          const text = this.failPending(message.client_id);
+          this.callbacks.onSendFailed?.({ text, message: message.message });
+        }
         this.addNotice(message.message, "error");
         break;
       default:
@@ -174,6 +190,8 @@ export class ChatView {
     if ((snapshot.items || []).length === 0) {
       this.inner.append(el("div", "empty-chat", "说说要做什么，agent 会在这个工作区里读代码、改文件、跑命令。"));
     }
+    // snapshot 是服务端认的历史；本地还没被确认的这几条也要重新挂上去，不能让它们凭空消失
+    this.renderPendingSends();
     for (const approval of snapshot.pending_approvals || []) {
       this.showApproval(approval);
     }
@@ -341,6 +359,8 @@ export class ChatView {
   // ---- 对话条目 ----
 
   addUserMessage(text, attachments = [], badge = "", messageId = "") {
+    // 真实的这条画出来了，同文的待发送占位就该撤（按发送顺序配对，连着发两句一样的话也对得上）
+    this.dropMatchingPending(text);
     this.closeActivityFold();
     const wrapper = el("div", "message user");
     if (attachments.length > 0) {
@@ -358,6 +378,64 @@ export class ChatView {
       wrapper.append(this.buildRewindButton(messageId));
     }
     this.appendNode(wrapper);
+  }
+
+  // ---- 待发送的消息 ----
+  //
+  // 发出去到后端确认之间有个空档（断线时可能有好几秒）：这段时间内容只存在于 socket 的 outbox 里。
+  // 先画一个淡一点的占位，用户看得见自己说了什么；后端确认后标成「已送达」，真实那条画出来就撤掉。
+
+  addPendingMessage(clientId, text, attachments = []) {
+    this.closeActivityFold();
+    const wrapper = el("div", "message user pending-send");
+    if (attachments.length > 0) {
+      wrapper.append(this.buildAttachments(attachments));
+    }
+    const bubble = el("div", "bubble");
+    const tag = el("span", "bubble-badge", "发送中…");
+    bubble.append(tag, document.createTextNode(text || "（附件）"));
+    wrapper.append(bubble);
+    this.appendNode(wrapper);
+    this.pendingSends.set(clientId, { text: (text || "").trim(), node: wrapper, tag, acknowledged: false });
+  }
+
+  confirmPending(clientId) {
+    const pending = this.pendingSends.get(clientId);
+    if (!pending || pending.acknowledged) {
+      return;
+    }
+    pending.acknowledged = true;
+    pending.tag.textContent = "已送达";
+  }
+
+  // 后端明确没收这条：撤掉占位，把原话交回去（调用方放回输入框）
+  failPending(clientId) {
+    const pending = this.pendingSends.get(clientId);
+    if (!pending) {
+      return "";
+    }
+    this.pendingSends.delete(clientId);
+    pending.node.remove();
+    return pending.text;
+  }
+
+  dropMatchingPending(text) {
+    const wanted = (text || "").trim();
+    for (const [clientId, pending] of this.pendingSends) {
+      if (pending.text !== wanted) {
+        continue;
+      }
+      this.pendingSends.delete(clientId);
+      pending.node.remove();
+      return;
+    }
+  }
+
+  // snapshot 会清空整个对话再重放，占位节点得重新挂回末尾
+  renderPendingSends() {
+    for (const pending of this.pendingSends.values()) {
+      this.insertBeforeActivity(pending.node);
+    }
   }
 
   // 用户消息上的「恢复到这里」：把这句之后的内容全删掉，原话放回输入框重新编辑

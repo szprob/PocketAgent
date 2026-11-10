@@ -7,6 +7,7 @@ agent 正在干活时用户又发了话，按设置插话（下一次调用模�
 import asyncio
 import json
 import uuid
+from collections import deque
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -36,6 +37,9 @@ STATE_CHANGING_EVENTS = {
     EventType.AGENT_MODE,
     EventType.PROPOSAL_UPDATED,
 }
+
+# 记住最近的 client_id，重连后补发的同一条消息只处理一次。一个任务聊上几百句就够覆盖了
+RECENT_CLIENT_ID_LIMIT = 256
 
 
 class SessionBusyError(RuntimeError):
@@ -166,6 +170,8 @@ class WebSession:
         self.deleted = False
         # 排队等这一轮结束后再跑的 user 消息
         self.queued_messages: list[dict[str, Any]] = []
+        # 已经处理过的 client_id：前端重连后补发同一条时按它去重，免得同一句话跑两轮
+        self.recent_client_ids: deque[str] = deque(maxlen=RECENT_CLIENT_ID_LIMIT)
         # 自动化任务设一个超时，没人审批就拒绝
         self.approval_timeout_seconds: float | None = None
         # 这个任务是被触发器拉起来的第几层：0 是手动 / 到点，1 是别人跑完带出来的
@@ -267,6 +273,9 @@ class WebSession:
         return {
             "type": "snapshot",
             "session_id": self.id,
+            # 可选能力，前端拿它决定要不要用「重发到 ack 为止」和心跳判活。
+            # 老后端没有这个字段：新前端读到空就退回原来的尽力而为，不然会重复发消息、来回重连
+            "features": ["ping", "ack"],
             **self.status_fields(),
             # 方案正文只在快照里带：state 推得很频繁，别每条都拖一份长方案
             "plan": self.session.plan,
@@ -281,6 +290,16 @@ class WebSession:
         await self.broadcast(self.state_message())
 
     # ---- 用户发消息：空闲就开一轮，忙着就插话或排队 ----
+
+    def claim_client_message(self, client_id: str) -> bool:
+        """这条消息是不是第一次见到。False 表示前端在重连后补发了已经处理过的那条（ack 丢了），
+        调用方只补一个 ack 就行，不要再执行一遍。"""
+        if not client_id:
+            return True
+        if client_id in self.recent_client_ids:
+            return False
+        self.recent_client_ids.append(client_id)
+        return True
 
     def build_message(self, text: str, attachment_ids: list[str]) -> dict[str, Any]:
         attachments = [self.attachments.get(attachment_id) for attachment_id in attachment_ids]

@@ -7,6 +7,7 @@ import {
   getBackendState,
   loadSkillNames,
   looksLikeCommand,
+  newClientId,
   onBackendLog,
   onBackendState,
   openExternal,
@@ -85,6 +86,9 @@ const runtime = {
   toastTimer: null,
 };
 
+// 「连接已断开」提示条的延迟计时器：断一下就回来的情况不必弹
+let bannerTimer = null;
+
 const chat = new ChatView({
   transcript: elements.transcript,
   inner: elements.transcriptInner,
@@ -104,6 +108,12 @@ const chat = new ChatView({
       runtime.socket?.send({ type: "plan_answer", request_id: requestId, approve, feedback }),
     onReturnedInputs: (inputs) => chatComposer.restoreTexts(inputs.map((input) => input.text)),
     onRewind: (message) => chatComposer.restoreMessage(message),
+    // 这条后端明确没收（任务被删了、参数不对）：原话放回输入框，别让人重打
+    onSendFailed: ({ text }) => {
+      if (text) {
+        chatComposer.restoreTexts([text]);
+      }
+    },
     onOpenAttachment: (attachment) => openAttachment(attachment),
     onModelResponded: () => rightPanel.handleModelResponded(),
     onFilesChanged: () => {
@@ -308,16 +318,12 @@ function sendPendingFirstMessage(sessionId) {
   const text = pending.text || "";
   const files = pending.files || [];
   if (files.length === 0) {
-    runtime.socket?.send({ type: "user_message", text });
+    sendUserMessage({ text });
     return;
   }
   uploadFiles(sessionId, files)
     .then((attachments) => {
-      runtime.socket?.send({
-        type: "user_message",
-        text,
-        attachment_ids: attachments.map((item) => item.id),
-      });
+      sendUserMessage({ text, attachments, attachmentIds: attachments.map((item) => item.id) });
     })
     .catch((error) => {
       chat.addNotice(`附件上传失败：${error.message}`, "error");
@@ -334,13 +340,14 @@ async function openTask(taskId) {
   if (state.currentTaskId === taskId && runtime.socket) {
     return;
   }
-  closeSocket();
+  const unsent = unsentTexts(closeSocket());
   state.currentTaskId = taskId;
   chat.reset();
   chatComposer.clearSessionState();
   elements.chatTitle.textContent = "加载中…";
   elements.connectionBanner.classList.add("hidden");
   rightPanel.showTask(taskId);
+  restoreUnsent(unsent);
 
   const socket = new SessionSocket(taskId, {
     onMessage: (message) => {
@@ -353,12 +360,17 @@ async function openTask(taskId) {
       }
     },
     onOpen: () => {
+      clearTimeout(bannerTimer);
       elements.connectionBanner.classList.add("hidden");
     },
     onClose: () => {
-      if (state.currentTaskId === taskId) {
-        elements.connectionBanner.classList.remove("hidden");
-      }
+      // 断一下马上就连回来的情况不用吓人：1.5 秒还没恢复才挂提示条
+      clearTimeout(bannerTimer);
+      bannerTimer = setTimeout(() => {
+        if (state.currentTaskId === taskId && runtime.socket === socket && !socket.isOpen()) {
+          elements.connectionBanner.classList.remove("hidden");
+        }
+      }, 1500);
     },
   });
   runtime.socket = socket;
@@ -367,21 +379,36 @@ async function openTask(taskId) {
   updateChatMenuVisibility();
 }
 
-function closeSocket() {
-  if (runtime.socket) {
-    const socket = runtime.socket;
-    runtime.socket = null;
-    socket.close();
+// 切换 / 关掉任务时，连接上还没被后端确认的消息原话要回来，别让用户白打
+function unsentTexts(messages) {
+  return messages.filter((message) => message.type === "user_message" && message.text).map((message) => message.text);
+}
+
+function restoreUnsent(texts) {
+  if (texts.length === 0) {
+    return;
   }
+  chatComposer.restoreTexts(texts);
+  chat.addNotice("有消息还没发出去，已经放回输入框", "warning");
+}
+
+function closeSocket() {
+  if (!runtime.socket) {
+    return [];
+  }
+  const socket = runtime.socket;
+  runtime.socket = null;
+  return socket.close();
 }
 
 function leaveTask() {
-  closeSocket();
+  const unsent = unsentTexts(closeSocket());
   state.currentTaskId = null;
   runtime.lastChatStatus = null;
   chat.reset();
   rightPanel.clear();
   elements.connectionBanner.classList.add("hidden");
+  restoreUnsent(unsent);
 }
 
 function applyChatStatus(status) {
@@ -428,7 +455,23 @@ function renderPendingInputs(status) {
     row.append(el("span", "pending-badge queued", "排队"), el("span", "pending-text", input.text || "（附件）"), remove);
     elements.pendingInputs.append(row);
   });
+  // 排队 / 插话的面板已经把这句话显示出来了，对话里的「发送中」占位就不用再占一份
+  for (const input of [...interjections, ...queued]) {
+    chat.dropMatchingPending(input.text);
+  }
   show(elements.pendingInputs, interjections.length + queued.length > 0);
+}
+
+// 所有「用户说了一句」的出口：先画占位再交给 socket。
+// socket 那头有 outbox，断线时会一直重发到后端 ack 为止，所以这里返回 true 之后忘掉这条消息是安全的。
+function sendUserMessage({ text, attachmentIds = [], attachments = [] }) {
+  if (!runtime.socket) {
+    return false;
+  }
+  const clientId = newClientId();
+  chat.addPendingMessage(clientId, text, attachments);
+  runtime.socket.send({ type: "user_message", text, attachment_ids: attachmentIds, client_id: clientId });
+  return true;
 }
 
 async function sendChatMessage({ text, files, attachmentIds = [] }) {
@@ -448,19 +491,18 @@ async function sendChatMessage({ text, files, attachmentIds = [] }) {
     }
   }
 
-  let attachments = [];
+  let uploaded = [];
   try {
-    attachments = await uploadFiles(state.currentTaskId, files);
+    uploaded = await uploadFiles(state.currentTaskId, files);
   } catch (error) {
     chat.addNotice(`附件上传失败：${error.message}`, "error");
     return false;
   }
-  runtime.socket.send({
-    type: "user_message",
+  return sendUserMessage({
     text,
-    attachment_ids: [...attachments.map((item) => item.id), ...attachmentIds],
+    attachments: uploaded,
+    attachmentIds: [...uploaded.map((item) => item.id), ...attachmentIds],
   });
-  return true;
 }
 
 function handleCommandOutcome(outcome) {

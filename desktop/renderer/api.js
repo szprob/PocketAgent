@@ -130,8 +130,30 @@ export function socketUrl(backendState, sessionId) {
   return url.toString();
 }
 
+// 每条要保证送达的消息带一个 id：重连后补发同一条时，后端按它去重
+export function newClientId() {
+  if (globalThis.crypto?.randomUUID) {
+    return globalThis.crypto.randomUUID();
+  }
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+// 应用层心跳：连上之后每 15 秒发一条 ping，后端回 pong。
+// WebSocket 自带的 ping/pong 帧在 JS 里看不见，收不到东西就没法判断连接是不是还活着。
+const PING_INTERVAL_MS = 15000;
+// 超过这么久一条消息都没收到（三次心跳都没回）就当连接已经断了
+const ALIVE_TIMEOUT_MS = 45000;
+const WATCHDOG_INTERVAL_MS = 5000;
+const MAX_RETRY_DELAY_MS = 5000;
+
 export class SessionSocket {
   // 每个任务一条连接；断了自动重连，重连后后端会先发一份 snapshot，界面直接重放。
+  //
+  // 两件容易丢消息的事在这里兜住：
+  // 1. 连接"看着还是 OPEN"其实对面早没了（合盖休眠、代理超时、后端重启）：send 不报错，
+  //    消息就消失。所以有心跳和看门狗，判死之后主动重连，不等 close 事件（它可能永远不来）。
+  // 2. 发出去到后端确认之间断线：消息进 outbox，重连后自动补发；后端按 client_id 去重，
+  //    不会因为补发让这一轮跑两遍。
   constructor(sessionId, handlers) {
     this.sessionId = sessionId;
     this.handlers = handlers;
@@ -139,32 +161,60 @@ export class SessionSocket {
     this.socket = null;
     this.retryTimer = null;
     this.retryCount = 0;
-    this.pendingMessages = [];
+    // client_id -> 还没被后端确认的消息
+    this.outbox = new Map();
+    this.pingTimer = null;
+    this.watchdogTimer = null;
+    this.lastInboundAt = 0;
+    // 后端在 snapshot 里报的可选能力（ping / ack）；还没收到快照时是 null
+    this.serverFeatures = null;
     this.closedByUs = false;
+    this.wakeHandler = () => this.checkAlive(true);
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", this.wakeHandler);
+    }
+    if (typeof window !== "undefined") {
+      window.addEventListener("online", this.wakeHandler);
+      // 从别的应用切回来：窗口一直可见的话不会有 visibilitychange，只有 focus。
+      // 一回来就判一次活，别等用户敲了字才发现连接早断了
+      window.addEventListener("focus", this.wakeHandler);
+    }
   }
 
   connect(backendState) {
     this.backendState = backendState;
     this.closedByUs = false;
+    // 每连一条都重新认一遍能力（后端可能刚重启过、换了版本）
+    this.serverFeatures = null;
     const socket = new WebSocket(socketUrl(backendState, this.sessionId));
     this.socket = socket;
+    this.lastInboundAt = Date.now();
 
     socket.addEventListener("open", () => {
       this.retryCount = 0;
-      const queued = this.pendingMessages;
-      this.pendingMessages = [];
-      for (const message of queued) {
-        socket.send(JSON.stringify(message));
-      }
+      this.lastInboundAt = Date.now();
+      this.flush();
+      this.startHeartbeat();
       this.handlers.onOpen?.();
     });
 
     socket.addEventListener("message", (event) => {
+      this.lastInboundAt = Date.now();
       let message = null;
       try {
         message = JSON.parse(event.data);
       } catch (notJson) {
         return;
+      }
+      if (message.type === "ack") {
+        this.outbox.delete(message.client_id);
+      }
+      if (message.type === "snapshot") {
+        this.serverFeatures = new Set(message.features || []);
+        if (!this.serverFeatures.has("ack")) {
+          // 老后端不会 ack：消息别一直留在 outbox 里，不然重连后会重复发一遍（那边没有去重）
+          this.outbox.clear();
+        }
       }
       this.handlers.onMessage?.(message);
     });
@@ -174,6 +224,7 @@ export class SessionSocket {
         return;
       }
       this.socket = null;
+      this.stopHeartbeat();
       this.handlers.onClose?.();
       this.scheduleReconnect();
     });
@@ -183,11 +234,91 @@ export class SessionSocket {
     });
   }
 
-  scheduleReconnect() {
-    if (this.closedByUs || this.retryCount >= 8) {
+  isOpen() {
+    return Boolean(this.socket) && this.socket.readyState === WebSocket.OPEN;
+  }
+
+  // 按发送顺序把没送到的东西再发一遍；重连之后后端会先去重
+  flush() {
+    for (const message of this.outbox.values()) {
+      this.transmit(message);
+    }
+  }
+
+  transmit(message) {
+    if (!this.isOpen()) {
+      return false;
+    }
+    try {
+      this.socket.send(JSON.stringify(message));
+      return true;
+    } catch (sendError) {
+      // 正好在这一刻断了：消息还留在 outbox 里，重连后补发
+      return false;
+    }
+  }
+
+  startHeartbeat() {
+    this.stopHeartbeat();
+    this.pingTimer = setInterval(() => this.transmit({ type: "ping", t: Date.now() }), PING_INTERVAL_MS);
+    this.watchdogTimer = setInterval(() => this.checkAlive(), WATCHDOG_INTERVAL_MS);
+  }
+
+  stopHeartbeat() {
+    clearInterval(this.pingTimer);
+    clearInterval(this.watchdogTimer);
+    this.pingTimer = null;
+    this.watchdogTimer = null;
+  }
+
+  // 判活：窗口在后台时不判（定时器被限流，心跳本来就会变慢，判了只会来回重连），
+  // 切回来、网络恢复的时候再判一次。
+  checkAlive(wake = false) {
+    if (this.closedByUs) {
       return;
     }
-    const delay = Math.min(800 * (this.retryCount + 1), 5000);
+    if (!wake && typeof document !== "undefined" && document.hidden) {
+      return;
+    }
+    if (!this.socket) {
+      // 已经断了、还在等下一次重试：刚回到前台就别再等那几秒
+      if (wake && this.backendState) {
+        clearTimeout(this.retryTimer);
+        this.retryCount = 0;
+        this.connect(this.backendState);
+      }
+      return;
+    }
+    // 老后端不回 pong：认了就关掉判活，不然每 45 秒白重连一次
+    if (this.serverFeatures && !this.serverFeatures.has("ping")) {
+      return;
+    }
+    if (Date.now() - this.lastInboundAt <= ALIVE_TIMEOUT_MS) {
+      return;
+    }
+    this.dropConnection();
+  }
+
+  // 连接判死了：主动丢掉重连。不走 socket.close() 等 close 事件——半死的连接上它可能永远不来
+  dropConnection() {
+    const socket = this.socket;
+    this.socket = null;
+    this.stopHeartbeat();
+    try {
+      socket?.close();
+    } catch (closeError) {
+      // 已经断了的连接关不掉也无所谓
+    }
+    this.handlers.onClose?.();
+    this.scheduleReconnect();
+  }
+
+  scheduleReconnect() {
+    if (this.closedByUs) {
+      return;
+    }
+    clearTimeout(this.retryTimer);
+    const delay = Math.min(500 * 2 ** this.retryCount, MAX_RETRY_DELAY_MS);
     this.retryCount += 1;
     this.retryTimer = setTimeout(() => {
       if (!this.closedByUs) {
@@ -197,19 +328,39 @@ export class SessionSocket {
   }
 
   send(message) {
-    if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-      this.socket.send(JSON.stringify(message));
-      return true;
+    // 这两类不进 outbox：remove_queued 是按序号删的（补发会删错一条），ping 是心跳（没必要留底）
+    if (message.type === "remove_queued" || message.type === "ping") {
+      return this.transmit(message);
     }
-    this.pendingMessages.push(message);
-    return false;
+    if (!message.client_id) {
+      message.client_id = newClientId();
+    }
+    this.outbox.set(message.client_id, message);
+    return this.transmit(message);
   }
 
+  // 关掉这条连接，返回还没被后端确认的消息：调用方负责把内容还给用户（放回输入框），
+  // 不能因为切了任务 / 关了窗口就让打出去的字无声消失
   close() {
     this.closedByUs = true;
     clearTimeout(this.retryTimer);
+    this.stopHeartbeat();
+    if (typeof document !== "undefined") {
+      document.removeEventListener("visibilitychange", this.wakeHandler);
+    }
+    if (typeof window !== "undefined") {
+      window.removeEventListener("online", this.wakeHandler);
+      window.removeEventListener("focus", this.wakeHandler);
+    }
     const socket = this.socket;
     this.socket = null;
-    socket?.close();
+    try {
+      socket?.close();
+    } catch (closeError) {
+      // 已经断了
+    }
+    const unsent = [...this.outbox.values()];
+    this.outbox.clear();
+    return unsent;
   }
 }

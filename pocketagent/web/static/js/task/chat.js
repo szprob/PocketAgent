@@ -1,6 +1,6 @@
 // 任务页：中间的对话。一个任务一条 WebSocket，协议见 pocketagent/server/__init__.py。
 
-import { attachmentUrl, requestJson, sendJson, sessionFileUrl, socketUrl, uploadFiles } from "../core/api.js";
+import { attachmentUrl, newClientId, requestJson, sendJson, sessionFileUrl, socketUrl, uploadFiles } from "../core/api.js";
 import { looksLikeCommand, loadSkillNames, runCommand } from "../core/commands.js";
 import { Composer } from "./composer.js";
 import { button, el, icon, isImagePath, renderDiff, show } from "../ui/dom.js";
@@ -17,6 +17,14 @@ const chat = {
   running: false,
   status: null,
   composer: null,
+  // 已经交给 socket、后端还没确认的消息：client_id -> {text, element, badge}
+  outbox: new Map(),
+  pendingSends: new Map(),
+  pingTimer: null,
+  watchdogTimer: null,
+  lastInboundAt: 0,
+  // 后端在 snapshot 里报的可选能力（ping / ack）；还没收到快照时是 null
+  serverFeatures: null,
   // 正在流式输出的回复块和思考块
   currentAssistant: null,
   currentReasoning: null,
@@ -118,6 +126,13 @@ export function initChat({ onDeleted }) {
     event.stopPropagation();
     elements.menu.classList.toggle("hidden");
   });
+  // 回到前台 / 网络恢复：判一次活，断了就马上重连，别等用户敲了字才发现
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) {
+      checkAlive(true);
+    }
+  });
+  window.addEventListener("online", () => checkAlive(true));
   document.addEventListener("click", () => elements.menu.classList.add("hidden"));
   elements.menu.querySelector('[data-action="rename"]').addEventListener("click", startRename);
   elements.menu.querySelector('[data-action="compact"]').addEventListener("click", () => sendToServer({ type: "compact" }));
@@ -163,61 +178,199 @@ export function openTask(taskId, firstMessage) {
   if (chat.socket && state.currentTaskId === taskId) {
     return;
   }
-  closeSocket();
+  const unsent = closeSocket();
   state.currentTaskId = taskId;
   clearTranscript();
+  // 换任务了：待发送占位属于上一条连接，不跟过来
+  chat.pendingSends.clear();
   chat.status = null;
   elements.title.textContent = "";
+  restoreUnsent(unsent);
   connect(taskId);
 }
 
 export function leaveTask() {
-  closeSocket();
+  restoreUnsent(closeSocket());
   state.currentTaskId = null;
   chat.status = null;
 }
 
+// 关掉这条连接，返回还没被后端确认的消息：切任务的时候要把原话还给用户
 function closeSocket() {
-  if (chat.socket) {
-    const previous = chat.socket;
-    chat.socket = null;
-    previous.close();
+  if (!chat.socket) {
+    return [];
   }
+  const previous = chat.socket;
+  chat.socket = null;
+  stopHeartbeat();
+  try {
+    previous.close();
+  } catch (closeError) {
+    // 已经断了
+  }
+  const unsent = [...chat.outbox.values()];
+  chat.outbox.clear();
+  return unsent.filter((message) => message.type === "user_message" && message.text);
 }
+
+function restoreUnsent(messages) {
+  if (!messages || messages.length === 0) {
+    return;
+  }
+  chat.composer.restoreTexts(messages.map((message) => message.text));
+  addNotice("有消息还没发出去，已经放回输入框", "warning");
+}
+
+// 应用层心跳：连上之后每 15 秒发一条 ping，后端回 pong。
+// WebSocket 自带的 ping/pong 帧在 JS 里看不见，收不到东西就没法判断连接是不是还活着。
+const PING_INTERVAL_MS = 15000;
+const ALIVE_TIMEOUT_MS = 45000;
+const WATCHDOG_INTERVAL_MS = 5000;
+const MAX_RECONNECT_DELAY_MS = 10000;
 
 function connect(taskId) {
   const socket = new WebSocket(socketUrl(taskId));
   chat.socket = socket;
+  chat.lastInboundAt = Date.now();
+  // 每连一条都重新认一遍能力（后端可能刚重启过、换了版本）
+  chat.serverFeatures = null;
   socket.addEventListener("open", () => {
     show(elements.banner, false);
     chat.reconnectDelay = 1000;
+    chat.lastInboundAt = Date.now();
+    flushOutbox();
+    startHeartbeat();
   });
-  socket.addEventListener("message", (event) => handleServerMessage(JSON.parse(event.data)));
+  socket.addEventListener("message", (event) => {
+    chat.lastInboundAt = Date.now();
+    const message = JSON.parse(event.data);
+    if (message.type === "ack") {
+      chat.outbox.delete(message.client_id);
+    }
+    if (message.type === "snapshot") {
+      chat.serverFeatures = new Set(message.features || []);
+      if (!chat.serverFeatures.has("ack")) {
+        // 老后端不会 ack：消息别一直留在 outbox 里，不然重连后会重复发一遍（那边没有去重）
+        chat.outbox.clear();
+      }
+    }
+    handleServerMessage(message);
+  });
   socket.addEventListener("close", () => {
     if (chat.socket !== socket) {
+      // 自己去重连 / 换任务关掉的，不在这里管
       return;
     }
-    show(elements.banner, true);
-    setTimeout(() => {
-      if (chat.socket === socket) {
-        connect(taskId);
-      }
-    }, chat.reconnectDelay);
-    chat.reconnectDelay = Math.min(chat.reconnectDelay * 2, 10000);
+    chat.socket = null;
+    stopHeartbeat();
+    scheduleReconnect(taskId);
   });
 }
 
-function sendToServer(message) {
-  if (!chat.socket || chat.socket.readyState !== WebSocket.OPEN) {
-    addNotice("还没连上服务，稍等再试", "warning");
+function scheduleReconnect(taskId) {
+  show(elements.banner, true);
+  const delay = chat.reconnectDelay;
+  chat.reconnectDelay = Math.min(chat.reconnectDelay * 2, MAX_RECONNECT_DELAY_MS);
+  setTimeout(() => {
+    if (!chat.socket && state.currentTaskId === taskId) {
+      connect(taskId);
+    }
+  }, delay);
+}
+
+function startHeartbeat() {
+  stopHeartbeat();
+  chat.pingTimer = setInterval(() => transmit({ type: "ping", t: Date.now() }), PING_INTERVAL_MS);
+  chat.watchdogTimer = setInterval(() => checkAlive(), WATCHDOG_INTERVAL_MS);
+}
+
+function stopHeartbeat() {
+  clearInterval(chat.pingTimer);
+  clearInterval(chat.watchdogTimer);
+  chat.pingTimer = null;
+  chat.watchdogTimer = null;
+}
+
+// 判活：连接「看着还是 OPEN」但对面早没了（合盖休眠、代理超时、后端重启）时
+// send 不报错，消息就丢了。超过 45 秒一条都没收到就主动重连，不等 close 事件（它可能永远不来）。
+// 后台标签页的定时器会被限流，所以在后台不判，切回前台再判一次。
+function checkAlive(wake = false) {
+  if (!wake && document.hidden) {
+    return;
+  }
+  if (!chat.socket) {
+    // 已经断了还在等重试：刚回到前台 / 网络刚恢复，别等那几秒了
+    if (wake && state.currentTaskId) {
+      connect(state.currentTaskId);
+    }
+    return;
+  }
+  // 老后端不回 pong：认了就关掉判活，不然每 45 秒白重连一次
+  if (chat.serverFeatures && !chat.serverFeatures.has("ping")) {
+    return;
+  }
+  if (Date.now() - chat.lastInboundAt <= ALIVE_TIMEOUT_MS) {
+    return;
+  }
+  const socket = chat.socket;
+  chat.socket = null;
+  stopHeartbeat();
+  try {
+    socket.close();
+  } catch (closeError) {
+    // 已经断了
+  }
+  const taskId = state.currentTaskId;
+  if (taskId) {
+    scheduleReconnect(taskId);
+  }
+}
+
+function isSocketOpen() {
+  return Boolean(chat.socket) && chat.socket.readyState === WebSocket.OPEN;
+}
+
+function transmit(message) {
+  if (!isSocketOpen()) {
     return false;
   }
-  chat.socket.send(JSON.stringify(message));
-  return true;
+  try {
+    chat.socket.send(JSON.stringify(message));
+    return true;
+  } catch (sendError) {
+    // 正好在这一刻断了：消息还在 outbox 里，重连后补发
+    return false;
+  }
+}
+
+function flushOutbox() {
+  for (const message of chat.outbox.values()) {
+    transmit(message);
+  }
+}
+
+// 要保证送达的消息进 outbox，收到 ack 才拿掉；断线重连后自动补发，后端按 client_id 去重
+function sendToServer(message) {
+  // 这两类不进 outbox：remove_queued 是按序号删的（补发会删错一条），ping 是心跳（没必要留底）
+  if (message.type === "remove_queued" || message.type === "ping") {
+    if (!isSocketOpen()) {
+      if (message.type === "remove_queued") {
+        addNotice("还没连上服务，稍等再试", "warning");
+      }
+      return false;
+    }
+    return transmit(message);
+  }
+  if (!message.client_id) {
+    message.client_id = newClientId();
+  }
+  chat.outbox.set(message.client_id, message);
+  return transmit(message);
 }
 
 async function sendUserMessage({ text, files, attachmentIds = [] }) {
-  if (!chat.socket || chat.socket.readyState !== WebSocket.OPEN) {
+  if (!chat.socket) {
+    // 断开中：字留在输入框里，连上再发（backend 会重连，这里不丢内容）
     addNotice("还没连上服务，稍等再试", "warning");
     return false;
   }
@@ -240,11 +393,16 @@ async function sendUserMessage({ text, files, attachmentIds = [] }) {
     addNotice(`附件上传失败：${error.message}`, "error");
     return false;
   }
-  return sendToServer({
+  // 先画占位：这条在后端确认之前一直在界面上，不会出现「字打出去就没了」
+  const clientId = newClientId();
+  addPendingMessage(clientId, text, attachments);
+  sendToServer({
     type: "user_message",
     text,
     attachment_ids: [...attachments.map((item) => item.id), ...attachmentIds],
+    client_id: clientId,
   });
+  return true;
 }
 
 // 命令的输出画在对话里；有跳转 / 开新会话动作的接着做
@@ -327,7 +485,18 @@ function handleServerMessage(message) {
     case "returned_inputs":
       chat.composer.restoreTexts(message.inputs.map((input) => input.text));
       break;
+    case "ack":
+      // 后端确认收到（已经开跑 / 排队 / 插话）：占位先标「已送达」，等真实那条画出来再撤
+      confirmPending(message.client_id);
+      break;
     case "error":
+      if (message.client_id) {
+        // 这条后端明确没收：占位撤掉，原话放回输入框
+        const text = failPending(message.client_id);
+        if (text) {
+          chat.composer.restoreTexts([text]);
+        }
+      }
       addNotice(message.message, "error");
       break;
     default:
@@ -384,6 +553,10 @@ function renderPendingInputs(status) {
     elements.pendingInputs.appendChild(row);
   });
   show(elements.pendingInputs, status.interjections.length + status.queued.length > 0);
+  // 排队 / 插话面板已经把这句话显示出来了，对话里的「发送中」占位不用再占一份
+  for (const input of [...status.interjections, ...status.queued]) {
+    dropMatchingPending(input.text);
+  }
 }
 
 function handleAgentEvent(event) {
@@ -594,7 +767,67 @@ function renderAttachments(attachments) {
   return list;
 }
 
+// ===================== 待发送的消息 =====================
+// 发出去到后端确认之间有个空档（断线时可能好几秒）：这段时间内容只存在于 socket 的 outbox 里。
+// 先画一个淡一点的占位，用户看得见自己说了什么；后端确认后标「已送达」，真实那条画出来就撤掉。
+
+function addPendingMessage(clientId, text, attachments = []) {
+  closeActivityFold();
+  const message = el("div", "message-user pending-send");
+  const badge = el("span", "message-badge", "发送中…");
+  message.appendChild(badge);
+  if (attachments.length > 0) {
+    message.appendChild(renderAttachments(attachments));
+  }
+  if (text) {
+    message.appendChild(el("div", "message-text", text));
+  }
+  appendToTranscript(message);
+  chat.pendingSends.set(clientId, { text: (text || "").trim(), element: message, badge });
+}
+
+function confirmPending(clientId) {
+  const pending = chat.pendingSends.get(clientId);
+  if (!pending || pending.acknowledged) {
+    return;
+  }
+  pending.acknowledged = true;
+  pending.badge.textContent = "已送达";
+}
+
+// 后端明确没收这条：撤掉占位，原话放回输入框
+function failPending(clientId) {
+  const pending = chat.pendingSends.get(clientId);
+  if (!pending) {
+    return "";
+  }
+  chat.pendingSends.delete(clientId);
+  pending.element.remove();
+  return pending.text;
+}
+
+function dropMatchingPending(text) {
+  const wanted = (text || "").trim();
+  for (const [clientId, pending] of chat.pendingSends) {
+    if (pending.text !== wanted) {
+      continue;
+    }
+    chat.pendingSends.delete(clientId);
+    pending.element.remove();
+    return;
+  }
+}
+
+// snapshot 会清空整个对话再重放，占位节点得重新挂回末尾
+function renderPendingSends() {
+  for (const pending of chat.pendingSends.values()) {
+    appendToTranscript(pending.element);
+  }
+}
+
 function addUserMessage(text, attachments, badge, messageId) {
+  // 真实的这条画出来了，同文的待发送占位就该撤（按发送顺序配对）
+  dropMatchingPending(text);
   closeActivityFold();
   const message = el("div", "message-user");
   if (badge) {
@@ -1387,6 +1620,8 @@ function renderSnapshot(snapshot) {
   if (snapshot.items.length === 0) {
     elements.transcriptInner.appendChild(el("div", "empty-chat", "说说要做什么，agent 会在这个工作区里读代码、改文件、跑命令。"));
   }
+  // snapshot 是服务端认的历史；本地还没被确认的这几条也要重新挂上去，不能让它们凭空消失
+  renderPendingSends();
   snapshot.pending_approvals.forEach(showApproval);
   (snapshot.pending_questions || []).forEach(showQuestions);
   (snapshot.pending_plans || []).forEach(showPlanRequest);

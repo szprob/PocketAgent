@@ -26,8 +26,11 @@ async def session_socket(request: web.Request) -> web.StreamResponse:
                 await web_session.send(client, {"type": "error", "message": "消息不是合法的 JSON 对象"})
                 continue
             if web_session.deleted:
-                # 任务可能已被另一个标签页删掉，这条连接不能再发一条话把它写回磁盘
-                await web_session.send(client, {"type": "error", "message": "任务已经删除"})
+                # 任务可能已被另一个标签页删掉，这条连接不能再发一条话把它写回磁盘。
+                # 带上 client_id：前端据此把输入框里的这句话还回去，而不是当成发出去了
+                await web_session.send(
+                    client, {"type": "error", "message": "任务已经删除", "client_id": payload.get("client_id")}
+                )
                 break
             await _handle_client_message(manager, web_session, client, payload)
     finally:
@@ -48,6 +51,15 @@ async def _handle_client_message(
     manager: SessionManager, web_session: WebSession, client: web.WebSocketResponse, message: dict[str, Any]
 ) -> None:
     message_type = message.get("type")
+    client_id = str(message.get("client_id") or "")
+    if message_type == "ping":
+        # 应用层心跳：前端看不到 WebSocket 的 ping/pong 帧，靠这条判断连接还活着
+        await web_session.send(client, {"type": "pong", "t": message.get("t")})
+        return
+    if client_id and not web_session.claim_client_message(client_id):
+        # 重连后补发了同一条：只补一个 ack，别再处理一遍（不然一句话会跑两轮）
+        await web_session.send(client, {"type": "ack", "client_id": client_id})
+        return
     try:
         if message_type == "user_message":
             text = str(message.get("text", "")).strip()
@@ -79,5 +91,9 @@ async def _handle_client_message(
             await manager.switch_model(web_session, message["model_id"])
         else:
             await web_session.send(client, {"type": "error", "message": f"不认识的消息类型：{message_type}"})
+            return
+        if client_id:
+            # 处理完才 ack：前端收到 ack 才把这条从待发送队列里拿掉，没 ack 就一直重发
+            await web_session.send(client, {"type": "ack", "client_id": client_id})
     except (SessionBusyError, ValueError, KeyError) as error:
-        await web_session.send(client, {"type": "error", "message": str(error)})
+        await web_session.send(client, {"type": "error", "message": str(error), "client_id": client_id or None})

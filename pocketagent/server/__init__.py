@@ -4,6 +4,10 @@
 manager.py 所有任务、工作区、配置和自动化调度（SessionManager）；history.py 快照里的历史；files.py 文件树和预览。
 
 前端 → 服务（WebSocket，JSON）：
+  任何一条都可以带 client_id（前端生成），服务端处理完回 {"type": "ack", "client_id": ...}；
+  同一个 client_id 只处理一次，重连后补发同一条不会让这一轮跑两遍
+  {"type": "ping", "t": ...}                                      应用层心跳，服务端回 {"type": "pong", "t": ...}；
+                                                                  前端靠它判断连接是不是还活着（WebSocket 的 ping/pong 帧在 JS 里看不见）
   {"type": "user_message", "text": ..., "attachment_ids": [...]}   空闲就开一轮；忙着就按设置插话或排队
   {"type": "approval", "request_id": ..., "answer": "allow_once" | "allow_always" | "allow_always_parents" | "deny"}
   {"type": "approval", "request_id": ..., "answers": [...]}   合并的审批卡（approval_request 带 items）每项一个答复
@@ -12,12 +16,13 @@ manager.py 所有任务、工作区、配置和自动化调度（SessionManager�
   {"type": "interrupt"} / {"type": "compact"} / {"type": "remove_queued", "index": n}
   {"type": "set_mode", "mode": ...} / {"type": "set_model", "model_id": ...} / {"type": "set_agent_mode", "mode": "agent" | "ask" | "plan" | "design"}
 服务 → 前端：
-  snapshot（连上时的完整历史；用户条目带 message_id，rewind 用它指定恢复到哪句话）、
+  snapshot（连上时的完整历史；用户条目带 message_id，rewind 用它指定恢复到哪句话；
+            另外带 features：老后端没有这个字段，新前端读到空就退回原来的尽力而为）、
   state（是否在跑、模型、审批模式、工作模式、上下文占用、排队和插话）、
   event（agent 事件，见 core/events.py）、approval_request / approval_resolved、question_request / question_resolved、
   plan_request / plan_resolved（kind=switch 问要不要用计划模式，kind=approval 是计划 / 设计方案等批准，带 mode）、
   （approval_request 一项时字段平铺；一批里有几项要问时合成一张，字段放在 items 列表里）
-  returned_inputs（中断时退回的输入）、error
+  returned_inputs（中断时退回的输入）、error（带 client_id 时说明是哪条消息出的错）、ack（见上）
 
 REST（都在 /api 下）：
   info                                   工作区、模型（含可选思考档位、上下文长度）、审批模式、用户名、斜杠命令表

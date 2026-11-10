@@ -286,6 +286,9 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      // 窗口最小化 / 被别的窗口挡住时别把定时器降到 1 次/分钟：这里的心跳就靠它，
+      // 停久了后端会认为连接死了，用户切回来再说话就得先重连（消息可能发到已经断掉的连接上）
+      backgroundThrottling: false,
     },
   });
 

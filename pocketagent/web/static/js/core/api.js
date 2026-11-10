@@ -93,3 +93,11 @@ export function socketUrl(sessionId) {
   url.hash = "";
   return url.href;
 }
+
+// 每条要保证送达的消息带一个 id：重连后补发同一条时，后端按它去重
+export function newClientId() {
+  if (globalThis.crypto?.randomUUID) {
+    return globalThis.crypto.randomUUID();
+  }
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}

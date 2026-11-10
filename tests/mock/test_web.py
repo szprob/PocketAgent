@@ -242,6 +242,60 @@ class WebServerTest(WebTestBase):
         # 第一次调用没报 usage，按估算记；第二次 107
         self.assertGreater(history["usage"]["total"], 107)
 
+    # ---- 连接保活、消息不丢 ----
+
+    async def test_ping_gets_pong(self) -> None:
+        """前端看不见 WebSocket 的 ping/pong 帧，靠应用层这条判断连接还活着。"""
+        session_id = await self._create_session()
+
+        async with self._connect(session_id) as socket_client:
+            await socket_client.receive_json()
+            await socket_client.send_json({"type": "ping", "t": 12345})
+            pong = await self._receive_until(socket_client, is_type("pong"))
+
+        self.assertEqual(pong["t"], 12345)
+
+    async def test_user_message_is_acked_with_its_client_id(self) -> None:
+        self.responses.append(LLMResponse(text="收到"))
+        session_id = await self._create_session()
+
+        async with self._connect(session_id) as socket_client:
+            await socket_client.receive_json()
+            await socket_client.send_json({"type": "user_message", "text": "你好", "client_id": "c-1"})
+            ack = await self._receive_until(socket_client, is_type("ack"))
+
+        self.assertEqual(ack["client_id"], "c-1")
+
+    async def test_resending_the_same_client_id_does_not_run_the_turn_twice(self) -> None:
+        """断线重连后前端会补发没被 ack 的消息：同一个 client_id 只处理一次，不然一句话跑两轮。"""
+        self.responses.append(LLMResponse(text="收到"))
+        session_id = await self._create_session()
+        message = {"type": "user_message", "text": "只跑一次", "client_id": "c-2"}
+
+        async with self._connect(session_id) as socket_client:
+            await socket_client.receive_json()
+            await socket_client.send_json(message)
+            await self._receive_until(socket_client, is_type("ack"))
+            await self._receive_until(socket_client, is_event("turn_end"))
+            # 补发同一条：只补 ack
+            await socket_client.send_json(message)
+            resent_ack = await self._receive_until(socket_client, is_type("ack"))
+
+        self.assertEqual(resent_ack["client_id"], "c-2")
+        history = await self._get_json(f"/api/sessions/{session_id}")
+        self.assertEqual([item["kind"] for item in history["items"]], ["user", "assistant"])
+
+    async def test_rejected_message_reports_its_client_id(self) -> None:
+        """后端明确没收的那条要带上 client_id，前端才能把原话还给用户。"""
+        session_id = await self._create_session()
+
+        async with self._connect(session_id) as socket_client:
+            await socket_client.receive_json()
+            await socket_client.send_json({"type": "set_mode", "mode": "没有这个模式", "client_id": "c-3"})
+            error = await self._receive_until(socket_client, is_type("error"))
+
+        self.assertEqual(error["client_id"], "c-3")
+
     async def test_several_writes_come_as_one_card_with_per_item_answers(self) -> None:
         self.responses.extend(
             [
