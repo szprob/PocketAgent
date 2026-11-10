@@ -8,7 +8,7 @@ from pathlib import Path
 
 from pocketagent.config import Settings
 from pocketagent.core.agent import Agent, create_agent
-from pocketagent.core.compaction import MERGE_SUMMARY_INSTRUCTION, SUMMARY_INSTRUCTION
+from pocketagent.core.compaction import SUMMARY_INSTRUCTION
 from pocketagent.core.events import Event, EventType
 from pocketagent.core.session import Session
 from pocketagent.llm import LLMResponse, ScriptedProvider, ToolCall
@@ -44,7 +44,7 @@ class RoutingProvider:
     async def complete(self, messages, tools, listener) -> LLMResponse:
         # 真的 HTTP 调用会让出事件循环，后台任务才有机会跑；这里也让一下
         await asyncio.sleep(0)
-        if messages and messages[-1].get("content") in (SUMMARY_INSTRUCTION, MERGE_SUMMARY_INSTRUCTION):
+        if messages and messages[-1].get("content") == SUMMARY_INSTRUCTION:
             self.summary_calls += 1
             self.summary_requests.append(messages)
             await self.summary_gate.wait()

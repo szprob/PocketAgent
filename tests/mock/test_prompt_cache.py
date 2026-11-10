@@ -7,10 +7,10 @@
 import unittest
 from unittest import mock
 
-from pocketagent.core.compaction import without_old_reasoning
+from pocketagent.core.compaction import SUMMARY_INSTRUCTION, clean_summary, previous_summary_text, without_old_reasoning
 from pocketagent.core.session import Session
 from pocketagent.interaction.modes import AgentMode
-from pocketagent.llm import LLMResponse, without_earlier_reasoning
+from pocketagent.llm import ContextOverflowError, LLMResponse, without_earlier_reasoning
 from pocketagent.server.history import history_items
 from pocketagent.tools.base import Tool, ToolContext, ToolKind, ToolRegistry, ToolResult
 from tests.helpers import TemporaryDirectories, build_harness, tool_call
@@ -179,10 +179,11 @@ class CompactionDropsOldReasoningTest(unittest.IsolatedAsyncioTestCase):
         await harness.agent.compact()
 
         self.assertFalse(any("reasoning_content" in message for message in harness.agent.context.messages))
-        # 思考被压进摘要：做摘要的请求里，思考写进了 assistant 的正文
+        # 做摘要的请求和平时同一份前缀：模型平时看得到的思考，做摘要时也看得到，一起压进摘要
         summary_request = harness.provider.received_messages[2]
-        self.assertIn("〔当时的思考〕\n第二轮的思考", [message.get("content", "").split("\n\n")[0] for message in summary_request])
-        self.assertIn("宁可详细也不要漏", summary_request[-1]["content"])
+        self.assertEqual(summary_request[:-1], harness.provider.received_messages[1] + [summary_request[-2]])
+        self.assertEqual(summary_request[-2]["reasoning_content"], "第二轮的思考")
+        self.assertEqual(summary_request[-1]["content"], SUMMARY_INSTRUCTION)
 
     def test_the_turn_in_progress_keeps_its_reasoning(self) -> None:
         messages = [
@@ -193,3 +194,76 @@ class CompactionDropsOldReasoningTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(without_old_reasoning(messages, turn_in_progress=True)[2]["reasoning_content"], "这一轮还在用")
         self.assertNotIn("reasoning_content", without_old_reasoning(messages, turn_in_progress=False)[2])
+
+
+class SummaryFlowTest(unittest.IsolatedAsyncioTestCase):
+    """做摘要：先用和平时同一份前缀（命中缓存），放不下或者模型没给文字再退回截短的那份；
+    换上摘要时任务清单、计划原样接在后面。"""
+
+    def setUp(self) -> None:
+        self.directories = TemporaryDirectories()
+
+    def tearDown(self) -> None:
+        self.directories.cleanup()
+
+    async def test_summary_request_reuses_the_tools_of_normal_requests(self) -> None:
+        harness = build_harness(
+            self.directories, [LLMResponse(text="一"), LLMResponse(text="这是摘要")], tools=ToolRegistry([EchoTool()])
+        )
+        await harness.agent.run_turn("你好")
+
+        await harness.agent.compact()
+
+        self.assertEqual(harness.provider.received_tools[1], harness.provider.received_tools[0])
+        self.assertEqual(tool_names(harness.provider.received_tools[1]), ["echo"])
+
+    async def test_falls_back_to_the_trimmed_request_when_the_shared_one_fails(self) -> None:
+        for first_reply in (ContextOverflowError("maximum context length exceeded"), LLMResponse(tool_calls=[tool_call("x", "echo", "{}")])):
+            with self.subTest(first_reply=type(first_reply).__name__):
+                provider = FallbackProvider(first_reply)
+                harness = build_harness(self.directories, [], provider=provider, tools=ToolRegistry([EchoTool()]))
+                await harness.agent.run_turn("你好")
+
+                await harness.agent.compact()
+
+                shared, trimmed = provider.summary_calls
+                self.assertEqual(tool_names(shared), ["echo"])
+                # 退回的那份不带工具
+                self.assertEqual(trimmed, [])
+                self.assertIn("截短后的摘要", harness.agent.context.messages[1]["content"])
+
+    async def test_todos_and_plan_are_attached_after_the_summary(self) -> None:
+        harness = build_harness(self.directories, [LLMResponse(text="一"), LLMResponse(text="这是摘要")])
+        await harness.agent.run_turn("你好")
+        session = harness.agent.session
+        session.todos[:] = [{"content": "改 a.py", "status": "completed"}, {"content": "跑测试", "status": "in_progress"}]
+        session.plan, session.plan_status = "1. 改 a.py\n2. 跑测试", "approved"
+
+        await harness.agent.compact()
+
+        summary = harness.agent.context.messages[1]["content"]
+        self.assertIn("- [in_progress] 跑测试", summary)
+        self.assertIn("2. 跑测试", summary)
+        self.assertEqual(previous_summary_text(harness.agent.context.messages), "这是摘要")
+
+    def test_analysis_and_summary_tags_are_unwrapped(self) -> None:
+        self.assertEqual(clean_summary("<analysis>先理一下</analysis>\n<summary>\n正文\n</summary>"), "正文")
+        self.assertEqual(clean_summary("  直接写的摘要 "), "直接写的摘要")
+
+
+class FallbackProvider:
+    """普通对话回一句话；做摘要时第一次（带工具、和平时同一份前缀）按 first_reply 失败，第二次给出摘要。"""
+
+    def __init__(self, first_reply) -> None:
+        self.first_reply = first_reply
+        self.summary_calls: list[list[dict]] = []
+
+    async def complete(self, messages, tools, listener) -> LLMResponse:
+        if messages[-1].get("content") != SUMMARY_INSTRUCTION:
+            return LLMResponse(text="一")
+        self.summary_calls.append(tools)
+        if len(self.summary_calls) == 1:
+            if isinstance(self.first_reply, Exception):
+                raise self.first_reply
+            return self.first_reply
+        return LLMResponse(text="截短后的摘要")

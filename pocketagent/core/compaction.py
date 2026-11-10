@@ -1,9 +1,13 @@
-"""上下文压缩：对话快塞满上下文窗口时，把历史换成摘要，再接着干。
+"""上下文压缩：对话快塞满上下文窗口时，把整段历史换成一份摘要，再接着干。
 
-- 增量合并：历史开头已经是上一次的摘要时，不是把摘要当普通历史重新压一遍（那样每压一次
-  早期细节就失真一轮），而是让模型在旧摘要的基础上合并新增的对话，旧摘要的内容原样保留。
-- 末尾留原文：后台压缩只把前面换成摘要，最近几条消息原样保留，最近的工具输出、文件内容
-  不会因为进了摘要而走样（见 nodes.py 的 _snapshot_length）。
+参考 Claude Code / Qoder / WorkBuddy 的做法（2026-11-10 看过它们装在本机的代码）：
+- 整段历史一起总结，上一次的摘要也在里面，由模型自己挑还有用的留下，过时的去掉；不另外保留最近几条原文。
+  后台压缩期间新加的消息（快照之后的）原样接在摘要后面，这是唯一的例外。
+- 做摘要的请求复用平时那一份前缀：同样的系统提示、工具定义和消息，末尾追加一条压缩指令，
+  接口的前缀缓存能整段命中，这次请求几乎只为输出付钱。工具定义照带（换了就不命中缓存），指令里要求只写文字。
+- 请求放不下（接口报超长）或模型没给出文字时退回老办法：不带工具、不发图片，长消息截短、思考裁短写进正文，
+  还放不下就从最早的对话开始丢。
+- 换上摘要时把还要用的东西原样接在后面：加载过的技能正文、任务清单、计划。
 
 默认在后台压缩，不挡着对话（见 nodes.py 的 GuardNode）：
 - 占用超过阈值：拿当时的历史快照在后台做摘要，这一轮照常往下跑；
@@ -12,6 +16,7 @@
 """
 
 import asyncio
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -26,47 +31,53 @@ from pocketagent.llm.base import (
     without_reasoning,
 )
 
-# 摘要宁可详细：压缩之后模型只看得到它，漏掉的细节（路径、报错原文、用户原话、试过不行的办法）就再也找不回来，
-# 只能重新查、重新踩一遍坑。所以要求写具体、写依据，不限字数
-SUMMARY_DETAIL_RULES = """写法要求：
-- 宁可详细也不要漏，不用追求简短；内容多就写长，按上面几节分标题写
-- 写具体的东西：文件路径、函数名、命令、报错原文、关键数字、链接、配置项，照原样写，不要概括成「改了一些文件」「遇到了报错」
-- 结论要带依据：怎么确认的（跑了什么测试、看了哪段输出），没验证的标明没验证
-- assistant 消息里「〔当时的思考〕」是模型当时的思考过程，从里面提取定下的计划、排除过的方向和原因、还没验证的猜测，不要照抄推理过程"""
+# 压缩指令，照 Claude Code 的九节结构写（Qoder 原样用的也是这一套），加上 WorkBuddy 的「做完的别重做」
+# 和 Qoder 的「这条指令不算用户的话」（实测不写这句，模型会把它列进用户消息、还写进下一步）。
+# 篇幅：Claude Code / Qoder 不限字数，WorkBuddy 限 1000 词；这里给个大概（约 5k token），把篇幅留给具体信息
+SUMMARY_INSTRUCTION = """现在先不要继续任务，也不要调用任何工具：只用文字写一份交接摘要。压缩之后，上面这些对话会被这份摘要整个替换掉，接着干活的你只看得到它。
+这条压缩指令是 PocketAgent 自动发的，不是用户说的话：不要把它列进「用户说过的话」，也不要把「不调用工具、只写摘要」写进待办或下一步。
 
-SUMMARY_SECTIONS = """1. 用户的需求：原始需求和后来补充、纠正的要求，尽量保留原话；用户明确说过不要做的事
-2. 已经完成的工作：做了什么、改了哪些文件、每处关键改动是什么、怎么验证的
-3. 重要发现：读过的关键文件和其中的要点、查到的资料（带来源）、确认过的事实
-4. 试过但不行的办法和踩过的坑：为什么不行，免得接手后再试一遍
-5. 当时的计划和判断：思考里定下的做法、排除过的方向、还没验证的猜测
-6. 还没做完的事和下一步：具体到下一步要做什么、在哪个文件、还卡在什么地方"""
+请把到目前为止的整段对话（如果开头有上一次压缩留下的摘要，也把它当成对话的一部分）重新整理成一份摘要。还有用的留下，已经过时、被推翻、和后面无关的去掉。按下面九节写：
 
-SUMMARY_INSTRUCTION = f"""请把上面的对话压缩成一份交接摘要，让接手的人不看原始记录也能接着干，不用重新查一遍。包含：
-{SUMMARY_SECTIONS}
+1. 用户的需求和意图：用户要什么，后来补充、纠正、明确不要做的，尽量保留原话
+2. 关键技术点：用到的技术、框架、约定、重要的设计决定
+3. 文件和代码：看过、改过、新建的文件，每个写清为什么重要、改了什么；关键的代码片段照原样贴
+4. 报错和修复：遇到的报错（原文）和怎么修的；用户纠正过的做法和原因
+5. 解决问题的过程：已经解决的问题、正在排查的问题、试过但不行的办法和原因（免得接手后再试一遍）、还没验证的猜测
+6. 用户说过的话：用户的每一条消息（工具结果不算）按顺序列出，原话或贴近原话，这是判断用户意图变化的依据
+7. 待办：用户明确交代、还没做完的事
+8. 正在做的事：压缩前最后在做什么，具体到文件、函数、命令
+9. 下一步：接下来要做的那一步，必须是用户最近要求的事；引用最近对话的原话，免得做偏。已经做完、用户没再要求的事不要列成下一步
 
-{SUMMARY_DETAIL_RULES}
-只输出摘要本身，不要调用工具。"""
+写法：
+- 具体：文件路径、函数名、命令、报错原文、数字、链接照原样写，不要概括成「改了一些文件」「遇到了报错」
+- 结论带依据（跑了什么测试、看了哪段输出），没验证的写明没验证；已经做完的事写明做完了，接手后不要重做
+- 篇幅通常 5000 token（中文六七千字）以内就够了；内容少就短，不要凑字数、不要重复
+- 只输出摘要正文，不要寒暄，不要调用工具"""
 
-MERGE_SUMMARY_INSTRUCTION = f"""上面带「（之前的对话已压缩，以下是摘要）」开头那条消息是上一次的交接摘要，它之后的消息是摘要之后新增的对话。请把两边合并成一份新的交接摘要，让接手的人不看原始记录也能接着干：
-- 旧摘要里的信息原样保留，不要省略、不要改写成更模糊的说法；只有被新增对话推翻的才改，以新增对话为准
-- 把新增对话里发生的事按下面几节并进去，还没做完的事和下一步按最新情况更新
-{SUMMARY_SECTIONS}
-
-{SUMMARY_DETAIL_RULES}
-只输出合并后的摘要本身，不要调用工具。"""
-
+# 摘要消息开头的标记：界面、会话列表靠它认出这是摘要（改了要兼容旧会话）
 SUMMARY_PREFIX = "（之前的对话已压缩，以下是摘要）\n\n"
-RESUME_HINT = "\n\n请根据摘要继续完成任务。"
+RESUME_HINT = "\n\n以上是压缩前的对话摘要。接着上次停下的地方继续：没做完的事直接接着做，不要向用户复述或确认摘要。"
+# 以前版本写在摘要末尾的话，认旧会话里的摘要时一起剥掉
+LEGACY_RESUME_HINTS = ("\n\n请根据摘要继续完成任务。",)
 # 加载过的技能正文不进摘要，原样接在摘要后面（Agent Skills 规范建议压缩时保留）
 PRESERVED_SKILLS_HEADER = "\n\n（压缩前加载过的技能，完整说明原样保留如下）\n\n"
-# 给模型做摘要时，单条消息最多保留这么多字（长的工具输出头尾各留一半）
+TODOS_HEADER = "\n\n（压缩前的任务清单，原样保留）\n"
+PLAN_HEADER = "\n\n（压缩前的计划，原样保留）\n"
+# 退回老办法时，单条消息最多保留这么多字（长的工具输出头尾各留一半）
 SUMMARY_MESSAGE_LIMIT_CHARS = 4000
-# 每一步的思考最多带这么多字进摘要请求：思考动辄上万字，全带会把请求撑满、挤掉更早的对话；
+# 退回老办法时每一步的思考最多带这么多字：思考动辄上万字，全带会把请求撑满、挤掉更早的对话；
 # 结论和计划多在后半段，所以尾巴留得多
 SUMMARY_REASONING_HEAD_CHARS = 1000
 SUMMARY_REASONING_TAIL_CHARS = 2000
 REASONING_LABEL = "〔当时的思考〕"
 REPLY_LABEL = "〔回复〕"
+SUMMARY_TAG_PATTERN = re.compile(r"<summary>(.*?)</summary>", re.S)
+ANALYSIS_TAG_PATTERN = re.compile(r"<analysis>.*?</analysis>", re.S)
+
+
+class SummaryFailed(RuntimeError):
+    """模型没给出能用的摘要（空的、只想调工具）。"""
 
 
 def previous_summary_text(messages: list[dict[str, Any]]) -> str | None:
@@ -77,27 +88,42 @@ def previous_summary_text(messages: list[dict[str, Any]]) -> str | None:
     if not isinstance(content, str) or not content.startswith(SUMMARY_PREFIX):
         return None
     body = content[len(SUMMARY_PREFIX) :]
-    header = body.find(PRESERVED_SKILLS_HEADER)
-    if header != -1:
-        body = body[:header]
-    if body.endswith(RESUME_HINT):
-        body = body[: -len(RESUME_HINT)]
+    for hint in (RESUME_HINT, *LEGACY_RESUME_HINTS):
+        if body.endswith(hint):
+            body = body[: -len(hint)]
+    # 摘要后面原样接着的技能、任务清单、计划不算摘要正文
+    for header in (PRESERVED_SKILLS_HEADER, TODOS_HEADER, PLAN_HEADER):
+        position = body.find(header)
+        if position != -1:
+            body = body[:position]
     return body.strip()
 
 
-async def summarize_history(provider: LLMProvider, messages: list[dict[str, Any]]) -> str:
+async def summarize_history(
+    provider: LLMProvider, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None
+) -> str:
+    """messages 末尾追加压缩指令，让模型写摘要。tools 传平时那份工具定义时请求前缀和平时一样、能命中缓存。"""
     previous = previous_summary_text(messages)
     if previous is not None and len(messages) <= 2:
-        # 只有旧摘要、没有新增对话，合并是白做一次还可能丢字，直接沿用
+        # 只有旧摘要、没有新增对话，再压一遍是白做还可能丢字，直接沿用
         return previous
-    instruction = MERGE_SUMMARY_INSTRUCTION if previous is not None else SUMMARY_INSTRUCTION
-    request_messages = with_reasoning_as_text(messages) + [{"role": "user", "content": instruction}]
+    request_messages = list(messages) + [{"role": "user", "content": SUMMARY_INSTRUCTION}]
     # 摘要不往界面上流式输出
-    response: LLMResponse = await provider.complete(request_messages, tools=[], listener=SilentListener())
-    summary = response.text.strip()
+    response: LLMResponse = await provider.complete(request_messages, tools=tools or [], listener=SilentListener())
+    summary = clean_summary(response.text)
     if not summary:
-        raise RuntimeError("压缩失败：模型返回了空摘要")
+        detail = "它想调用工具" if response.tool_calls else "返回了空内容"
+        raise SummaryFailed(f"压缩失败：模型没有给出摘要（{detail}）")
     return summary
+
+
+def clean_summary(text: str) -> str:
+    """有的模型照 Claude Code 的格式先写 <analysis> 再写 <summary>：只要 summary 里的正文。"""
+    text = ANALYSIS_TAG_PATTERN.sub("", text or "")
+    match = SUMMARY_TAG_PATTERN.search(text)
+    if match:
+        text = match.group(1)
+    return text.strip()
 
 
 def with_reasoning_as_text(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -195,25 +221,49 @@ def without_old_reasoning(messages: list[dict[str, Any]], turn_in_progress: bool
     return without_reasoning(messages)
 
 
+@dataclass
+class PreservedState:
+    """换上摘要时原样接在后面的东西：摘要难免走样，这些后面还要照着做。"""
+
+    todos: list[dict[str, Any]] | None = None
+    plan: str = ""
+
+
 def rebuild_with_summary_and_tail(
-    messages: list[dict[str, Any]], snapshot_length: int, summary: str
+    messages: list[dict[str, Any]], snapshot_length: int, summary: str, preserved: PreservedState | None = None
 ) -> list[dict[str, Any]]:
-    """快照部分换成摘要，快照之后的消息接在后面。快照总是在两步之间拍的，后面不会以 tool 结果开头。
-    技能正文从整段历史里找（末尾保留的原文里有就用最新的那份），接在摘要后面。"""
+    """快照部分换成摘要，快照之后（后台做摘要期间）新加的消息接在后面。快照总是在两步之间拍的，后面不会以 tool 结果开头。
+    技能正文从整段历史里找（快照之后的消息里有就用最新的那份），接在摘要后面。"""
     skill_blocks = loaded_skill_blocks(messages[1:])
-    rebuilt = rebuild_messages_with_summary(messages[:snapshot_length], summary, skill_blocks)
+    rebuilt = rebuild_messages_with_summary(messages[:snapshot_length], summary, skill_blocks, preserved)
     return rebuilt + messages[snapshot_length:]
 
 
 def rebuild_messages_with_summary(
-    messages: list[dict[str, Any]], summary: str, skill_blocks: list[str] | None = None
+    messages: list[dict[str, Any]],
+    summary: str,
+    skill_blocks: list[str] | None = None,
+    preserved: PreservedState | None = None,
 ) -> list[dict[str, Any]]:
-    """保留开头的系统提示，其余换成一条 user 摘要消息；加载过的技能正文接在摘要后面。"""
+    """保留开头的系统提示，其余换成一条 user 摘要消息；技能正文、任务清单、计划接在摘要后面。"""
     rebuilt = []
     if messages and messages[0].get("role") == "system":
         rebuilt.append(messages[0])
     if skill_blocks is None:
         skill_blocks = loaded_skill_blocks(messages[1:] if rebuilt else messages)
-    preserved = PRESERVED_SKILLS_HEADER + "\n\n".join(skill_blocks) if skill_blocks else ""
-    rebuilt.append({"role": "user", "content": SUMMARY_PREFIX + summary + preserved + RESUME_HINT})
+    attached = PRESERVED_SKILLS_HEADER + "\n\n".join(skill_blocks) if skill_blocks else ""
+    attached += _preserved_text(preserved)
+    rebuilt.append({"role": "user", "content": SUMMARY_PREFIX + summary + attached + RESUME_HINT})
     return rebuilt
+
+
+def _preserved_text(preserved: PreservedState | None) -> str:
+    if preserved is None:
+        return ""
+    text = ""
+    if preserved.todos:
+        lines = [f"- [{item.get('status', 'pending')}] {item.get('content', '')}" for item in preserved.todos]
+        text += TODOS_HEADER + "\n".join(lines)
+    if preserved.plan.strip():
+        text += PLAN_HEADER + preserved.plan.strip()
+    return text

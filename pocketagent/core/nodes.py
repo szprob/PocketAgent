@@ -14,6 +14,8 @@ from pocketflow import AsyncNode
 
 from pocketagent.core.compaction import (
     PendingCompaction,
+    PreservedState,
+    SummaryFailed,
     rebuild_messages_with_summary,
     rebuild_with_summary_and_tail,
     shrink_for_summary,
@@ -22,6 +24,7 @@ from pocketagent.core.compaction import (
 )
 from pocketagent.core.context import AgentContext
 from pocketagent.core.events import EventBus, EventType
+from pocketagent.core.tokens import estimate_text_tokens, estimate_tokens
 from pocketagent.core.tool_outputs import save_tool_output
 from pocketagent.interaction.attachments import (
     AttachmentStore,
@@ -133,25 +136,50 @@ def _can_compact(context: AgentContext) -> bool:
 # ---- 后台压缩 ----
 
 
-# 后台压缩时，末尾这么多条消息不进摘要、原样保留：最近的工具输出和文件内容摘要容易走样
-TAIL_KEEP_MESSAGES = 8
-
-
 def _snapshot_length(messages: list[dict[str, Any]]) -> int:
-    """摘要覆盖到哪里为止：前面换成摘要，末尾留几条原文。边界不落在 tool 结果上
-    （快照之后的第一条消息不能是没有 assistant 开头的 tool 结果），
-    也至少给摘要留一条真消息，不然等于白压一次。"""
-    start = max(3, len(messages) - TAIL_KEEP_MESSAGES)
-    while start < len(messages) and messages[start].get("role") == "tool":
-        start -= 1
-    return start
+    """摘要覆盖整段历史（不另外留最近几条原文，见 compaction.py）。快照在两步之间拍，
+    最后一条是用户消息或 tool 结果，之后新加的从 assistant 开始，接在摘要后面不会对不上。"""
+    return len(messages)
 
 
-def _summary_request_messages(context: AgentContext) -> list[dict[str, Any]]:
-    """做摘要用的历史：不发图片；本身超长时先截短、丢掉最早的对话。"""
-    messages = materialize_messages(context.messages, context.attachments_root, supports_images=False)
+@dataclass
+class SummaryInputs:
+    """做摘要的两套输入：先试和平时同一份前缀（能命中缓存），不行再用截短过的那份。"""
+
+    # 平时发给模型的消息和工具定义；None 表示这次直接用 fallback（比如接口刚报过超长，同样的前缀肯定放不下）
+    cached_messages: list[dict[str, Any]] | None
+    cached_tools: list[dict[str, Any]]
+    # 不带工具、不发图片、长消息截短、思考裁短写进正文，还超就丢最早的对话
+    fallback_messages: list[dict[str, Any]]
+
+
+def _summary_inputs(context: AgentContext, reason: str) -> SummaryInputs:
+    """在拍快照的这一刻把两套输入都备好：后台做摘要期间历史还会往下加。"""
+    fallback = materialize_messages(context.messages, context.attachments_root, supports_images=False)
     limit = int(context.settings.context_window_tokens * SUMMARY_INPUT_RATIO)
-    return shrink_for_summary(messages, limit)
+    cached_messages = None if reason == "overflow" else messages_for_model(context)
+    tools = context.tool_schemas if context.tool_schemas is not None else context.tools.openai_schemas()
+    return SummaryInputs(cached_messages=cached_messages, cached_tools=tools, fallback_messages=shrink_for_summary(fallback, limit))
+
+
+async def summarize_for_compaction(provider: LLMProvider, inputs: SummaryInputs) -> str:
+    """先用和平时同一份前缀做摘要；放不下、模型没给文字、摘要比原文还长，就换截短的那份再做一次。"""
+    if inputs.cached_messages is not None:
+        try:
+            summary = await summarize_history(provider, inputs.cached_messages, inputs.cached_tools)
+            _check_not_inflated(summary, inputs.cached_messages)
+            return summary
+        except (ContextOverflowError, SummaryFailed):
+            pass
+    summary = await summarize_history(provider, inputs.fallback_messages)
+    _check_not_inflated(summary, inputs.fallback_messages)
+    return summary
+
+
+def _check_not_inflated(summary: str, source: list[dict[str, Any]]) -> None:
+    """摘要不比原文短就没压缩成，换上它反而更占地方（Qoder 也这样拦）。"""
+    if estimate_text_tokens(summary) >= estimate_tokens(source):
+        raise SummaryFailed("压缩失败：摘要比原来的对话还长")
 
 
 async def start_background_compaction(context: AgentContext, reason: str) -> bool:
@@ -159,7 +187,7 @@ async def start_background_compaction(context: AgentContext, reason: str) -> boo
     if context.pending_compaction is not None or len(context.messages) <= 2:
         return False
     await _run_pre_compact_hook(context, reason)
-    task = asyncio.create_task(summarize_history(context.provider, _summary_request_messages(context)))
+    task = asyncio.create_task(summarize_for_compaction(context.provider, _summary_inputs(context, reason)))
     context.pending_compaction = PendingCompaction(
         task=task,
         snapshot_length=_snapshot_length(context.messages),
@@ -202,7 +230,9 @@ async def apply_finished_compaction(context: AgentContext) -> bool:
         return False
     tokens_before = context.estimated_context_tokens()
     _keep_title(context)
-    context.session.messages = rebuild_with_summary_and_tail(context.messages, pending.snapshot_length, pending.task.result())
+    context.session.messages = rebuild_with_summary_and_tail(
+        context.messages, pending.snapshot_length, pending.task.result(), _preserved_state(context)
+    )
     _after_history_replaced(context)
     await context.events.emit(
         EventType.COMPACTION,
@@ -235,6 +265,13 @@ def _keep_title(context: AgentContext) -> None:
     """压缩后第一条 user 消息就成了摘要，标题会跟着变；换之前把原来的标题定下来。"""
     if not context.session.title:
         context.session.title = context.session.display_title()
+
+
+def _preserved_state(context: AgentContext) -> PreservedState:
+    """换上摘要时原样接在后面的任务清单和计划（还在用的才带：计划被拒或者没有就不带）。"""
+    session = context.session
+    plan = session.plan if session.plan and session.plan_status in ("pending", "approved") else ""
+    return PreservedState(todos=list(session.todos or []), plan=plan or "")
 
 
 def _after_history_replaced(context: AgentContext) -> None:
@@ -859,7 +896,7 @@ def _denied_outcome(call: ToolCall, reason: str) -> ToolCallOutcome:
 @dataclass
 class CompactRequest:
     provider: LLMProvider
-    messages: list[dict[str, Any]]
+    inputs: SummaryInputs
 
 
 class CompactNode(AgentNode):
@@ -872,15 +909,16 @@ class CompactNode(AgentNode):
         # 后台那份已经通知过 pre_compact 了，同一场压缩不重复跑
         if not had_pending:
             await _run_pre_compact_hook(context, context.turn.compact_reason or "manual")
-        return CompactRequest(provider=context.provider, messages=_summary_request_messages(context))
+        reason = context.turn.compact_reason or "manual"
+        return CompactRequest(provider=context.provider, inputs=_summary_inputs(context, reason))
 
     async def exec_async(self, request: CompactRequest) -> str:
-        return await summarize_history(request.provider, request.messages)
+        return await summarize_for_compaction(request.provider, request.inputs)
 
     async def post_async(self, context: AgentContext, request: CompactRequest, summary: str) -> None:
         tokens_before = context.estimated_context_tokens()
         _keep_title(context)
-        context.session.messages = rebuild_messages_with_summary(context.messages, summary)
+        context.session.messages = rebuild_messages_with_summary(context.messages, summary, preserved=_preserved_state(context))
         _after_history_replaced(context)
         reason = context.turn.compact_reason or "manual"
         context.turn.compact_reason = ""

@@ -4,7 +4,7 @@ import unittest
 from typing import Any
 
 from pocketagent.core.agent import INTERRUPTED_TOOL_RESULT
-from pocketagent.core.compaction import MERGE_SUMMARY_INSTRUCTION, SUMMARY_PREFIX
+from pocketagent.core.compaction import SUMMARY_INSTRUCTION, SUMMARY_PREFIX
 from pocketagent.core.context import TokenAnchor
 from pocketagent.core.events import EventType
 from pocketagent.core.nodes import apply_finished_compaction, start_background_compaction
@@ -314,13 +314,12 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(harness.recorder.of_type(EventType.COMPACTION_WAITING)), 1)
         messages = harness.agent.context.messages
         self.assertTrue(messages[1]["content"].startswith(SUMMARY_PREFIX))
-        # 末尾的原文（第二轮对话）保留，没进摘要
-        self.assertEqual(
-            roles(messages), ["system", "user", "user", "assistant", "user", "assistant"]
-        )
+        # 整段历史都进了摘要，不另留原文；只有压缩开始之后才说的「继续」原样接在后面
+        self.assertEqual(roles(messages), ["system", "user", "user", "assistant"])
+        self.assertEqual(messages[2]["content"], "继续")
         self.assertEqual(provider.summary_calls, 1)
 
-    async def test_second_compaction_merges_into_the_previous_summary(self) -> None:
+    async def test_second_compaction_resummarizes_everything_including_the_old_summary(self) -> None:
         provider = RoutingProvider([])
         provider.summary_gate.set()
         harness = build_harness(self.directories, [], provider=provider)
@@ -333,7 +332,7 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
         first_summary = context.messages[1]["content"]
         self.assertTrue(first_summary.startswith(SUMMARY_PREFIX))
 
-        # 第二次压缩走「合并」：旧摘要原样放在请求里，不再从头重压
+        # 第二次压缩：旧摘要和新对话一起交给模型重新整理，由它挑还有用的留下
         context.messages.extend(self._long_history())
         await start_background_compaction(context, reason="manual")
         await asyncio.wait([context.pending_compaction.task])
@@ -341,8 +340,10 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(provider.summary_calls, 2)
         request = provider.summary_requests[1]
-        self.assertEqual(request[-1]["content"], MERGE_SUMMARY_INSTRUCTION)
+        self.assertEqual(request[-1]["content"], SUMMARY_INSTRUCTION)
         self.assertEqual(request[1]["content"], first_summary)
+        self.assertTrue(context.messages[1]["content"].startswith(SUMMARY_PREFIX))
+        self.assertEqual(len(context.messages), 2)
 
     async def test_stale_background_summary_is_discarded(self) -> None:
         provider = RoutingProvider([])

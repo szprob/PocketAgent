@@ -319,7 +319,8 @@ class IncrementalCompactionTest(unittest.TestCase):
 
         self.assertEqual(shrunk[1]["content"], summary_message["content"])
 
-    def test_snapshot_boundary_never_starts_on_a_tool_result(self) -> None:
+    def test_snapshot_covers_the_whole_history(self) -> None:
+        """整段历史一起总结，不另外留最近几条原文（Claude Code / Qoder / WorkBuddy 都这样）。"""
         messages = [
             {"role": "system", "content": "s"},
             {"role": "user", "content": "任务"},
@@ -327,19 +328,7 @@ class IncrementalCompactionTest(unittest.TestCase):
             {"role": "tool", "tool_call_id": "a", "content": "结果"},
         ]
 
-        self.assertEqual(_snapshot_length(messages), 2)
-
-    def test_snapshot_keeps_at_most_the_tail(self) -> None:
-        messages = [{"role": "system", "content": "s"}, {"role": "user", "content": "任务"}]
-        for index in range(20):
-            messages.append({"role": "assistant", "content": f"回复{index}"})
-            messages.append({"role": "user", "content": f"追问{index}"})
-
-        start = _snapshot_length(messages)
-
-        self.assertGreaterEqual(start, 3)
-        self.assertLessEqual(len(messages) - start, 8)
-        self.assertNotEqual(messages[start].get("role"), "tool")
+        self.assertEqual(_snapshot_length(messages), 4)
 
 
 class SessionSummaryCacheTest(unittest.TestCase):
