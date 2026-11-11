@@ -74,9 +74,10 @@ pocketagent/
     billing.py           查各家接口的账户余额
   sync/                  云同步：会话和项目记忆在几台机器之间对齐，见 docs/sync.md
     manifest.py          哪些文件参与同步；会话里只在本机有意义的字段，上传时去掉、拉回时接回
-    backend.py           存储后端：WebDAV（坚果云）/ 本地同步目录，统一的列、读、写、删接口
+    backend.py           存储后端：WebDAV（坚果云）/ 本地同步目录 / GitHub 私有仓库，统一的列、读、写、删接口
     merge.py             两边都改过时怎么合：会话按消息求并集，文本保留本地并另存远端
     engine.py            比对本地哈希、远端 ETag 和上次底稿，决定上传 / 下载 / 合并 / 删除
+    service.py           配置保存、一轮对话结束时排一次同步，短时间内的多次触发合并
     cli.py               pocketagent sync init / status / run / conflicts
   evaluation/            trace 回放和评测（只在命令行），见 docs/evaluation.md
     trace_reader.py      把 JSONL trace 按轮整理成摘要：用户的话、模型、步数、工具调用结果、用量、耗时、起始检查点

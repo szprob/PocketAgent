@@ -37,6 +37,8 @@ from pocketagent.server.session import (
 from pocketagent.server.triggers.engine import TriggerEngine
 from pocketagent.server.triggers.model import Occurrence, SOURCE_TASK_END
 from pocketagent.server.worktrees import create_worktree
+from pocketagent.sync.config import SyncConfig
+from pocketagent.sync.service import CONFIG_DEBOUNCE_SECONDS, TURN_END_DEBOUNCE_SECONDS, SyncScheduler
 
 CONNECTION_TEST_PROMPT = "这是一次连通性测试，请只回复两个字：收到"
 CONNECTION_TEST_TIMEOUT_SECONDS = 60
@@ -81,6 +83,8 @@ class SessionManager:
         self.trigger_tasks: set[asyncio.Task] = set()
         # 某一轮调度抛出异常时记在这里，界面上一并显示；空串表示正常
         self.scheduler_problem = ""
+        # 云同步：配置改完 / 一轮结束各排一次，短时间内的多次触发合并成一次
+        self.sync_scheduler = SyncScheduler(base_settings.home_dir, log=lambda text: print(text, flush=True))
 
     # ---- provider 和设置 ----
 
@@ -158,6 +162,7 @@ class SessionManager:
             raise ConfigError(f"目录不存在：{raw_path}")
         if self.app_config.add_workspace(path):
             self.app_config.save(self.base_settings.config_path)
+            self.schedule_sync("workspace")
 
     def remove_workspace(self, raw_path: str) -> None:
         """只从列表里拿掉，这个工作区的历史任务不删。"""
@@ -166,11 +171,13 @@ class SessionManager:
         if self.app_config.default_workspace == resolved:
             self.app_config.default_workspace = None
         self.app_config.save(self.base_settings.config_path)
+        self.schedule_sync("workspace")
 
     def set_default_workspace(self, raw_path: str) -> None:
         """把列表里的某个目录设成新任务的默认工作区，存进配置。"""
         self.app_config.set_default_workspace(raw_path)
         self.app_config.save(self.base_settings.config_path)
+        self.schedule_sync("workspace")
 
     # ---- 任务 ----
 
@@ -327,7 +334,33 @@ class SessionManager:
             data["image_gen_api_key"] = self.app_config.image_gen_api_key
         data["web_token"] = self.app_config.web_token
         data["workspaces"] = self.app_config.workspaces
+        # 同步设置按设备存：把磁盘上别台机器的条目并进来，别被这次整份保存冲掉
+        data["sync"] = {"devices": self._merged_sync_devices()}
         return AppConfig.from_dict(data)
+
+    def schedule_sync(self, reason: str, delay: float = TURN_END_DEBOUNCE_SECONDS) -> None:
+        """配置改完、一轮结束：排一次云同步。没配置同步时 scheduler 自己会跳过。"""
+        self.sync_scheduler.schedule(reason, delay)
+
+    def _merged_sync_devices(self) -> dict[str, dict[str, Any]]:
+        """磁盘上的设备条目 + 内存里的（内存优先）：云同步可能刚把别台机器的设置拉下来。"""
+        devices: dict[str, dict[str, Any]] = {}
+        try:
+            devices.update(AppConfig.load(self.base_settings.config_path).sync_devices)
+        except Exception:
+            # 配置文件读不出来时别让保存整个失败，内存里的那份还能写下去
+            pass
+        devices.update(self.app_config.sync_devices)
+        return devices
+
+    def save_sync_config(self, config: SyncConfig) -> None:
+        """同步设置存进 config.json 的 sync.devices.<设备 id>，密码另存本机身份文件。"""
+        devices = self._merged_sync_devices()
+        devices[config.device_id] = config.device_entry()
+        self.app_config.sync_devices = devices
+        self.app_config.save(self.base_settings.config_path)
+        config.save_identity(self.base_settings.home_dir)
+        self.schedule_sync("sync-config", CONFIG_DEBOUNCE_SECONDS)
 
     async def apply_config(self, new_config: AppConfig) -> None:
         new_config.save(self.base_settings.config_path)
@@ -341,6 +374,7 @@ class SessionManager:
             profile = new_config.find_model(settings.model_profile_id) or new_config.default_profile()
             if profile is not None:
                 await web_session.use_model(profile, self.build_provider)
+        self.schedule_sync("config", CONFIG_DEBOUNCE_SECONDS)
 
     async def update_model_options(self, model_id: str, options: dict[str, Any]) -> ModelProfile:
         """选模型面板里直接改思考档位、上下文长度：存进配置，用这个模型的任务马上换上。"""
@@ -355,6 +389,7 @@ class SessionManager:
         updated = ModelProfile.from_dict(data)
         self.app_config.models = [updated if each.id == model_id else each for each in self.app_config.models]
         self.app_config.save(self.base_settings.config_path)
+        self.schedule_sync("model-options", CONFIG_DEBOUNCE_SECONDS)
         for web_session in self.sessions.values():
             if web_session.settings.model_profile_id == model_id:
                 await web_session.use_model(updated, self.build_provider)
@@ -551,6 +586,8 @@ class SessionManager:
         """每一轮结束时问一次触发器。扔到后台任务里，别让条件脚本拖慢这一轮的收尾。"""
         if event.type != EventType.TURN_END:
             return
+        # 一轮结束（含自动化跑完）：隔一会儿同步一次，连着几轮会合并
+        self.schedule_sync("turn-end")
         if not self.automations.path.is_file():
             # 一条自动化都没配：别为了每一轮去读一次文件
             return

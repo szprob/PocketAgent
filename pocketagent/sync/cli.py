@@ -11,7 +11,7 @@ import os
 import sys
 from pathlib import Path
 
-from pocketagent.config import default_home_dir
+from pocketagent.config import config_path, default_home_dir
 from pocketagent.sync.backend import SyncError
 from pocketagent.sync.config import (
     BACKEND_KINDS,
@@ -21,6 +21,7 @@ from pocketagent.sync.config import (
     BackendSettings,
     SyncConfig,
     SyncConfigError,
+    default_local_directory,
     make_device_id,
     sync_config_path,
     sync_state_dir,
@@ -74,23 +75,23 @@ def _init_parser() -> argparse.ArgumentParser:
         prog="pocketagent sync init",
         description="配置同步。坚果云：地址填 https://dav.jianguoyun.com/dav/<你建的目录>，密码用「第三方应用密码」",
     )
-    parser.add_argument("--backend", choices=BACKEND_KINDS, default="webdav", help="webdav（坚果云等）或 local（已在同步的目录）")
-    parser.add_argument("--url", help="webdav 仓库地址，或 local 的目录路径")
+    parser.add_argument(
+        "--backend",
+        choices=BACKEND_KINDS,
+        default="webdav",
+        help="webdav（坚果云等）/ local（已在同步的目录）/ github（私有仓库）",
+    )
+    parser.add_argument("--url", help="webdav 仓库地址、local 目录，或 GitHub 的 owner/repo")
     parser.add_argument("--username", default="", help="webdav 用户名（坚果云是登录邮箱）")
     parser.add_argument("--password", default="", help="webdav 密码；不写就现场输入，或从环境变量读")
     parser.add_argument("--password-env", default="POCKETAGENT_SYNC_PASSWORD", help="从哪个环境变量读密码")
+    parser.add_argument("--branch", default="main", help="GitHub 仓库的分支，默认 main")
     parser.add_argument(
         "--include",
         default=None,
         help=f"要同步的数据，逗号分隔：{','.join(INCLUDE_CHOICES)}；默认 {','.join(DEFAULT_INCLUDES)}",
     )
     parser.add_argument("--max-file-mb", type=int, default=DEFAULT_MAX_FILE_BYTES // 1024 // 1024, help="单个文件上限（MB）")
-    parser.add_argument(
-        "--auto-minutes",
-        type=int,
-        default=None,
-        help="web / 桌面端每隔多少分钟自动同步一次；0 = 只手动跑；默认 10",
-    )
     parser.add_argument("--no-check", action="store_true", help="保存后不立即连一次远端")
     return parser
 
@@ -98,20 +99,21 @@ def _init_parser() -> argparse.ArgumentParser:
 def run_init_command(argv: list[str], home_dir: Path) -> int:
     arguments = _init_parser().parse_args(argv)
     url = arguments.url
+    if not url and arguments.backend == "local":
+        url = str(default_local_directory())
     if not url:
         default_url = "https://dav.jianguoyun.com/dav/pocketagent" if arguments.backend == "webdav" else ""
-        url = input(f"仓库地址{'（直接回车用 ' + default_url + '）' if default_url else ''}：").strip() or default_url
+        prompt = "仓库地址" if arguments.backend != "github" else "GitHub 仓库（owner/repo）"
+        url = input(f"{prompt}{'（直接回车用 ' + default_url + '）' if default_url else ''}：").strip() or default_url
     if not url:
         print("地址不能为空", file=sys.stderr)
         return EXIT_ERROR
 
     existing = None
-    path = sync_config_path(home_dir)
-    if path.is_file():
-        try:
-            existing = SyncConfig.load(path)
-        except SyncConfigError:
-            existing = None
+    try:
+        existing = SyncConfig.load(home_dir)
+    except SyncConfigError:
+        existing = None
     include_text = arguments.include or ",".join(existing.includes if existing else DEFAULT_INCLUDES)
     includes = [item.strip() for item in include_text.split(",") if item.strip()]
     unknown = [item for item in includes if item not in INCLUDE_CHOICES]
@@ -123,10 +125,12 @@ def run_init_command(argv: list[str], home_dir: Path) -> int:
     if not password and existing is not None:
         # 重跑 init 只是想改范围时不把已经存下的密码抹掉
         password = existing.backend.password
-    if arguments.backend == "webdav" and not password:
+    if arguments.backend in ("webdav", "github") and not password:
         # 已经能从环境变量读到就不用问
         if not os.environ.get(arguments.password_env):
-            password = getpass.getpass("WebDAV 密码（坚果云要第三方应用密码，输入时不显示）：")
+            label = "GitHub Personal Access Token" if arguments.backend == "github" else "WebDAV 密码"
+            hint = "" if arguments.backend == "github" else "（坚果云要第三方应用密码）"
+            password = getpass.getpass(f"{label}{hint}，输入时不显示：")
 
     if arguments.backend == "local":
         # 指向 iCloud 这类目录时目录可能还不存在，先建出来省得第一次检查就报错
@@ -138,22 +142,17 @@ def run_init_command(argv: list[str], home_dir: Path) -> int:
         username=arguments.username,
         password=password,
         password_env=arguments.password_env,
+        branch=arguments.branch,
     )
-    if arguments.auto_minutes is not None:
-        auto_minutes = max(0, arguments.auto_minutes)
-    elif existing is not None:
-        auto_minutes = existing.auto_interval_minutes
-    else:
-        auto_minutes = 10
     config = SyncConfig(
         device_id=existing.device_id if existing else make_device_id(),
         backend=settings,
         includes=list(dict.fromkeys(includes)),
         max_file_bytes=max(1, arguments.max_file_mb) * 1024 * 1024,
-        auto_interval_minutes=auto_minutes,
     )
-    config.save(path)
-    print(f"配置已写入 {path}（权限 0600）")
+    config.save(home_dir)
+    print(f"同步设置已写入 {config_path(home_dir)}（按设备 {config.device_id} 分开）")
+    print(f"本机身份和密码在 {sync_config_path(home_dir)}（权限 0600，不参与同步）")
     print(f"设备标识：{config.device_id}")
     print(f"同步范围：{', '.join(config.includes)}")
     for include in config.includes:
@@ -161,6 +160,8 @@ def run_init_command(argv: list[str], home_dir: Path) -> int:
             print(f"  注意：{RISKY_INCLUDES[include]}")
     if arguments.backend == "webdav":
         print("提示：坚果云免费版每月 1GB 上传 / 3GB 下载；会话和项目记忆通常只有十几 MB")
+    if arguments.backend == "github":
+        print("提示：仓库要已有初始提交（建仓库时勾 README）；Token 需要 Contents 读写权限")
 
     if arguments.no_check:
         return EXIT_OK
@@ -257,7 +258,7 @@ def run_conflicts_command(argv: list[str], home_dir: Path) -> int:
 
 def _load_config(home_dir: Path) -> SyncConfig | None:
     try:
-        return SyncConfig.load(sync_config_path(home_dir))
+        return SyncConfig.load(home_dir)
     except SyncConfigError as error:
         print(str(error), file=sys.stderr)
         return None

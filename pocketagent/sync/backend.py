@@ -4,9 +4,11 @@
 - WebDavBackend：坚果云的 WebDAV 接口（免费版每月 1GB 上传 / 3GB 下载，国内直连）。
 - LocalDirectoryBackend：指向一个本来就在同步的目录（iCloud 云盘、OneDrive、NAS 挂载点）。
   不需要任何账号和 API，测试也用它。
+- GitHubBackend：把私有仓库当存储，一个文件一个 blob，走 Contents API（Token 要 Contents 读写）。
 云端只存两样东西：<prefix>/<相对路径> 的数据文件，和 devices/<设备 id>.json 的心跳。
 """
 
+import base64
 import hashlib
 from pathlib import Path
 from typing import Protocol
@@ -115,6 +117,162 @@ class LocalDirectoryBackend:
         target = self._resolve(path)
         if target.is_file():
             target.unlink()
+
+
+GITHUB_API_BASE = "https://api.github.com"
+
+
+class GitHubBackend:
+    """用 GitHub 私有仓库当远端。
+
+    一个文件一个 object，提交历史就是版本历史；ETag 用 blob sha，内容变了 sha 一定变。
+    要求仓库已经有初始提交（Contents API 不能往空仓库里写）。
+    """
+
+    def __init__(
+        self,
+        repo: str,
+        token: str,
+        branch: str = "main",
+        api_base: str = GITHUB_API_BASE,
+        timeout_seconds: float = 30.0,
+        client: httpx.Client | None = None,
+    ) -> None:
+        self.repo = normalize_repo(repo)
+        self.branch = (branch or "main").strip() or "main"
+        self.api_base = api_base.rstrip("/")
+        self._client = client or httpx.Client(
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
+            timeout=timeout_seconds,
+            follow_redirects=True,
+        )
+
+    def close(self) -> None:
+        self._client.close()
+
+    def _contents_url(self, path: str) -> str:
+        quoted = "/".join(quote(part) for part in path.strip("/").split("/") if part)
+        return f"{self.api_base}/repos/{self.repo}/contents/{quoted}"
+
+    def _request(self, method: str, url: str, **kwargs) -> httpx.Response:
+        try:
+            response = self._client.request(method, url, **kwargs)
+        except httpx.HTTPError as error:
+            raise SyncError(f"连不上 GitHub：{error}") from error
+        if response.status_code == 401:
+            raise SyncError("GitHub Token 无效或已过期：重新生成一个带 Contents 读写权限的 Token")
+        if response.status_code == 403:
+            text = response.text.lower()
+            if "rate limit" in text:
+                raise SyncError("GitHub 接口限流了（未登录 60 次/小时，Token 5000 次/小时），过一会儿再试")
+            raise SyncError("GitHub 拒绝访问（403）：Token 缺少 Contents 读写权限")
+        return response
+
+    def ping(self) -> None:
+        response = self._request("GET", f"{self.api_base}/repos/{self.repo}")
+        if response.status_code == 404:
+            raise SyncError(f"GitHub 仓库不存在或 Token 没有访问权限：{self.repo}")
+        if response.status_code >= 400:
+            raise SyncError(f"GitHub 连接失败（{response.status_code}）：{self.repo}")
+        data = response.json()
+        permissions = data.get("permissions") or {}
+        if permissions and not permissions.get("push", True):
+            raise SyncError("Token 对这个仓库只有读权限：需要 Contents 读写")
+
+    def list_files(self, prefix: str = "") -> list[RemoteEntry]:
+        entries: list[RemoteEntry] = []
+        pending = [prefix.strip("/")]
+        visited: set[str] = set()
+        while pending:
+            directory = pending.pop()
+            if directory in visited:
+                continue
+            visited.add(directory)
+            url = f"{self._contents_url(directory)}?ref={quote(self.branch)}"
+            response = self._request("GET", url)
+            if response.status_code == 404:
+                if not directory:
+                    raise SyncError(f"GitHub 仓库或分支不存在：{self.repo}@{self.branch}")
+                continue
+            if response.status_code >= 400:
+                raise SyncError(f"列目录失败（{response.status_code}）：{directory or '/'}")
+            items = response.json()
+            if isinstance(items, dict):
+                items = [items]
+            for item in items:
+                if item.get("type") == "dir":
+                    pending.append(item.get("path", ""))
+                elif item.get("type") == "file":
+                    entries.append(
+                        RemoteEntry(item.get("path", ""), str(item.get("sha") or ""), int(item.get("size") or 0))
+                    )
+        return entries
+
+    def read(self, path: str) -> bytes:
+        url = f"{self._contents_url(path)}?ref={quote(self.branch)}"
+        response = self._request("GET", url, headers={"Accept": "application/vnd.github.raw"})
+        if response.status_code == 404:
+            raise SyncError(f"远端没有这个文件：{path}")
+        if response.status_code >= 400:
+            raise SyncError(f"下载失败（{response.status_code}）：{path}")
+        return response.content
+
+    def write(self, path: str, data: bytes) -> str:
+        body = {
+            "message": f"pocketagent: update {path}",
+            "content": base64.b64encode(data).decode("ascii"),
+            "branch": self.branch,
+        }
+        sha = self._file_sha(path)
+        if sha:
+            body["sha"] = sha
+        response = self._request("PUT", self._contents_url(path), json=body)
+        if response.status_code == 404:
+            raise SyncError(f"分支不存在：{self.branch}（先在仓库里建好这个分支）")
+        if response.status_code == 422:
+            raise SyncError(f"GitHub 不接受这个文件（422）：{path}；空仓库要先有一次提交")
+        if response.status_code >= 400:
+            raise SyncError(f"上传失败（{response.status_code}）：{path}")
+        payload = response.json().get("content") or {}
+        return str(payload.get("sha") or "sha256:" + hashlib.sha256(data).hexdigest())
+
+    def delete(self, path: str) -> None:
+        sha = self._file_sha(path)
+        if not sha:
+            return
+        response = self._request(
+            "DELETE",
+            self._contents_url(path),
+            json={"message": f"pocketagent: delete {path}", "sha": sha, "branch": self.branch},
+        )
+        if response.status_code >= 400 and response.status_code != 404:
+            raise SyncError(f"删除失败（{response.status_code}）：{path}")
+
+    def _file_sha(self, path: str) -> str:
+        response = self._request("GET", f"{self._contents_url(path)}?ref={quote(self.branch)}")
+        if response.status_code == 404:
+            return ""
+        if response.status_code >= 400:
+            raise SyncError(f"读取文件信息失败（{response.status_code}）：{path}")
+        data = response.json()
+        return str(data.get("sha") or "") if isinstance(data, dict) else ""
+
+
+def normalize_repo(repo: str) -> str:
+    text = repo.strip().rstrip("/")
+    if text.startswith("http://") or text.startswith("https://"):
+        path = urlparse(text).path.strip("/")
+        text = path[:-4] if path.endswith(".git") else path
+    if text.endswith(".git"):
+        text = text[:-4]
+    parts = [part for part in text.split("/") if part]
+    if len(parts) != 2:
+        raise SyncError(f"GitHub 仓库要写成 owner/repo：{repo!r}")
+    return "/".join(parts)
 
 
 class WebDavBackend:

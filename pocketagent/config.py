@@ -527,6 +527,9 @@ class AppConfig:
     default_workspace: str | None = None
     user_name: str | None = None
     web_token: str | None = None
+    # 云同步：每台机器一份设置，键是设备 id。config.json 本身会同步到云端，
+    # 用设备 id 分开存，两台机器各改各的、不会互相覆盖。密码不在这里（只在本机 sync.json）。
+    sync_devices: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def find_model(self, key: str | None) -> ModelProfile | None:
         """按 id、名称、模型名依次找。"""
@@ -600,6 +603,7 @@ class AppConfig:
             default_workspace=_workspace_path(data.get("default_workspace")),
             user_name=_optional_text(data, "user_name"),
             web_token=_optional_text(data, "web_token"),
+            sync_devices=_sync_devices(data.get("sync")),
         )
         if config.default_model and config.find_model(config.default_model) is None:
             config.default_model = models[0].id if models else None
@@ -662,6 +666,7 @@ class AppConfig:
             "default_workspace": self.default_workspace,
             "user_name": self.user_name,
             "web_token": self.web_token,
+            **({"sync": {"devices": self.sync_devices}} if self.sync_devices else {}),
         }
 
     def public_dict(self) -> dict[str, Any]:
@@ -842,6 +847,16 @@ class AppConfig:
         # 里面有密钥，只给自己读写
         temporary.chmod(0o600)
         temporary.replace(path)
+
+
+def _sync_devices(value: Any) -> dict[str, dict[str, Any]]:
+    """只收形状对的：sync.devices 是「设备 id → 设置」的字典。"""
+    if not isinstance(value, dict):
+        return {}
+    devices = value.get("devices")
+    if not isinstance(devices, dict):
+        return {}
+    return {str(key): dict(entry) for key, entry in devices.items() if isinstance(entry, dict)}
 
 
 def _check_unique(values: list[str], label: str) -> None:

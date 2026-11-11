@@ -48,7 +48,7 @@ class SyncSettingsApiTest(AioHTTPTestCase):
             "username": "me@example.com",
             "password": "app-password",
             "includes": ["sessions", "config"],
-            "auto_interval_minutes": 15,
+            "branch": "main",
         }
         payload.update(overrides)
         return payload
@@ -70,16 +70,20 @@ class SyncSettingsApiTest(AioHTTPTestCase):
         self.assertTrue(sync["configured"])
         self.assertTrue(sync["has_password"])
         self.assertEqual(sync["password_source"], "file")
-        self.assertEqual(sync["auto_interval_minutes"], 15)
         self.assertEqual(sync["includes"], ["sessions", "config"])
+        self.assertEqual(sync["backend"]["branch"], "main")
         self.assertNotIn("password", sync["backend"])
         self.assertNotIn("app-password", json.dumps(sync))
 
-        path = sync_config_path(self.home)
-        saved = SyncConfig.load(path)
+        saved = SyncConfig.load(self.home)
         self.assertEqual(saved.backend.password, "app-password")
+        config_data = json.loads((self.home / "config.json").read_text(encoding="utf-8"))
+        entry = config_data["sync"]["devices"][saved.device_id]
+        self.assertNotIn("password", entry["backend"])
+        identity = sync_config_path(self.home)
+        self.assertEqual(json.loads(identity.read_text(encoding="utf-8"))["password"], "app-password")
         if sys.platform != "win32":
-            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+            self.assertEqual(stat.S_IMODE(identity.stat().st_mode), 0o600)
 
     async def test_blank_password_keeps_saved_one(self):
         await self._put_sync(self._webdav_form())
@@ -88,13 +92,41 @@ class SyncSettingsApiTest(AioHTTPTestCase):
         body = await response.json()
         self.assertTrue(body["ok"])
         self.assertTrue(body["sync"]["has_password"])
-        self.assertEqual(SyncConfig.load(sync_config_path(self.home)).backend.password, "app-password")
+        self.assertEqual(SyncConfig.load(self.home).backend.password, "app-password")
+
+    async def test_switching_backend_does_not_reuse_password(self):
+        await self._put_sync(self._webdav_form())
+        response = await self._put_sync({"kind": "github", "url": "me/repo", "password": "", "includes": ["sessions"]})
+
+        body = await response.json()
+        self.assertTrue(body["ok"], body)
+        self.assertFalse(body["sync"]["has_password"])
+        self.assertEqual(body["sync"]["backend"]["kind"], "github")
 
     async def test_empty_scope_is_rejected(self):
         response = await self._put_sync(self._webdav_form(includes=[]))
 
         self.assertEqual(response.status, 400)
         self.assertIn("至少要选一项", (await response.json())["error"])
+
+    async def test_other_device_entries_are_kept(self):
+        # 另一台机器已经同步下来的条目，不能被这台机器的保存冲掉
+        config_data = {"sync": {"devices": {"other-machine": {"includes": ["sessions"]}}}}
+        (self.home / "config.json").write_text(json.dumps(config_data), encoding="utf-8")
+
+        response = await self._put_sync(self._webdav_form())
+
+        self.assertEqual(response.status, 200)
+        saved = json.loads((self.home / "config.json").read_text(encoding="utf-8"))
+        self.assertIn("other-machine", saved["sync"]["devices"])
+        self.assertEqual(len(saved["sync"]["devices"]), 2)
+
+    async def test_local_backend_gets_default_directory(self):
+        response = await self._put_sync({"kind": "local", "url": "", "includes": ["sessions"]})
+
+        body = await response.json()
+        self.assertTrue(body["ok"], body)
+        self.assertTrue(body["sync"]["backend"]["url"])
 
     async def test_missing_url_is_rejected(self):
         response = await self._put_sync(self._webdav_form(url=""))

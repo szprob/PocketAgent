@@ -12,7 +12,14 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from pocketagent.sync.backend import LocalDirectoryBackend, RemoteEntry, SyncBackend, SyncError, WebDavBackend
+from pocketagent.sync.backend import (
+    GitHubBackend,
+    LocalDirectoryBackend,
+    RemoteEntry,
+    SyncBackend,
+    SyncError,
+    WebDavBackend,
+)
 from pocketagent.sync.config import SYNC_DIR_NAME, BackendSettings, SyncConfig, sync_state_dir
 from pocketagent.sync.manifest import (
     ManifestEntry,
@@ -498,8 +505,20 @@ class SyncEngine:
 def create_backend(settings: BackendSettings) -> SyncBackend:
     if settings.kind == "local":
         return LocalDirectoryBackend(Path(settings.url).expanduser())
-    password = settings.resolved_password()
-    if not password:
+    secret = settings.resolved_password()
+    if settings.kind == "github":
+        if not secret:
+            raise SyncError(
+                "GitHub Token 是空的：把 Token 写进 sync.json（pocketagent sync init --password ...），"
+                f"或者设环境变量 {settings.password_env}"
+            )
+        return GitHubBackend(
+            repo=settings.url,
+            token=secret,
+            branch=settings.branch,
+            timeout_seconds=settings.timeout_seconds,
+        )
+    if not secret:
         raise SyncError(
             "WebDAV 密码是空的：把密码写进 sync.json（pocketagent sync init --password ...），"
             f"或者设环境变量 {settings.password_env}"
@@ -507,7 +526,7 @@ def create_backend(settings: BackendSettings) -> SyncBackend:
     return WebDavBackend(
         url=settings.url,
         username=settings.username,
-        password=password,
+        password=secret,
         verify_tls=settings.verify_tls,
         timeout_seconds=settings.timeout_seconds,
     )

@@ -17,7 +17,6 @@ from pocketagent.server.common import MANAGER_KEY, error_response
 from pocketagent.server.manager import SessionManager
 from pocketagent.server.routes import add_routes
 from pocketagent.server.session import ProviderFactory, RewindError, SessionBusyError
-from pocketagent.sync.service import run_periodic_sync
 from pocketagent.web import STATIC_DIR
 
 TOKEN_COOKIE_NAME = "pocketagent_token"
@@ -176,8 +175,6 @@ async def _start_site(runner: web.AppRunner, host: str, requested_port: int | No
 async def _serve(app: web.Application, settings: Settings, host: str, port: int | None, open_browser: bool) -> None:
     runner = web.AppRunner(app)
     await runner.setup()
-    # 云同步的后台循环：没配 sync.json 就立刻结束，不占资源
-    sync_task = asyncio.create_task(run_periodic_sync(settings.home_dir, log=lambda text: print(text, flush=True)))
     try:
         bound_port = await _start_site(runner, host, port)
         display_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
@@ -192,11 +189,7 @@ async def _serve(app: web.Application, settings: Settings, host: str, port: int 
             webbrowser.open(url)
         await asyncio.Event().wait()
     finally:
-        sync_task.cancel()
-        try:
-            await sync_task
-        except asyncio.CancelledError:
-            pass
+        await app[MANAGER_KEY].sync_scheduler.close()
         await runner.cleanup()
 
 

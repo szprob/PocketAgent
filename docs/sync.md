@@ -40,7 +40,8 @@
 | 方案 | 免费额度 | 国内速度 | 适合 |
 |---|---|---|---|
 | **坚果云 WebDAV**（推荐） | 每月 1GB 上传 / 3GB 下载，空间随上传量增长 | 直连，快 | 会话 + 记忆，通常十几 MB |
-| **已在同步的目录**（iCloud 云盘 / OneDrive / 坚果云客户端 / NAS 挂载点） | 看各家 | 看各家 | macOS 上最省事，不用配 API |
+| **已在同步的目录**（iCloud 云盘 / OneDrive / 坚果云客户端 / NAS 挂载点） | 看各家 | 看各家 | 默认目录会优先用坚果云的同步文件夹，其次 iCloud 云盘 |
+| **GitHub 私有仓库** | 仓库免费 | 看网络 | 已经有 Git 工作流、想留提交历史；Token 要 Contents 读写 |
 | 七牛云 Kodo 等对象存储 | 标准存储 10GB 永久免费（要实名） | 快 | 需要绑域名、走 CDN，配置比 WebDAV 麻烦，这一版还没做后端 |
 | 阿里云 OSS / 腾讯云 COS | 只有新用户试用期 | 快 | 长期用要付费，几毛钱一个月，但不如前两个省事 |
 
@@ -49,9 +50,18 @@
 
 ## 配置坚果云
 
-界面里也能配：⚙ 设置 → 云同步，选后端、填地址 / 用户名 / 应用密码、勾同步范围、设自动间隔，
-下面有「保存」「测试连接」「立即同步」。密码只回显「已保存」，留空表示不修改；域名和账号改错了
-点「测试连接」会直接说原因。命令行和界面写的是同一个 `~/.pocketagent/sync.json`。
+界面里也能配：⚙ 设置 → 云同步，选后端、填地址 / 用户名 / 应用密码、勾同步范围，下面有
+「保存」「测试连接」「立即同步」。密码只回显「已保存」，留空表示不修改；地址或账号填错了点
+「测试连接」会直接说原因。
+
+同步设置存在 `config.json` 里，按设备 id 分开：
+
+```json
+{"sync": {"devices": {"CK-L220116-4a9f56": {"backend": {"kind": "webdav", "url": "..."}, "includes": ["sessions", "projects", "config"]}}}}
+```
+
+`config.json` 本身会同步到云端，所以两台机器各写自己那一项，不会互相覆盖；`devices` 里也能看到
+另一台机器的设置。密码不写进 `config.json`，只在本机 `~/.pocketagent/sync.json`（0600），不跟着上云。
 
 1. 在坚果云里建一个目录，比如 `pocketagent`。
 2. 网页端右上角头像 → 账户信息 → 安全选项 → **第三方应用管理** → 添加应用，拿到一个应用密码。
@@ -68,12 +78,27 @@ pocketagent sync init \
 密码默认只从环境变量 `POCKETAGENT_SYNC_PASSWORD` 读；要写进 `~/.pocketagent/sync.json` 也可以，
 文件权限是 0600。`sync init` 最后会连一次远端，告诉你两边各有几个文件。
 
-用 iCloud 目录（不需要账号配置）：
+用本地同步目录（不需要账号；不写 `--url` 就用默认目录，macOS 上优先
+`~/Nutstore Files/pocketagent`，其次 iCloud 的 `PocketAgent`）：
 
 ```bash
-pocketagent sync init --backend local \
-  --url "$HOME/Library/Mobile Documents/com~apple~CloudDocs/PocketAgent"
+pocketagent sync init --backend local
+# 或者自己指定
+pocketagent sync init --backend local --url "$HOME/Library/Mobile Documents/com~apple~CloudDocs/PocketAgent"
 ```
+
+### GitHub
+
+需要仓库已经有一次提交（建仓库时勾 README），Token 用 fine-grained 的 Contents 读写，或者 classic
+的 `repo` scope。仓库写 `owner/repo` 就行，也可以直接粘 GitHub 的 URL：
+
+```bash
+pocketagent sync init --backend github --url szprob/pocketagent-data --branch main
+# 提示输入 Token
+```
+
+每个文件一个 blob，一次同步一次提交（`pocketagent: update data/sessions/...`），仓库的 commit
+历史就是版本历史。仓库别和代码仓库混用，单独建一个。
 
 ## 日常使用
 
@@ -92,35 +117,18 @@ pocketagent sync conflicts        # 看冲突时另存的远端版本，--clear 
 `pocketagent sync` 把会话拉下来 → `pocketagent -r <会话 id>` 续跑。会话里记的是绝对路径，
 另一台机器上工作区路径不一样时用 `pocketagent -C <路径> -r <id>` 指过去。
 
-### 自动同步
+### 什么时候同步
 
-web / 桌面端（`pocketagent --web`）在后台每 10 分钟同步一次。间隔改 `sync.json` 里的
-`auto_interval_minutes`（0 = 关掉，只手动跑），改完不用重启服务；命令行 REPL 不自动同步。
+不做定时轮询，只有两个触发点：
 
-```json
-{"auto_interval_minutes": 10}
-```
+- **配置有改动**：保存设置（模型、工作区、同步设置等）后 1 秒排一次；
+- **一轮对话结束**：等 20 秒，连着跑几轮只同步最后一次。
 
-想交给系统定时器也行，但有些公司管理的 Mac 会禁用 launchd / cron——表现为
-`Bootstrap failed: 5: Input/output error` 或 `operation not permitted: crontab`，
-这种机器只能用程序自带的后台循环。
+两次触发挨得近时，后一次会把前一次还没开始的等待取消掉，合并成一次同步。命令行 REPL 不自动同步，
+需要时手动跑 `pocketagent sync`。
 
-```bash
-# macOS launchd：~/Library/LaunchAgents/com.example.pocketagent-sync.plist
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.pocketagent-sync.plist
-```
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-  <key>Label</key><string>com.example.pocketagent-sync</string>
-  <key>ProgramArguments</key>
-  <array><string>/Users/me/env/s11/bin/pocketagent</string><string>sync</string><string>-q</string></array>
-  <key>StartInterval</key><integer>600</integer>
-  <key>RunAtLoad</key><true/>
-</dict></plist>
-```
+没有用 launchd / cron：这些入口在受管机器上经常被策略挡住（`Bootstrap failed: 5: Input/output error`、
+`operation not permitted: crontab`），常驻的桌面端自己排最省事。
 
 ## 冲突和删除怎么处理
 
@@ -131,7 +139,7 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.pocketagent-
 | 一边改了、另一边没动 | 直接照改的那边覆盖另一边 |
 | 同一个会话两边都往下走了 | 消息按身份求并集；骨架取更新时间晚的那份，另一份独有的消息接在后面。统计字段取两边最大值 |
 | 项目记忆两边都改了 | 保留本地版本，远端版本另存到 `~/.pocketagent/sync/conflicts/`，不往 Markdown 里写冲突标记 |
-| `config` / `automations` / `mcp` 两边都改了 | 按顶层键三方合并；同一个键两边都改时本地优先，远端版本另存 |
+| `config` / `automations` / `mcp` 两边都改了 | 按顶层键三方合并；`sync.devices` 里按设备 id 逐个合并，各改各的不算冲突；同一个键两边都改时本地优先，远端版本另存 |
 | 本地删了、远端没动 | 删远端 |
 | 本地删了、远端又改过 | 按不丢数据，把远端拉回来 |
 | 远端删了、本地又改过 | 按不丢数据，把本地重新传上去 |
@@ -146,6 +154,6 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.pocketagent-
   机器后，撤销按钮对那次任务不可用，新任务照常拍检查点。
 - 没有端到端加密：会话正文（含代码片段、命令输出）以明文存在你自己的云盘里。对密钥敏感就别
   打开 `--include config`，或者把远端指到一个自己完全控制的目录。
-- 不做实时同步：没有文件监听，靠定时任务或手动跑。
+- 不做实时同步：配置保存和一轮对话结束各排一次，不是文件级监听；命令行 REPL 要手动跑。
 - 同一个会话在两台机器上**同时**跑，合并只保证消息不丢，不保证顺序和工具调用配对完全正确；
   真要在两边并行，用不同的会话。

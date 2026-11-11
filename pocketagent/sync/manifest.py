@@ -178,12 +178,32 @@ def restore_machine_fields(remote_data: bytes, local_data: bytes | None) -> byte
 
 
 def strip_web_token(data: bytes) -> bytes:
-    """web_token 是每台机器自己的本地访问口令，同步过去只会互相踢掉，直接不带。"""
+    """config.json 上传前去掉只属于本机的东西。
+
+    - web_token：每台机器自己的本地访问口令，同步过去只会互相踢掉
+    - sync.devices.*.backend.password：同步设置的密码只存本机身份文件，本来就不该出现在这里，
+      这里再兜一层，防止手改配置时把它带上去
+    """
     config = _load_json_object(data)
-    if config is None or not config.get("web_token"):
+    if config is None:
         return data
-    config["web_token"] = None
-    return _dump_json(config)
+    changed = False
+    if config.get("web_token"):
+        config["web_token"] = None
+        changed = True
+    sync_section = config.get("sync")
+    if isinstance(sync_section, dict):
+        devices = sync_section.get("devices")
+        if isinstance(devices, dict):
+            for entry in devices.values():
+                if not isinstance(entry, dict):
+                    continue
+                if entry.pop("password", None) is not None:
+                    changed = True
+                backend = entry.get("backend")
+                if isinstance(backend, dict) and backend.pop("password", None) is not None:
+                    changed = True
+    return _dump_json(config) if changed else data
 
 
 def _load_json_object(data: bytes) -> dict | None:

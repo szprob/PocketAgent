@@ -18,8 +18,8 @@ from pocketagent.sync.config import (
     BackendSettings,
     SyncConfig,
     SyncConfigError,
+    default_local_directory,
     make_device_id,
-    sync_config_path,
     sync_state_dir,
 )
 from pocketagent.sync.engine import SyncEngine, SyncState, create_backend
@@ -170,15 +170,12 @@ def _sync_payload(home_dir: Path) -> dict[str, Any]:
         "has_password": False,
         "password_source": "none",
         "includes": ["sessions", "projects"],
-        "auto_interval_minutes": 10,
         "local_files": 0,
+        "default_local_directory": str(default_local_directory()),
         "last_synced_at": None,
     }
-    path = sync_config_path(home_dir)
-    if not path.is_file():
-        return payload
     try:
-        config = SyncConfig.load(path)
+        config = SyncConfig.load(home_dir)
     except SyncConfigError as error:
         payload["error"] = str(error)
         return payload
@@ -191,11 +188,11 @@ def _sync_payload(home_dir: Path) -> dict[str, Any]:
                 "kind": config.backend.kind,
                 "url": config.backend.url,
                 "username": config.backend.username,
+                "branch": config.backend.branch,
             },
             "has_password": bool(config.backend.resolved_password()),
             "password_source": _password_source(config.backend),
             "includes": config.includes,
-            "auto_interval_minutes": config.auto_interval_minutes,
             "local_files": len(state.files),
             "last_synced_at": max((item.synced_at for item in state.files.values()), default=None),
         }
@@ -205,37 +202,41 @@ def _sync_payload(home_dir: Path) -> dict[str, Any]:
 
 def _sync_config_from_form(home_dir: Path, data: dict[str, Any]) -> SyncConfig:
     """表单 → SyncConfig。密码留空表示沿用已经存下的那个。"""
-    path = sync_config_path(home_dir)
     existing: SyncConfig | None = None
-    if path.is_file():
-        existing = SyncConfig.load(path)
+    try:
+        existing = SyncConfig.load(home_dir)
+    except SyncConfigError:
+        existing = None
+    kind = str(data.get("kind") or (existing.backend.kind if existing is not None else "webdav"))
     password = str(data.get("password") or "")
-    if not password and existing is not None:
+    if not password and existing is not None and existing.backend.kind == kind:
+        # 换后端（WebDAV ↔ GitHub）时不能沿用上一个后端的密码
         password = existing.backend.password
     includes = data.get("includes")
     if includes is None:
         includes = existing.includes if existing is not None else ["sessions", "projects"]
     if not includes:
         raise SyncConfigError("同步范围至少要选一项")
-    auto_interval = data.get("auto_interval_minutes")
-    if auto_interval in (None, ""):
-        auto_interval = existing.auto_interval_minutes if existing is not None else 10
+    url = str(data.get("url") or "").strip()
+    if kind == "local" and not url:
+        # 本地目录有默认值：装了坚果云就用它的同步文件夹，其次 iCloud
+        url = str(default_local_directory())
     return SyncConfig.from_dict(
         {
             "device_id": existing.device_id if existing is not None else make_device_id(),
             "backend": {
-                "kind": data.get("kind") or (existing.backend.kind if existing is not None else "webdav"),
-                "url": str(data.get("url") or "").strip(),
+                "kind": kind,
+                "url": url,
                 "username": str(data.get("username") or ""),
                 "password": password,
                 "password_env": (
                     existing.backend.password_env if existing is not None else "POCKETAGENT_SYNC_PASSWORD"
                 ),
                 "verify_tls": existing.backend.verify_tls if existing is not None else True,
+                "branch": str(data.get("branch") or (existing.backend.branch if existing is not None else "main")),
             },
             "includes": includes,
             "max_file_bytes": existing.max_file_bytes if existing is not None else None,
-            "auto_interval_minutes": auto_interval,
             "remote_prefix": existing.remote_prefix if existing is not None else "data",
         }
     )
@@ -254,7 +255,7 @@ async def put_sync(request: web.Request) -> web.Response:
     if config.backend.kind == "local":
         # 指向 iCloud 这类目录时目录可能还不存在，和命令行 init 一样先建出来
         Path(config.backend.url).expanduser().mkdir(parents=True, exist_ok=True)
-    config.save(sync_config_path(home_dir))
+    session_manager(request).save_sync_config(config)
     return json_response({"ok": True, "sync": _sync_payload(home_dir)})
 
 
@@ -276,7 +277,7 @@ async def test_sync(request: web.Request) -> web.Response:
 async def run_sync(request: web.Request) -> web.Response:
     home_dir = _sync_home(request)
     try:
-        config = SyncConfig.load(sync_config_path(home_dir))
+        config = SyncConfig.load(home_dir)
     except SyncConfigError as error:
         return json_response({"ok": False, "error": str(error)}, status=400)
     try:

@@ -4,20 +4,29 @@
 MockTransport 喂固定的 PROPFIND XML。
 """
 
+import asyncio
 import json
 import shutil
 import stat
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 import httpx
 
-from pocketagent.sync.backend import LocalDirectoryBackend, SyncError, WebDavBackend
-from pocketagent.sync.config import BackendSettings, SyncConfig, SyncConfigError, sync_config_path
+from pocketagent.sync.backend import GitHubBackend, LocalDirectoryBackend, SyncError, WebDavBackend
+from pocketagent.sync.config import (
+    BackendSettings,
+    SyncConfig,
+    SyncConfigError,
+    default_local_directory,
+    sync_config_path,
+)
 from pocketagent.sync.engine import SyncEngine
-from pocketagent.sync.service import auto_sync_interval_minutes, sync_once
+from pocketagent.sync.merge import merge_json_object
+from pocketagent.sync.service import SyncScheduler, is_sync_configured
 
 
 def make_session(
@@ -294,28 +303,48 @@ class SafetyTest(SyncFixture):
         self.assertEqual([message["content"] for message in remote_copy["messages"]], ["你好", "B 的版本"])
 
 
-class AutoSyncTest(unittest.TestCase):
-    def test_default_interval_and_off_switch(self) -> None:
+class SchedulerTest(unittest.IsolatedAsyncioTestCase):
+    def _configured_home(self, directory: str) -> tuple[Path, Path]:
+        home = Path(directory)
+        remote = home / "remote"
+        remote.mkdir()
+        SyncConfig(
+            device_id="mac-1",
+            backend=BackendSettings(kind="local", url=str(remote)),
+            includes=["sessions"],
+        ).save(home)
+        return home, remote
+
+    async def test_repeated_triggers_coalesce_into_one_sync(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home, _remote = self._configured_home(directory)
+            calls: list[Path] = []
+
+            def fake_sync(path: Path) -> str:
+                calls.append(path)
+                return ""
+
+            with mock.patch("pocketagent.sync.service.sync_once", side_effect=fake_sync):
+                scheduler = SyncScheduler(home)
+                scheduler.schedule("turn-end", delay=0.05)
+                scheduler.schedule("turn-end", delay=0.05)
+                await asyncio.sleep(0.25)
+                await scheduler.close()
+
+            self.assertEqual(len(calls), 1)
+
+    async def test_no_config_means_no_task(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)
-            config = SyncConfig(
-                device_id="mac-1",
-                backend=BackendSettings(kind="local", url=str(home / "remote")),
-                includes=["sessions"],
-            )
-            (home / "remote").mkdir()
-            config.save(sync_config_path(home))
+            scheduler = SyncScheduler(home)
+            scheduler.schedule("turn-end", delay=0.01)
+            self.assertIsNone(scheduler._task)
+            self.assertFalse(is_sync_configured(home))
 
-            self.assertEqual(auto_sync_interval_minutes(home), 10)
-
-            config.auto_interval_minutes = 0
-            config.save(sync_config_path(home))
-            self.assertIsNone(auto_sync_interval_minutes(home))
-            self.assertEqual(sync_once(home), "")
-
-    def test_no_config_means_no_background_loop(self) -> None:
+    def test_is_configured_after_save(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            self.assertIsNone(auto_sync_interval_minutes(Path(directory)))
+            home, _remote = self._configured_home(directory)
+            self.assertTrue(is_sync_configured(home))
 
     @unittest.skipIf(sys.platform == "win32", "Windows 上不加文件锁")
     def test_concurrent_run_is_skipped(self) -> None:
@@ -343,21 +372,53 @@ class AutoSyncTest(unittest.TestCase):
 
 
 class SyncConfigTest(unittest.TestCase):
-    def test_round_trip_keeps_password_private(self) -> None:
+    def test_settings_go_to_config_per_device_and_password_stays_local(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            path = sync_config_path(Path(directory))
+            home = Path(directory)
             config = SyncConfig(
                 device_id="mac-123456",
                 backend=BackendSettings(kind="webdav", url="https://dav.example/dav/pa", username="me", password="pw"),
                 includes=["sessions"],
             )
-            config.save(path)
-            loaded = SyncConfig.load(path)
+            config.save(home)
 
+            loaded = SyncConfig.load(home)
             self.assertEqual(loaded.backend.url, "https://dav.example/dav/pa")
+            self.assertEqual(loaded.backend.password, "pw")
             self.assertEqual(loaded.device_id, "mac-123456")
+
+            config_data = json.loads((home / "config.json").read_text(encoding="utf-8"))
+            entry = config_data["sync"]["devices"]["mac-123456"]
+            self.assertEqual(entry["includes"], ["sessions"])
+            self.assertNotIn("password", entry["backend"])
+
+            identity_path = sync_config_path(home)
+            identity = json.loads(identity_path.read_text(encoding="utf-8"))
+            self.assertEqual(identity["password"], "pw")
             if sys.platform != "win32":
-                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+                self.assertEqual(stat.S_IMODE(identity_path.stat().st_mode), 0o600)
+
+    def test_two_devices_keep_separate_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            common = {"includes": ["sessions"]}
+            first = SyncConfig(
+                device_id="mac-1",
+                backend=BackendSettings(kind="webdav", url="https://a", username="a", password="a"),
+                **common,
+            )
+            first.save(home)
+            second = SyncConfig(
+                device_id="mac-2",
+                backend=BackendSettings(kind="local", url=str(home / "remote"), password=""),
+                **common,
+            )
+            second.save(home)
+
+            config_data = json.loads((home / "config.json").read_text(encoding="utf-8"))
+            devices = config_data["sync"]["devices"]
+            self.assertEqual(set(devices), {"mac-1", "mac-2"})
+            self.assertEqual(devices["mac-2"]["backend"]["kind"], "local")
 
     def test_unknown_backend_is_rejected(self) -> None:
         with self.assertRaises(SyncConfigError):
@@ -372,8 +433,115 @@ class SyncConfigTest(unittest.TestCase):
     def test_missing_file_says_to_run_init(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(SyncConfigError) as context:
-                SyncConfig.load(sync_config_path(Path(directory)))
+                SyncConfig.load(Path(directory))
             self.assertIn("sync init", str(context.exception))
+
+    @unittest.skipUnless(sys.platform == "darwin", "默认目录按 macOS 的坚果云 / iCloud 推")
+    def test_default_local_directory_prefers_nutstore(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            (home / "Nutstore Files").mkdir()
+            self.assertEqual(default_local_directory(home), home / "Nutstore Files" / "pocketagent")
+
+
+class ConfigMergeTest(unittest.TestCase):
+    def test_sync_devices_merge_per_device_without_conflict(self) -> None:
+        def encode(value):
+            return json.dumps(value, ensure_ascii=False).encode("utf-8")
+
+        base = {"sync": {"devices": {"mac-1": {"includes": ["sessions"]}}}}
+        local = {"sync": {"devices": {"mac-1": {"includes": ["sessions", "config"]}}}}
+        remote = {"sync": {"devices": {"mac-2": {"includes": ["projects"]}}}}
+
+        result = merge_json_object(encode(local), encode(remote), encode(base))
+
+        merged = json.loads(result.data.decode("utf-8"))
+        self.assertEqual(set(merged["sync"]["devices"]), {"mac-1", "mac-2"})
+        self.assertEqual(merged["sync"]["devices"]["mac-1"]["includes"], ["sessions", "config"])
+        self.assertEqual(merged["sync"]["devices"]["mac-2"]["includes"], ["projects"])
+        self.assertFalse(result.conflict)
+
+
+class GitHubBackendTest(unittest.TestCase):
+    def _client(self, handler):
+        return httpx.Client(transport=httpx.MockTransport(handler), headers={"Authorization": "Bearer t"})
+
+    def test_lists_and_reads_files(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path.endswith("/contents/data"):
+                return httpx.Response(
+                    200,
+                    json=[
+                        {"type": "dir", "path": "data/sessions"},
+                        {"type": "file", "path": "data/config.json", "sha": "cfg-sha", "size": 12},
+                    ],
+                )
+            if request.url.path.endswith("/contents/data/sessions"):
+                return httpx.Response(
+                    200,
+                    json=[{"type": "file", "path": "data/sessions/s1.json", "sha": "s1-sha", "size": 34}],
+                )
+            if request.url.path.endswith("/contents/data/config.json"):
+                return httpx.Response(200, content=b'{"models": []}')
+            return httpx.Response(404)
+
+        backend = GitHubBackend("me/repo", "t", client=self._client(handler))
+        entries = backend.list_files("data")
+
+        self.assertEqual([entry.path for entry in entries], ["data/config.json", "data/sessions/s1.json"])
+        self.assertEqual(entries[0].etag, "cfg-sha")
+        self.assertEqual(backend.read("data/config.json"), b'{"models": []}')
+
+    def test_write_creates_then_updates_with_sha_and_delete(self) -> None:
+        puts: list[dict] = []
+        deleted: list[dict] = []
+        existing = {"sha": ""}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.method == "GET":
+                if not existing["sha"]:
+                    return httpx.Response(404)
+                return httpx.Response(200, json={"type": "file", "path": "data/x.json", "sha": existing["sha"]})
+            if request.method == "PUT":
+                body = json.loads(request.content)
+                puts.append(body)
+                existing["sha"] = "new-sha"
+                return httpx.Response(201, json={"content": {"sha": "new-sha"}})
+            if request.method == "DELETE":
+                deleted.append(json.loads(request.content))
+                existing["sha"] = ""
+                return httpx.Response(200, json={})
+            return httpx.Response(500)
+
+        backend = GitHubBackend("me/repo", "t", branch="dev", client=self._client(handler))
+
+        self.assertEqual(backend.write("data/x.json", b"{}"), "new-sha")
+        self.assertNotIn("sha", puts[0])
+        self.assertEqual(puts[0]["branch"], "dev")
+
+        self.assertEqual(backend.write("data/x.json", b"{}"), "new-sha")
+        self.assertEqual(puts[1]["sha"], "new-sha")
+
+        backend.delete("data/x.json")
+        self.assertEqual(deleted[0]["sha"], "new-sha")
+
+    def test_ping_reports_read_only_token(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"permissions": {"push": False}})
+
+        backend = GitHubBackend("me/repo", "t", client=self._client(handler))
+        with self.assertRaises(SyncError) as context:
+            backend.ping()
+        self.assertIn("只有读权限", str(context.exception))
+
+    def test_bad_token(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(401)
+
+        backend = GitHubBackend("me/repo", "t", client=self._client(handler))
+        with self.assertRaises(SyncError) as context:
+            backend.ping()
+        self.assertIn("Token", str(context.exception))
 
 
 class WebDavBackendTest(unittest.TestCase):

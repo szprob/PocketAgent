@@ -93,7 +93,7 @@ py -3.12 -m pocketagent --web -C D:\SZ\git\foo
 | [运行机制](docs/runtime.md) | 临时任务、上下文压缩、工具输出落盘、会话持久化 |
 | [配置](docs/configuration.md) | config.json 全部字段、模型协议（OpenAI 兼容 / Anthropic） |
 | [回放和评测](docs/evaluation.md) | `pocketagent replay` 重跑 trace、`pocketagent eval` 跑用例、无人值守的审批、对比表和报告 |
-| [云同步](docs/sync.md) | 同步哪些数据、坚果云 WebDAV / 本地目录两种后端、冲突与删除规则、自动同步 |
+| [云同步](docs/sync.md) | 同步哪些数据、WebDAV / 本地目录 / GitHub 三种后端、冲突与删除规则、什么时候触发 |
 
 ## 怎么扩展
 

@@ -108,7 +108,10 @@ def merge_json_object(local: bytes, remote: bytes, base: bytes | None) -> MergeR
         base_value = base_object.get(key, SENTINEL)
         local_value = local_object.get(key, SENTINEL)
         remote_value = remote_object.get(key, SENTINEL)
-        if local_value == remote_value:
+        if key == "sync" and all(isinstance(value, dict) for value in (local_value, remote_value, base_value)):
+            chosen, sync_conflict = _merge_sync_section(local_value, remote_value, base_value)
+            conflict = conflict or sync_conflict
+        elif local_value == remote_value:
             chosen = local_value
         elif local_value == base_value:
             chosen = remote_value
@@ -122,6 +125,39 @@ def merge_json_object(local: bytes, remote: bytes, base: bytes | None) -> MergeR
         else:
             merged[key] = chosen
     return MergeResult(_dump_json(merged), conflict=conflict, note="两个键都改过，本地优先" if conflict else "")
+
+
+def _merge_sync_section(local: dict, remote: dict, base: dict) -> tuple[dict, bool]:
+    """config.json 的 sync.devices 按设备 id 逐项合并。
+
+    两台机器各自往表里加自己那一项，顶层的 sync 键一定两边都变过；整块按「本地优先」
+    就会平白多一个冲突副本，另一台机器的同步设置也会被顶掉——所以要进到 devices 里，
+    谁的设备项谁说了算。
+    """
+    local_devices = local.get("devices") if isinstance(local.get("devices"), dict) else {}
+    remote_devices = remote.get("devices") if isinstance(remote.get("devices"), dict) else {}
+    base_devices = base.get("devices") if isinstance(base.get("devices"), dict) else {}
+    merged_devices: dict = {}
+    conflict = False
+    for device_id in set(base_devices) | set(local_devices) | set(remote_devices):
+        local_value = local_devices.get(device_id)
+        remote_value = remote_devices.get(device_id)
+        if local_value is None and remote_value is None:
+            continue
+        if local_value is None:
+            chosen = remote_value
+        elif remote_value is None:
+            # 这个设备只在本地有：远端没有不代表删了（各台机器只写自己那一项）
+            chosen = local_value
+        elif local_value == remote_value:
+            chosen = local_value
+        else:
+            chosen = local_value
+            conflict = True
+        merged_devices[device_id] = chosen
+    merged = dict(local)
+    merged["devices"] = merged_devices
+    return merged, conflict
 
 
 def merge_by_kind(kind: str, local: bytes, remote: bytes, base: bytes | None) -> MergeResult:

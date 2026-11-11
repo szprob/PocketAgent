@@ -30,6 +30,8 @@ let mcpDraft = { servers: [], selected: null, loaded: false };
 let hookDraft = [];
 // 云同步页有没有从服务端读过配置
 let syncDraftLoaded = false;
+// 本地同步目录的默认值（后端给，装了坚果云就是它的同步文件夹）
+let defaultLocalDirectory = "";
 
 export function initSettings(handlers) {
   callbacks = handlers;
@@ -123,7 +125,9 @@ export function initSettings(handlers) {
   elements.syncUsernameField = document.getElementById("sync-username-field");
   elements.syncPasswordField = document.getElementById("sync-password-field");
   elements.syncUrlHint = document.getElementById("sync-url-hint");
-  elements.syncAutoMinutes = document.getElementById("sync-auto-minutes");
+  elements.syncBranch = document.getElementById("sync-branch");
+  elements.syncBranchField = document.getElementById("sync-branch-field");
+  elements.syncPasswordLabel = document.getElementById("sync-password-label");
   elements.syncIncludes = {
     sessions: document.getElementById("sync-include-sessions"),
     projects: document.getElementById("sync-include-projects"),
@@ -182,7 +186,12 @@ export function initSettings(handlers) {
   document.getElementById("reload-mcp").addEventListener("click", reloadMcp);
   document.getElementById("delete-mcp-server").addEventListener("click", deleteSelectedMcpServer);
   document.getElementById("add-hook").addEventListener("click", addHook);
-  elements.syncKind.addEventListener("change", paintSyncFields);
+  elements.syncKind.addEventListener("change", () => {
+    // 换后端要重新填密码：WebDAV 的应用密码不能拿去当 GitHub Token
+    elements.syncPassword.value = "";
+    elements.syncPasswordHint.textContent = "换了后端，重新填这个后端的密码 / Token";
+    paintSyncFields();
+  });
   document.getElementById("save-sync").addEventListener("click", saveSync);
   document.getElementById("test-sync").addEventListener("click", testSync);
   document.getElementById("run-sync").addEventListener("click", runSync);
@@ -1358,15 +1367,34 @@ function hookPayload() {
 // ---- 云同步 ----
 
 function paintSyncFields() {
-  const isWebdav = elements.syncKind.value === "webdav";
+  const kind = elements.syncKind.value;
+  const isWebdav = kind === "webdav";
+  const isGithub = kind === "github";
   show(elements.syncUsernameField, isWebdav);
-  show(elements.syncPasswordField, isWebdav);
-  elements.syncUrl.placeholder = isWebdav
-    ? "https://dav.jianguoyun.com/dav/pocketagent"
-    : "~/Library/Mobile Documents/com~apple~CloudDocs/PocketAgent";
-  elements.syncUrlHint.textContent = isWebdav
-    ? "坚果云：先在网盘里建一个目录，账户信息 → 安全选项 → 第三方应用管理，生成应用密码"
-    : "指向一个本来就在同步的目录：iCloud 云盘、OneDrive、NAS 挂载点都可以";
+  show(elements.syncPasswordField, isWebdav || isGithub);
+  show(elements.syncBranchField, isGithub);
+  elements.syncPasswordLabel.textContent = isGithub ? "Personal Access Token" : "密码 / 应用密码";
+  // 换后端时别把上一个后端的地址留着：/path、owner/repo、https://dav... 三种形状不一样
+  if (isLocal && /^https?:/i.test(elements.syncUrl.value.trim())) {
+    elements.syncUrl.value = defaultLocalDirectory;
+  } else if (isGithub && !/^[^\s/]+\/[^\s/]+$/.test(elements.syncUrl.value.trim())) {
+    elements.syncUrl.value = "";
+  } else if (isWebdav && elements.syncUrl.value.trim() && !/^https?:/i.test(elements.syncUrl.value.trim())) {
+    elements.syncUrl.value = "";
+  }
+  if (isGithub) {
+    elements.syncUrl.placeholder = "owner/repo";
+    elements.syncUrlHint.textContent = "私有仓库，Token 需要 Contents 读写；仓库要已有初始提交（建仓库时勾 README）";
+  } else if (kind === "local") {
+    elements.syncUrl.placeholder = defaultLocalDirectory || "~/PocketAgent";
+    elements.syncUrlHint.textContent = "指向一个本来就在同步的目录：iCloud 云盘、OneDrive、NAS 挂载点都可以；留空用默认目录";
+    if (!elements.syncUrl.value.trim()) {
+      elements.syncUrl.value = defaultLocalDirectory;
+    }
+  } else {
+    elements.syncUrl.placeholder = "https://dav.jianguoyun.com/dav/pocketagent";
+    elements.syncUrlHint.textContent = "坚果云：先在网盘里建一个目录，账户信息 → 安全选项 → 第三方应用管理，生成应用密码";
+  }
 }
 
 function syncPayload() {
@@ -1378,8 +1406,8 @@ function syncPayload() {
     url: elements.syncUrl.value.trim(),
     username: elements.syncUsername.value.trim(),
     password: elements.syncPassword.value,
+    branch: elements.syncBranch.value.trim() || "main",
     includes,
-    auto_interval_minutes: elements.syncAutoMinutes.value,
   };
 }
 
@@ -1394,7 +1422,7 @@ function paintSyncStatus(sync) {
     return;
   }
   if (!sync.configured) {
-    elements.syncStatus.textContent = "还没配置：填好地址和账号，点「保存」；保存后会开始按间隔自动同步。";
+    elements.syncStatus.textContent = "还没配置：填好地址和账号点「保存」；之后改配置或一轮对话结束会自动同步。";
     return;
   }
   const parts = [`设备 ${sync.device_id}`];
@@ -1424,7 +1452,11 @@ async function loadSync() {
   elements.syncUrl.value = sync.backend.url || "";
   elements.syncUsername.value = sync.backend.username || "";
   elements.syncPassword.value = "";
-  elements.syncAutoMinutes.value = sync.auto_interval_minutes ?? 10;
+  elements.syncBranch.value = sync.backend.branch || "main";
+  defaultLocalDirectory = sync.default_local_directory || "";
+  if (elements.syncKind.value === "local" && !elements.syncUrl.value) {
+    elements.syncUrl.value = defaultLocalDirectory;
+  }
   for (const [name, input] of Object.entries(elements.syncIncludes)) {
     input.checked = (sync.includes || []).includes(name);
   }
