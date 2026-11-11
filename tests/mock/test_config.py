@@ -207,8 +207,34 @@ class AppConfigTest(unittest.TestCase):
             self.assertEqual(settings.api_key, "tvly-env-key")
             self.assertEqual(from_environment.web_search_key_source(), "环境变量 TAVILY_API_KEY")
 
-            configured = AppConfig.from_dict({"web_search_api_key": "tvly-own-key"})
+            configured = AppConfig.from_dict({"web_search_api_keys": {"tavily": "tvly-own-key"}})
             self.assertEqual(configured.web_search_settings().api_key, "tvly-own-key")
+
+    def test_search_keys_are_stored_per_provider(self) -> None:
+        config = AppConfig.from_dict({"web_search_api_keys": {"tavily": "tvly-a", "exa": "exa-b"}})
+
+        # 各槽独立：当前 provider 用自己的槽，切到另一家也不串
+        self.assertEqual(config.web_search_api_keys, {"tavily": "tvly-a", "exa": "exa-b"})
+        self.assertEqual(config.resolved_web_search_key(), "tvly-a")
+        self.assertEqual(config.resolved_web_search_key("exa"), "exa-b")
+        self.assertEqual(config.web_search_key_source("exa"), "单独配置的密钥")
+        # 环境变量只在自家槽空着时才生效，不会盖掉已配的槽
+        with mock.patch.dict(os.environ, {"EXA_API_KEY": "env-key"}):
+            self.assertEqual(AppConfig.from_dict({}).resolved_web_search_key("exa"), "env-key")
+        # 未知厂商的槽和空槽直接丢掉
+        cleaned = AppConfig.from_dict({"web_search_api_keys": {"tavily": "tvly-a", "google": "x", "zhipu": "  "}})
+        self.assertEqual(cleaned.web_search_api_keys, {"tavily": "tvly-a"})
+
+    def test_legacy_single_search_key_migrates_to_its_provider(self) -> None:
+        config = AppConfig.from_dict({"web_search_provider": "exa", "web_search_api_key": "legacy-key"})
+
+        self.assertEqual(config.web_search_api_keys, {"exa": "legacy-key"})
+        self.assertEqual(config.web_search_settings().api_key, "legacy-key")
+        # 新字段和旧字段同给时，新字段优先，旧字段只在新槽全空时才迁
+        both = AppConfig.from_dict(
+            {"web_search_provider": "exa", "web_search_api_keys": {"exa": "new-key"}, "web_search_api_key": "old-key"}
+        )
+        self.assertEqual(both.web_search_api_keys, {"exa": "new-key"})
 
     def test_exa_search_key_still_comes_from_the_environment(self) -> None:
         with mock.patch.dict(os.environ, {"EXA_API_KEY": "env-key"}):
@@ -231,7 +257,7 @@ class AppConfigTest(unittest.TestCase):
 
     def test_zhipu_search_needs_a_key(self) -> None:
         without_key = AppConfig.from_dict({"web_search_provider": "zhipu"})
-        with_key = AppConfig.from_dict({"web_search_provider": "zhipu", "web_search_api_key": "search-key"})
+        with_key = AppConfig.from_dict({"web_search_provider": "zhipu", "web_search_api_keys": {"zhipu": "search-key"}})
         switched_off = AppConfig.from_dict({"web_search_provider": "zhipu", "web_search_enabled": False})
 
         self.assertIsNone(without_key.web_search_settings())

@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from pocketagent.account.usage import UsageLog
-from pocketagent.config import AppConfig, ConfigError, ModelProfile, Settings
+from pocketagent.config import AppConfig, ConfigError, ModelProfile, Settings, normalize_web_search_provider
 from pocketagent.core.agent import close_shared_mcp_managers, create_provider, shared_mcp_manager
 from pocketagent.core.events import Event, EventType
 from pocketagent.tools.mcp import McpManager, save_mcp_servers
@@ -323,11 +323,14 @@ class SessionManager:
         data = self.app_config.to_dict()
         data.update(payload)
         data["models"] = self._fill_kept_api_keys(payload.get("models", data["models"]))
-        # 搜索密钥同模型密钥：留空表示不改，勾了清除才清空
+        # 搜索密钥按厂商分槽，同模型密钥的规矩：留空表示不改当前厂商的，勾了清除才清掉当前厂商的
+        search_provider = normalize_web_search_provider(payload.get("web_search_provider") or self.app_config.web_search_provider)
+        search_keys = dict(self.app_config.web_search_api_keys)
         if payload.get("clear_web_search_api_key"):
-            data["web_search_api_key"] = None
-        elif not payload.get("web_search_api_key"):
-            data["web_search_api_key"] = self.app_config.web_search_api_key
+            search_keys.pop(search_provider, None)
+        elif payload.get("web_search_api_key"):
+            search_keys[search_provider] = str(payload["web_search_api_key"]).strip()
+        data["web_search_api_keys"] = search_keys
         if payload.get("clear_image_gen_api_key"):
             data["image_gen_api_key"] = None
         elif not payload.get("image_gen_api_key"):

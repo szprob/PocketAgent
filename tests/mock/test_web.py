@@ -1076,10 +1076,22 @@ class WebRound3Test(WebTestBase):
         saved = json.loads((self.directories.home_dir / "config.json").read_text(encoding="utf-8"))
         config = await self._get_json("/api/config")
 
-        self.assertEqual(saved["web_search_api_key"], "search-secret-key-1")
+        self.assertEqual(saved["web_search_api_keys"]["tavily"], "search-secret-key-1")
         self.assertEqual(saved["web_search_engine"], "search_pro")
         self.assertNotIn("search-secret-key-1", json.dumps(config))
-        self.assertEqual(config["web_search_key_hint"], "search…ey-1")
+        self.assertEqual(config["web_search_key_hints"]["tavily"], "search…ey-1")
+
+    async def test_web_search_keys_survive_provider_switches(self) -> None:
+        await self._send_json("PUT", "/api/config", {"web_search_api_key": "tvly-secret"})
+        await self._send_json("PUT", "/api/config", {"web_search_provider": "exa", "web_search_api_key": "exa-secret"})
+        saved = json.loads((self.directories.home_dir / "config.json").read_text(encoding="utf-8"))
+
+        # 两个槽各存各的：切走再切回来，谁的密钥都不丢
+        self.assertEqual(saved["web_search_api_keys"], {"tavily": "tvly-secret", "exa": "exa-secret"})
+        # 清除只影响当前选中的厂商
+        await self._send_json("PUT", "/api/config", {"clear_web_search_api_key": True})
+        saved = json.loads((self.directories.home_dir / "config.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved["web_search_api_keys"], {"tavily": "tvly-secret"})
 
     async def test_web_search_defaults_to_tavily_and_falls_back_to_bing(self) -> None:
         config = await self._get_json("/api/config")

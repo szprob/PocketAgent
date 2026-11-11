@@ -369,7 +369,7 @@ function fillGeneral() {
   elements.webSearchProvider.value = config.web_search_provider || "tavily";
   elements.webSearchEngine.value = config.web_search_engine || "search_std";
   elements.webSearchKey.value = "";
-  elements.webSearchKeyHint.textContent = config.web_search_key_hint || "留空表示不修改已保存的密钥";
+  webSearchKeyHints = config.web_search_key_hints || {};
   elements.webFetchEnabled.checked = Boolean(config.web_fetch_enabled);
 
   elements.imageGenEnabled.checked = Boolean(config.image_gen_enabled);
@@ -424,6 +424,9 @@ const WEB_SEARCH_KEY_LABELS = {
   zhipu: { label: "智谱搜索 API Key", placeholder: "留空就用智谱模型的密钥" },
 };
 
+// 每个厂商的密钥槽提示跟着下拉走（和 web 端同一套）
+let webSearchKeyHints = {};
+
 function paintWebSearchFields() {
   const provider = elements.webSearchProvider.value;
   show(elements.webSearchKeyField, provider !== "bing");
@@ -431,6 +434,10 @@ function paintWebSearchFields() {
   const labels = WEB_SEARCH_KEY_LABELS[provider] || { label: "搜索 API Key", placeholder: "" };
   elements.webSearchKeyLabel.textContent = labels.label;
   elements.webSearchKey.placeholder = labels.placeholder;
+  const hint = webSearchKeyHints[provider];
+  elements.webSearchKeyHint.textContent = hint
+    ? `已单独配置 ${hint}，留空表示不改`
+    : "还没单独配这个厂商的密钥；留空就按回退顺序取（环境变量 → 对应厂商模型的密钥）";
 }
 
 // 智谱用官方地址；OpenAI 兼容的可以走网关，没填就用第一个 OpenAI 兼容模型的地址（和 web 端一样）

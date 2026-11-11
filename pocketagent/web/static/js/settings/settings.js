@@ -205,6 +205,9 @@ const WEB_SEARCH_KEY_LABELS = {
   zhipu: { label: "智谱搜索 API Key", placeholder: "留空就用智谱模型的密钥" },
 };
 
+// 每个厂商的密钥槽提示跟着下拉走：配了槽显示已配置的遮蔽串，没配就说明回退顺序
+let webSearchKeyHints = {};
+
 function updateWebSearchFields() {
   const provider = elements.webSearchProvider.value;
   const usesZhipu = provider === "zhipu";
@@ -214,6 +217,10 @@ function updateWebSearchFields() {
   const labels = WEB_SEARCH_KEY_LABELS[provider] || { label: "搜索 API Key", placeholder: "" };
   elements.webSearchKeyLabel.textContent = labels.label;
   elements.webSearchKey.placeholder = labels.placeholder;
+  const hint = webSearchKeyHints[provider];
+  elements.webSearchKeyHint.textContent = hint
+    ? `已单独配置 ${hint}，留空表示不改`
+    : "还没单独配这个厂商的密钥；留空就按回退顺序取（环境变量 → 对应厂商模型的密钥）";
 }
 
 // 智谱用官方地址；OpenAI 兼容的可以走网关，没填就用第一个 OpenAI 兼容模型的地址
@@ -441,9 +448,7 @@ export async function openSettings(tabName) {
   elements.webSearchProvider.value = config.web_search_provider || "tavily";
   elements.webSearchEngine.value = config.web_search_engine;
   elements.webSearchKey.value = "";
-  elements.webSearchKeyHint.textContent = config.web_search_key_hint
-    ? `已单独配置 ${config.web_search_key_hint}，留空表示不改`
-    : config.web_search_key_source || "没有可用的密钥：填一个，或者在模型里加一个智谱模型";
+  webSearchKeyHints = config.web_search_key_hints || {};
   updateWebSearchFields();
   elements.webFetchEnabled.checked = config.web_fetch_enabled;
   elements.imageGenEnabled.checked = config.image_gen_enabled;

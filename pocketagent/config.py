@@ -343,11 +343,27 @@ def _image_gen_provider(value: Any) -> str:
     return provider
 
 
-def _web_search_provider(value: Any) -> str:
+def normalize_web_search_provider(value: Any) -> str:
     provider = value or WEB_SEARCH_DEFAULT_PROVIDER
     if provider not in WEB_SEARCH_PROVIDERS:
         raise ConfigError(f"搜索服务只能是 {' / '.join(WEB_SEARCH_PROVIDERS)}：{value}")
     return provider
+
+
+def _web_search_api_keys(data: dict[str, Any]) -> dict[str, str]:
+    """每个搜索厂商一个密钥槽（bing 不需要）。老配置的单槽 web_search_api_key 迁移到当时的 provider 名下。"""
+    raw = data.get("web_search_api_keys")
+    keys = raw if isinstance(raw, dict) else {}
+    normalized = {
+        str(provider): str(key).strip()
+        for provider, key in keys.items()
+        if str(provider) in WEB_SEARCH_PROVIDERS and str(key or "").strip()
+    }
+    if not normalized:
+        legacy = _optional_text(data, "web_search_api_key")
+        if legacy:
+            normalized[normalize_web_search_provider(data.get("web_search_provider"))] = legacy
+    return normalized
 
 
 def _web_search_engine(value: Any) -> str:
@@ -491,7 +507,8 @@ class AppConfig:
     web_search_enabled: bool = True
     web_search_provider: str = WEB_SEARCH_DEFAULT_PROVIDER
     web_search_engine: str = "search_std"
-    web_search_api_key: str | None = None
+    # 搜索密钥按厂商各存各的槽，切换 provider 互不影响；没配的厂商按 resolved_web_search_key 的顺序回退
+    web_search_api_keys: dict[str, str] = field(default_factory=dict)
     web_fetch_enabled: bool = True
     # 图片：generate_image 默认走智谱 CogView（cogview-3-flash 免费），密钥空着就用智谱模型的；
     # search_images 抓必应图片结果页，免费。模型 / 接口地址空着用 IMAGE 模块里的默认
@@ -577,9 +594,9 @@ class AppConfig:
             reasoning_across_turns=_boolean_with_default(data, "reasoning_across_turns", False),
             reasoning_step_down=_boolean_with_default(data, "reasoning_step_down", True),
             web_search_enabled=_boolean_with_default(data, "web_search_enabled", True),
-            web_search_provider=_web_search_provider(data.get("web_search_provider")),
+            web_search_provider=normalize_web_search_provider(data.get("web_search_provider")),
             web_search_engine=_web_search_engine(data.get("web_search_engine")),
-            web_search_api_key=_optional_text(data, "web_search_api_key"),
+            web_search_api_keys=_web_search_api_keys(data),
             web_fetch_enabled=_boolean_with_default(data, "web_fetch_enabled", True),
             image_gen_enabled=_boolean_with_default(data, "image_gen_enabled", True),
             image_gen_provider=_image_gen_provider(data.get("image_gen_provider")),
@@ -642,7 +659,7 @@ class AppConfig:
             "web_search_enabled": self.web_search_enabled,
             "web_search_provider": self.web_search_provider,
             "web_search_engine": self.web_search_engine,
-            "web_search_api_key": self.web_search_api_key,
+            "web_search_api_keys": dict(self.web_search_api_keys),
             "web_fetch_enabled": self.web_fetch_enabled,
             "image_gen_enabled": self.image_gen_enabled,
             "image_gen_provider": self.image_gen_provider,
@@ -695,7 +712,10 @@ class AppConfig:
             "web_search_enabled": self.web_search_enabled,
             "web_search_provider": self.web_search_provider,
             "web_search_engine": self.web_search_engine,
-            "web_search_key_hint": _key_hint(self.web_search_api_key),
+            "web_search_key_hint": _key_hint(self.web_search_api_keys.get(self.web_search_provider)),
+            "web_search_key_hints": {
+                provider: _key_hint(key) for provider, key in self.web_search_api_keys.items()
+            },
             "web_search_key_source": self.web_search_key_source(),
             "web_fetch_enabled": self.web_fetch_enabled,
             "image_gen_enabled": self.image_gen_enabled,
@@ -725,10 +745,11 @@ class AppConfig:
         }
 
     def resolved_web_search_key(self, provider: str | None = None) -> str | None:
-        """单独配的搜索密钥优先；没配就用对应厂商的环境变量，或者对应厂商模型的密钥。"""
-        if self.web_search_api_key:
-            return self.web_search_api_key
+        """每个厂商先看自己的槽；没配就读对应厂商的环境变量，deepseek / zhipu 再退回对应厂商模型的密钥。"""
         chosen = provider or self.web_search_provider
+        standalone = self.web_search_api_keys.get(chosen)
+        if standalone:
+            return standalone
         if chosen == "exa":
             return os.environ.get("EXA_API_KEY") or None
         if chosen == "tavily":
@@ -740,9 +761,9 @@ class AppConfig:
         return None
 
     def web_search_key_source(self, provider: str | None = None) -> str:
-        if self.web_search_api_key:
-            return "单独配置的密钥"
         chosen = provider or self.web_search_provider
+        if self.web_search_api_keys.get(chosen):
+            return "单独配置的密钥"
         if chosen == "exa":
             if os.environ.get("EXA_API_KEY"):
                 return "环境变量 EXA_API_KEY"
