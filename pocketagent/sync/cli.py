@@ -85,6 +85,12 @@ def _init_parser() -> argparse.ArgumentParser:
         help=f"要同步的数据，逗号分隔：{','.join(INCLUDE_CHOICES)}；默认 {','.join(DEFAULT_INCLUDES)}",
     )
     parser.add_argument("--max-file-mb", type=int, default=DEFAULT_MAX_FILE_BYTES // 1024 // 1024, help="单个文件上限（MB）")
+    parser.add_argument(
+        "--auto-minutes",
+        type=int,
+        default=None,
+        help="web / 桌面端每隔多少分钟自动同步一次；0 = 只手动跑；默认 10",
+    )
     parser.add_argument("--no-check", action="store_true", help="保存后不立即连一次远端")
     return parser
 
@@ -114,6 +120,9 @@ def run_init_command(argv: list[str], home_dir: Path) -> int:
         return EXIT_ERROR
 
     password = arguments.password
+    if not password and existing is not None:
+        # 重跑 init 只是想改范围时不把已经存下的密码抹掉
+        password = existing.backend.password
     if arguments.backend == "webdav" and not password:
         # 已经能从环境变量读到就不用问
         if not os.environ.get(arguments.password_env):
@@ -130,11 +139,18 @@ def run_init_command(argv: list[str], home_dir: Path) -> int:
         password=password,
         password_env=arguments.password_env,
     )
+    if arguments.auto_minutes is not None:
+        auto_minutes = max(0, arguments.auto_minutes)
+    elif existing is not None:
+        auto_minutes = existing.auto_interval_minutes
+    else:
+        auto_minutes = 10
     config = SyncConfig(
         device_id=existing.device_id if existing else make_device_id(),
         backend=settings,
         includes=list(dict.fromkeys(includes)),
         max_file_bytes=max(1, arguments.max_file_mb) * 1024 * 1024,
+        auto_interval_minutes=auto_minutes,
     )
     config.save(path)
     print(f"配置已写入 {path}（权限 0600）")

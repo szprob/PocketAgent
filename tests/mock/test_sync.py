@@ -17,6 +17,7 @@ import httpx
 from pocketagent.sync.backend import LocalDirectoryBackend, SyncError, WebDavBackend
 from pocketagent.sync.config import BackendSettings, SyncConfig, SyncConfigError, sync_config_path
 from pocketagent.sync.engine import SyncEngine
+from pocketagent.sync.service import auto_sync_interval_minutes, sync_once
 
 
 def make_session(
@@ -291,6 +292,54 @@ class SafetyTest(SyncFixture):
         self.assertEqual(report.count("blocked"), 1)
         remote_copy = json.loads((self.remote / "data" / "sessions" / "s1.json").read_text(encoding="utf-8"))
         self.assertEqual([message["content"] for message in remote_copy["messages"]], ["你好", "B 的版本"])
+
+
+class AutoSyncTest(unittest.TestCase):
+    def test_default_interval_and_off_switch(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            config = SyncConfig(
+                device_id="mac-1",
+                backend=BackendSettings(kind="local", url=str(home / "remote")),
+                includes=["sessions"],
+            )
+            (home / "remote").mkdir()
+            config.save(sync_config_path(home))
+
+            self.assertEqual(auto_sync_interval_minutes(home), 10)
+
+            config.auto_interval_minutes = 0
+            config.save(sync_config_path(home))
+            self.assertIsNone(auto_sync_interval_minutes(home))
+            self.assertEqual(sync_once(home), "")
+
+    def test_no_config_means_no_background_loop(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertIsNone(auto_sync_interval_minutes(Path(directory)))
+
+    @unittest.skipIf(sys.platform == "win32", "Windows 上不加文件锁")
+    def test_concurrent_run_is_skipped(self) -> None:
+        import fcntl
+
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            remote = home / "remote"
+            remote.mkdir()
+            config = SyncConfig(
+                device_id="mac-1",
+                backend=BackendSettings(kind="local", url=str(remote)),
+                includes=["sessions"],
+            )
+            engine = SyncEngine(home, config)
+            engine.lock_path.parent.mkdir(parents=True, exist_ok=True)
+            handle = engine.lock_path.open("a+")
+            self.addCleanup(handle.close)
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+            with self.assertRaises(SyncError) as context:
+                engine.run()
+
+            self.assertIn("另一个同步", str(context.exception))
 
 
 class SyncConfigTest(unittest.TestCase):

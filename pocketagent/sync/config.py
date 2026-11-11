@@ -81,6 +81,8 @@ class SyncConfig:
     max_file_bytes: int = DEFAULT_MAX_FILE_BYTES
     # 云端根目录下再套一层，避免用户把地址指到共享目录时和别的文件混在一起
     remote_prefix: str = DEFAULT_REMOTE_PREFIX
+    # web / 桌面端在后台每隔多少分钟自动同步一次；0 = 只手动跑
+    auto_interval_minutes: int = 10
 
     @classmethod
     def load(cls, path: Path) -> "SyncConfig":
@@ -109,12 +111,20 @@ class SyncConfig:
         remote_prefix = str(data.get("remote_prefix") or DEFAULT_REMOTE_PREFIX).strip("/")
         if not remote_prefix:
             raise SyncConfigError("remote_prefix 不能为空")
+        auto_interval = data.get("auto_interval_minutes", 10)
+        try:
+            auto_interval_minutes = int(auto_interval)
+        except (TypeError, ValueError):
+            raise SyncConfigError(f"auto_interval_minutes 要是一个整数：{auto_interval!r}")
+        if auto_interval_minutes < 0:
+            raise SyncConfigError("auto_interval_minutes 不能小于 0")
         return cls(
             device_id=device_id,
             backend=backend,
             includes=list(dict.fromkeys(includes)),
             max_file_bytes=max_file_bytes,
             remote_prefix=remote_prefix,
+            auto_interval_minutes=auto_interval_minutes,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -125,6 +135,7 @@ class SyncConfig:
             "includes": self.includes,
             "max_file_bytes": self.max_file_bytes,
             "remote_prefix": self.remote_prefix,
+            "auto_interval_minutes": self.auto_interval_minutes,
         }
 
     def save(self, path: Path) -> None:

@@ -6,6 +6,8 @@
 """
 
 import json
+import os
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -177,8 +179,16 @@ class SyncEngine:
         self.state_path = state_dir / "state.json"
         self.base_store = BaseStore(state_dir / "base")
         self.conflict_dir = state_dir / "conflicts"
+        self.lock_path = state_dir / "lock"
 
     def run(self, direction: str = "both", dry_run: bool = False) -> SyncReport:
+        if dry_run:
+            # 只看不改，不用排队等锁
+            return self._run(direction, dry_run)
+        with _sync_lock(self.lock_path):
+            return self._run(direction, dry_run)
+
+    def _run(self, direction: str, dry_run: bool) -> SyncReport:
         entries, skipped = collect_entries(self.home_dir, self.config.includes, self.config.max_file_bytes)
         local_entries = {entry.relative_path: entry for entry in entries}
         report = SyncReport(skipped=skipped, local_files=len(entries), dry_run=dry_run)
@@ -480,6 +490,29 @@ def create_backend(settings: BackendSettings) -> SyncBackend:
         verify_tls=settings.verify_tls,
         timeout_seconds=settings.timeout_seconds,
     )
+
+
+@contextmanager
+def _sync_lock(path: Path):
+    """同一个 ~/.pocketagent 同时只允许一个同步在跑：定时任务和手动命令撞上时，后一个直接跳过。"""
+    if os.name != "posix":
+        yield
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = path.open("a+")
+    try:
+        import fcntl
+
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as error:
+            raise SyncError("另一个同步正在进行，这次先跳过") from error
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    finally:
+        handle.close()
 
 
 def _now_text() -> str:

@@ -90,11 +90,20 @@ pocketagent sync conflicts        # 看冲突时另存的远端版本，--clear 
 
 ### 自动同步
 
-每 5 分钟一次（macOS 用 launchd，Linux 用 cron 同理）：
+web / 桌面端（`pocketagent --web`）在后台每 10 分钟同步一次。间隔改 `sync.json` 里的
+`auto_interval_minutes`（0 = 关掉，只手动跑），改完不用重启服务；命令行 REPL 不自动同步。
+
+```json
+{"auto_interval_minutes": 10}
+```
+
+想交给系统定时器也行，但有些公司管理的 Mac 会禁用 launchd / cron——表现为
+`Bootstrap failed: 5: Input/output error` 或 `operation not permitted: crontab`，
+这种机器只能用程序自带的后台循环。
 
 ```bash
-# ~/Library/LaunchAgents/com.example.pocketagent-sync.plist
-launchctl load ~/Library/LaunchAgents/com.example.pocketagent-sync.plist
+# macOS launchd：~/Library/LaunchAgents/com.example.pocketagent-sync.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.pocketagent-sync.plist
 ```
 
 ```xml
@@ -104,15 +113,9 @@ launchctl load ~/Library/LaunchAgents/com.example.pocketagent-sync.plist
   <key>Label</key><string>com.example.pocketagent-sync</string>
   <key>ProgramArguments</key>
   <array><string>/Users/me/env/s11/bin/pocketagent</string><string>sync</string><string>-q</string></array>
-  <key>StartInterval</key><integer>300</integer>
+  <key>StartInterval</key><integer>600</integer>
   <key>RunAtLoad</key><true/>
 </dict></plist>
-```
-
-也可以挂到 `turn_end` 钩子上（每轮结束就同步，代价是每轮多等一两秒）：
-
-```json
-{"event": "turn_end", "command": "pocketagent sync -q", "timeout_seconds": 60}
 ```
 
 ## 冲突和删除怎么处理
