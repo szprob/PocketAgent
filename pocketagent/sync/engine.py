@@ -139,6 +139,27 @@ class SyncReport:
     def changed(self) -> bool:
         return any(action.kind not in (SKIP,) for action in self.actions)
 
+    def to_dict(self) -> dict:
+        return {
+            "local_files": self.local_files,
+            "remote_files": self.remote_files,
+            "dry_run": self.dry_run,
+            "counts": {
+                "upload": self.count(UPLOAD),
+                "download": self.count(DOWNLOAD),
+                "merge": self.count(MERGE),
+                "delete_local": self.count(DELETE_LOCAL),
+                "delete_remote": self.count(DELETE_REMOTE),
+                "conflict": self.count(CONFLICT),
+                "blocked": self.count(BLOCKED),
+            },
+            "actions": [
+                {"kind": action.kind, "path": action.path, "note": action.note} for action in self.actions
+            ],
+            "errors": self.errors,
+            "skipped": self.skipped,
+        }
+
     def lines(self) -> list[str]:
         lines = [
             f"本地 {self.local_files} 个文件，远端 {self.remote_files} 个文件",

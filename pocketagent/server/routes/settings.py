@@ -1,5 +1,8 @@
-"""服务信息、模型、设置、用量、技能、记忆。"""
+"""服务信息、模型、设置、用量、技能、记忆、云同步。"""
 
+import asyncio
+import os
+from pathlib import Path
 from typing import Any
 
 from aiohttp import web
@@ -10,6 +13,16 @@ from pocketagent.interaction.commands import command_specs_for
 from pocketagent.safety.permissions import WEB_APPROVAL_MODES
 from pocketagent.server.common import json_response, session_manager
 from pocketagent.server.manager import SessionManager
+from pocketagent.sync.backend import SyncError
+from pocketagent.sync.config import (
+    BackendSettings,
+    SyncConfig,
+    SyncConfigError,
+    make_device_id,
+    sync_config_path,
+    sync_state_dir,
+)
+from pocketagent.sync.engine import SyncEngine, SyncState, create_backend
 from pocketagent.tools.mcp import McpError
 
 
@@ -133,3 +146,145 @@ async def put_mcp(request: web.Request) -> web.Response:
 async def reload_mcp(request: web.Request) -> web.Response:
     overview = await session_manager(request).reload_mcp()
     return json_response({"ok": True, "overview": overview})
+
+
+# ---- 云同步 ----
+
+
+def _sync_home(request: web.Request) -> Path:
+    return session_manager(request).base_settings.home_dir
+
+
+def _password_source(backend: BackendSettings) -> str:
+    if os.environ.get(backend.password_env):
+        return "env"
+    return "file" if backend.password else "none"
+
+
+def _sync_payload(home_dir: Path) -> dict[str, Any]:
+    """给设置页看的同步配置：密码只回「有没有」，不回内容。"""
+    payload: dict[str, Any] = {
+        "configured": False,
+        "device_id": None,
+        "backend": {"kind": "webdav", "url": "", "username": ""},
+        "has_password": False,
+        "password_source": "none",
+        "includes": ["sessions", "projects"],
+        "auto_interval_minutes": 10,
+        "local_files": 0,
+        "last_synced_at": None,
+    }
+    path = sync_config_path(home_dir)
+    if not path.is_file():
+        return payload
+    try:
+        config = SyncConfig.load(path)
+    except SyncConfigError as error:
+        payload["error"] = str(error)
+        return payload
+    state = SyncState.load(sync_state_dir(home_dir) / "state.json")
+    payload.update(
+        {
+            "configured": True,
+            "device_id": config.device_id,
+            "backend": {
+                "kind": config.backend.kind,
+                "url": config.backend.url,
+                "username": config.backend.username,
+            },
+            "has_password": bool(config.backend.resolved_password()),
+            "password_source": _password_source(config.backend),
+            "includes": config.includes,
+            "auto_interval_minutes": config.auto_interval_minutes,
+            "local_files": len(state.files),
+            "last_synced_at": max((item.synced_at for item in state.files.values()), default=None),
+        }
+    )
+    return payload
+
+
+def _sync_config_from_form(home_dir: Path, data: dict[str, Any]) -> SyncConfig:
+    """表单 → SyncConfig。密码留空表示沿用已经存下的那个。"""
+    path = sync_config_path(home_dir)
+    existing: SyncConfig | None = None
+    if path.is_file():
+        existing = SyncConfig.load(path)
+    password = str(data.get("password") or "")
+    if not password and existing is not None:
+        password = existing.backend.password
+    includes = data.get("includes")
+    if includes is None:
+        includes = existing.includes if existing is not None else ["sessions", "projects"]
+    if not includes:
+        raise SyncConfigError("同步范围至少要选一项")
+    auto_interval = data.get("auto_interval_minutes")
+    if auto_interval in (None, ""):
+        auto_interval = existing.auto_interval_minutes if existing is not None else 10
+    return SyncConfig.from_dict(
+        {
+            "device_id": existing.device_id if existing is not None else make_device_id(),
+            "backend": {
+                "kind": data.get("kind") or (existing.backend.kind if existing is not None else "webdav"),
+                "url": str(data.get("url") or "").strip(),
+                "username": str(data.get("username") or ""),
+                "password": password,
+                "password_env": (
+                    existing.backend.password_env if existing is not None else "POCKETAGENT_SYNC_PASSWORD"
+                ),
+                "verify_tls": existing.backend.verify_tls if existing is not None else True,
+            },
+            "includes": includes,
+            "max_file_bytes": existing.max_file_bytes if existing is not None else None,
+            "auto_interval_minutes": auto_interval,
+            "remote_prefix": existing.remote_prefix if existing is not None else "data",
+        }
+    )
+
+
+async def get_sync(request: web.Request) -> web.Response:
+    return json_response(_sync_payload(_sync_home(request)))
+
+
+async def put_sync(request: web.Request) -> web.Response:
+    home_dir = _sync_home(request)
+    try:
+        config = _sync_config_from_form(home_dir, await request.json())
+    except SyncConfigError as error:
+        return json_response({"ok": False, "error": str(error)}, status=400)
+    if config.backend.kind == "local":
+        # 指向 iCloud 这类目录时目录可能还不存在，和命令行 init 一样先建出来
+        Path(config.backend.url).expanduser().mkdir(parents=True, exist_ok=True)
+    config.save(sync_config_path(home_dir))
+    return json_response({"ok": True, "sync": _sync_payload(home_dir)})
+
+
+async def test_sync(request: web.Request) -> web.Response:
+    home_dir = _sync_home(request)
+    try:
+        data = await request.json()
+    except (ValueError, TypeError):
+        data = {}
+    try:
+        config = _sync_config_from_form(home_dir, data)
+        backend = create_backend(config.backend)
+        await asyncio.to_thread(backend.ping)
+    except (SyncConfigError, SyncError) as error:
+        return json_response({"ok": False, "error": str(error)})
+    return json_response({"ok": True})
+
+
+async def run_sync(request: web.Request) -> web.Response:
+    home_dir = _sync_home(request)
+    try:
+        config = SyncConfig.load(sync_config_path(home_dir))
+    except SyncConfigError as error:
+        return json_response({"ok": False, "error": str(error)}, status=400)
+    try:
+        report = await asyncio.to_thread(lambda: SyncEngine(home_dir, config).run())
+    except SyncError as error:
+        return json_response({"ok": False, "error": str(error)}, status=400)
+    payload = report.to_dict()
+    payload["ok"] = not report.errors
+    if report.errors:
+        payload["error"] = "；".join(report.errors)
+    return json_response(payload)

@@ -264,20 +264,4 @@ def _load_config(home_dir: Path) -> SyncConfig | None:
 
 
 def _report_dict(report) -> dict:
-    return {
-        "local_files": report.local_files,
-        "remote_files": report.remote_files,
-        "dry_run": report.dry_run,
-        "counts": {
-            "upload": report.count("upload"),
-            "download": report.count("download"),
-            "merge": report.count("merge"),
-            "delete_local": report.count("delete-local"),
-            "delete_remote": report.count("delete-remote"),
-            "conflict": report.count("conflict"),
-            "blocked": report.count("blocked"),
-        },
-        "actions": [{"kind": action.kind, "path": action.path, "note": action.note} for action in report.actions],
-        "errors": report.errors,
-        "skipped": report.skipped,
-    }
+    return report.to_dict()

@@ -159,6 +159,7 @@
       <div class="settings-layout">
         <nav class="settings-tabs">
           <button class="settings-tab active" type="button" data-tab="general">通用</button>
+          <button class="settings-tab" type="button" data-tab="sync">云同步</button>
           <button class="settings-tab" type="button" data-tab="models">模型</button>
           <button class="settings-tab" type="button" data-tab="agent">智能体</button>
           <button class="settings-tab" type="button" data-tab="permissions">权限与安全</button>
@@ -253,6 +254,49 @@
                   <span><strong>排队</strong>：等这一轮做完再作为新的一轮执行（适合接着布置下一件事）</span></label>
               </fieldset>
               <div class="field-hint" id="config-path"></div>
+            </div>
+          </div>
+
+          <div class="settings-page hidden" data-page="sync">
+            <div class="form-fields">
+              <div class="field-hint">会话、项目记忆和配置同步到你自己的云盘；密码只存在本机 <code>~/.pocketagent/sync.json</code>（600），不会回显。</div>
+              <div class="field-row">
+                <label class="field"><span>后端</span>
+                  <select id="sync-kind">
+                    <option value="webdav">WebDAV（坚果云等）</option>
+                    <option value="local">本地同步目录（iCloud / OneDrive / NAS）</option>
+                  </select></label>
+                <label class="field"><span>自动同步间隔（分钟，0 = 只手动）</span>
+                  <input id="sync-auto-minutes" type="number" min="0" step="1"></label>
+              </div>
+              <label class="field"><span>地址 *</span>
+                <input id="sync-url" type="text" placeholder="https://dav.jianguoyun.com/dav/pocketagent">
+                <span class="field-hint" id="sync-url-hint"></span></label>
+              <label class="field" id="sync-username-field"><span>用户名</span>
+                <input id="sync-username" type="text" placeholder="坚果云是登录邮箱">
+                <span class="field-hint">WebDAV 账号；用「第三方应用密码」时用户名还是登录邮箱</span></label>
+              <label class="field" id="sync-password-field"><span>密码 / 应用密码</span>
+                <input id="sync-password" type="password" autocomplete="new-password">
+                <span class="field-hint" id="sync-password-hint"></span></label>
+              <fieldset class="radio-group">
+                <legend>同步范围</legend>
+                <div class="field-row sync-scope">
+                  <label class="checkbox-field"><input type="checkbox" id="sync-include-sessions"><span>会话历史</span></label>
+                  <label class="checkbox-field"><input type="checkbox" id="sync-include-projects"><span>项目记忆</span></label>
+                  <label class="checkbox-field"><input type="checkbox" id="sync-include-config"><span>配置（含 API Key）</span></label>
+                  <label class="checkbox-field"><input type="checkbox" id="sync-include-automations"><span>自动化</span></label>
+                  <label class="checkbox-field"><input type="checkbox" id="sync-include-mcp"><span>MCP（含密钥）</span></label>
+                  <label class="checkbox-field"><input type="checkbox" id="sync-include-hooks"><span>钩子脚本</span></label>
+                </div>
+                <div class="field-hint">自动化会在两台机器上各跑一遍；钩子脚本会在另一台机器上执行。</div>
+              </fieldset>
+              <div class="field-hint" id="sync-status"></div>
+              <div class="model-actions">
+                <button id="save-sync" class="ghost-button" type="button">保存</button>
+                <button id="test-sync" class="ghost-button" type="button">测试连接</button>
+                <button id="run-sync" class="ghost-button" type="button">立即同步</button>
+                <span id="sync-result" class="test-result"></span>
+              </div>
             </div>
           </div>
 

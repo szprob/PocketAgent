@@ -38,6 +38,8 @@ const draft = {
   mcpServers: [],
   selectedMcp: null,
   mcpLoaded: false,
+  // 云同步页：有没有从服务端读过配置
+  syncLoaded: false,
   // 钩子页：每条钩子一个草稿，随「保存」一起提交
   hooks: [],
 };
@@ -125,6 +127,25 @@ export function initSettings() {
     mcpStatus: byId("mcp-status"),
     mcpConfigPath: byId("mcp-config-path"),
     hookList: byId("hook-list"),
+    syncKind: byId("sync-kind"),
+    syncUrl: byId("sync-url"),
+    syncUsername: byId("sync-username"),
+    syncPassword: byId("sync-password"),
+    syncPasswordHint: byId("sync-password-hint"),
+    syncUsernameField: byId("sync-username-field"),
+    syncPasswordField: byId("sync-password-field"),
+    syncUrlHint: byId("sync-url-hint"),
+    syncAutoMinutes: byId("sync-auto-minutes"),
+    syncIncludes: {
+      sessions: byId("sync-include-sessions"),
+      projects: byId("sync-include-projects"),
+      config: byId("sync-include-config"),
+      automations: byId("sync-include-automations"),
+      mcp: byId("sync-include-mcp"),
+      hooks: byId("sync-include-hooks"),
+    },
+    syncResult: byId("sync-result"),
+    syncStatus: byId("sync-status"),
   });
 
   for (const tab of elements.tabs) {
@@ -160,6 +181,10 @@ export function initSettings() {
   byId("save-mcp").addEventListener("click", saveMcp);
   byId("reload-mcp").addEventListener("click", reloadMcp);
   byId("add-hook").addEventListener("click", addHook);
+  elements.syncKind.addEventListener("change", updateSyncFields);
+  byId("save-sync").addEventListener("click", saveSyncSettings);
+  byId("test-sync").addEventListener("click", testSyncSettings);
+  byId("run-sync").addEventListener("click", runSyncNow);
 }
 
 // 智谱的档位只在选智谱时才有意义；必应不用密钥，Exa / DeepSeek / 智谱都要
@@ -242,13 +267,16 @@ function selectTab(tabName) {
   for (const page of elements.pages) {
     show(page, page.dataset.page === tabName);
   }
-  // 用量页只看不改，MCP 页有自己的一套按钮，都不需要底部的全局保存
-  show(elements.footer, tabName !== "usage" && tabName !== "mcp");
+  // 用量页只看不改，MCP / 云同步页有自己的一套按钮，都不需要底部的全局保存
+  show(elements.footer, tabName !== "usage" && tabName !== "mcp" && tabName !== "sync");
   if (tabName === "usage") {
     renderUsage(elements.usageContent);
   }
   if (tabName === "mcp" && !draft.mcpLoaded) {
     loadMcp();
+  }
+  if (tabName === "sync" && !draft.syncLoaded) {
+    loadSync();
   }
   if (tabName === "memory") {
     renderMemoryPage(elements.memoryContent);
@@ -362,8 +390,9 @@ function renderDefaultWorkspaceOptions(config) {
 }
 
 export async function openSettings(tabName) {
-  // 每次打开都重新拉 MCP（外部改过 mcp.json、或者刚断开重连过，状态要新）
+  // 每次打开都重新拉 MCP 和同步配置（外部改过文件、或者刚同步过，状态要新）
   draft.mcpLoaded = false;
+  draft.syncLoaded = false;
   const config = await requestJson("api/config");
   draft.models = config.models.map(toDraftModel);
   draft.defaultModel = config.default_model;
@@ -792,6 +821,146 @@ async function saveSettings() {
   }
   closeSettings();
   await reloadInfo();
+}
+
+// ---- 云同步 ----
+
+function updateSyncFields() {
+  const kind = elements.syncKind.value;
+  const isWebdav = kind === "webdav";
+  show(elements.syncUsernameField, isWebdav);
+  show(elements.syncPasswordField, isWebdav);
+  elements.syncUrl.placeholder = isWebdav
+    ? "https://dav.jianguoyun.com/dav/pocketagent"
+    : "~/Library/Mobile Documents/com~apple~CloudDocs/PocketAgent";
+  elements.syncUrlHint.textContent = isWebdav
+    ? "坚果云：先在网盘里建一个目录，账户信息 → 安全选项 → 第三方应用管理，生成应用密码"
+    : "指向一个本来就在同步的目录：iCloud 云盘、OneDrive、NAS 挂载点都可以";
+}
+
+function syncFormPayload() {
+  const includes = Object.entries(elements.syncIncludes)
+    .filter(([, input]) => input.checked)
+    .map(([name]) => name);
+  return {
+    kind: elements.syncKind.value,
+    url: elements.syncUrl.value.trim(),
+    username: elements.syncUsername.value.trim(),
+    password: elements.syncPassword.value,
+    includes,
+    auto_interval_minutes: elements.syncAutoMinutes.value,
+  };
+}
+
+function setSyncResult(text, kind) {
+  elements.syncResult.textContent = text;
+  elements.syncResult.className = `test-result ${kind || ""}`;
+}
+
+function renderSyncStatus(sync) {
+  if (sync.error) {
+    elements.syncStatus.textContent = sync.error;
+    return;
+  }
+  if (!sync.configured) {
+    elements.syncStatus.textContent = "还没配置：填好地址和账号，点「保存」；保存后会开始按间隔自动同步。";
+    return;
+  }
+  const parts = [`设备 ${sync.device_id}`];
+  if (sync.local_files) {
+    parts.push(`本机记录 ${sync.local_files} 个文件`);
+  }
+  if (sync.last_synced_at) {
+    parts.push(`上次同步 ${String(sync.last_synced_at).replace("T", " ")}`);
+  }
+  if (sync.password_source === "env") {
+    parts.push("密码来自环境变量");
+  }
+  elements.syncStatus.textContent = parts.join(" · ");
+}
+
+async function loadSync() {
+  elements.syncStatus.textContent = "正在读取同步配置…";
+  let sync;
+  try {
+    sync = await requestJson("api/settings/sync");
+  } catch (error) {
+    elements.syncStatus.textContent = error.message;
+    return;
+  }
+  draft.syncLoaded = true;
+  elements.syncKind.value = sync.backend.kind || "webdav";
+  elements.syncUrl.value = sync.backend.url || "";
+  elements.syncUsername.value = sync.backend.username || "";
+  elements.syncPassword.value = "";
+  elements.syncAutoMinutes.value = sync.auto_interval_minutes ?? 10;
+  for (const [name, input] of Object.entries(elements.syncIncludes)) {
+    input.checked = (sync.includes || []).includes(name);
+  }
+  elements.syncPasswordHint.textContent = sync.has_password
+    ? sync.password_source === "env"
+      ? "密码从环境变量读；这里留空就不改动"
+      : "已保存，留空表示不修改"
+    : "坚果云要「第三方应用密码」，不是登录密码";
+  updateSyncFields();
+  renderSyncStatus(sync);
+  setSyncResult("");
+}
+
+async function saveSyncSettings() {
+  const button = document.getElementById("save-sync");
+  button.disabled = true;
+  setSyncResult("保存中…");
+  try {
+    const body = await sendJson("api/settings/sync", "PUT", syncFormPayload());
+    setSyncResult("已保存", "ok");
+    elements.syncPassword.value = "";
+    elements.syncPasswordHint.textContent = "已保存，留空表示不修改";
+    renderSyncStatus(body.sync);
+  } catch (error) {
+    setSyncResult(error.message, "error");
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function testSyncSettings() {
+  const button = document.getElementById("test-sync");
+  button.disabled = true;
+  setSyncResult("正在连接…");
+  try {
+    const result = await sendJson("api/settings/sync/test", "POST", syncFormPayload());
+    if (result.ok) {
+      setSyncResult("连接正常", "ok");
+    } else {
+      setSyncResult(result.error || "连接失败", "error");
+    }
+  } catch (error) {
+    setSyncResult(error.message, "error");
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function runSyncNow() {
+  const button = document.getElementById("run-sync");
+  button.disabled = true;
+  setSyncResult("同步中…");
+  try {
+    const report = await sendJson("api/settings/sync/run", "POST", {});
+    const counts = report.counts;
+    const summary = `上传 ${counts.upload} / 下载 ${counts.download} / 合并 ${counts.merge} / 删除 ${counts.delete_local + counts.delete_remote}`;
+    if (report.ok) {
+      setSyncResult(`同步完成：${summary}`, "ok");
+    } else {
+      setSyncResult(report.error || `同步有问题：${summary}`, "error");
+    }
+    await loadSync();
+  } catch (error) {
+    setSyncResult(error.message, "error");
+  } finally {
+    button.disabled = false;
+  }
 }
 
 // ---- MCP ----

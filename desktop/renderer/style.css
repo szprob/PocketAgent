@@ -3824,3 +3824,7 @@ code.md-inline-code {
   gap: 7px;
   min-width: 0;
 }
+
+/* 云同步的同步范围：六个勾选排两列，别把设置弹窗撑出滚动条 */
+.sync-scope { gap: 4px 16px; }
+.sync-scope .checkbox-field { flex: 1 1 44%; }
