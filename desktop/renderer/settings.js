@@ -65,6 +65,7 @@ export function initSettings(handlers) {
   elements.autoCompact = document.getElementById("auto-compact-input");
   elements.compactThreshold = document.getElementById("compact-threshold-select");
   elements.reasoningAcrossTurns = document.getElementById("reasoning-across-turns-input");
+  elements.reasoningStepDown = document.getElementById("reasoning-step-down-input");
   elements.webSearchEnabled = document.getElementById("web-search-enabled");
   elements.webSearchProvider = document.getElementById("web-search-provider");
   elements.webSearchEngineField = document.getElementById("web-search-engine-field");
@@ -324,6 +325,7 @@ function fillGeneral() {
   elements.autoCompact.checked = Boolean(config.auto_compact);
   elements.compactThreshold.value = String(config.compact_threshold_percent);
   elements.reasoningAcrossTurns.checked = Boolean(config.reasoning_across_turns);
+  elements.reasoningStepDown.checked = config.reasoning_step_down !== false;
 
   elements.webSearchEnabled.checked = Boolean(config.web_search_enabled);
   elements.webSearchProvider.value = config.web_search_provider || "exa";
@@ -845,6 +847,7 @@ async function saveConfig() {
     auto_compact: elements.autoCompact.checked,
     compact_threshold_percent: Number(elements.compactThreshold.value) || 80,
     reasoning_across_turns: elements.reasoningAcrossTurns.checked,
+    reasoning_step_down: elements.reasoningStepDown.checked,
     web_search_enabled: elements.webSearchEnabled.checked,
     web_search_provider: elements.webSearchProvider.value,
     web_search_engine: elements.webSearchEngine.value,

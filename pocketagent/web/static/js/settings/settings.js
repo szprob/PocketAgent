@@ -81,6 +81,7 @@ export function initSettings() {
     autoCompact: byId("auto-compact-input"),
     compactThreshold: byId("compact-threshold-select"),
     reasoningAcrossTurns: byId("reasoning-across-turns-input"),
+    reasoningStepDown: byId("reasoning-step-down-input"),
     webSearchEnabled: byId("web-search-enabled"),
     webSearchProvider: byId("web-search-provider"),
     webSearchEngine: byId("web-search-engine"),
@@ -395,6 +396,7 @@ export async function openSettings(tabName) {
   elements.autoCompact.checked = config.auto_compact;
   elements.compactThreshold.value = String(config.compact_threshold_percent);
   elements.reasoningAcrossTurns.checked = Boolean(config.reasoning_across_turns);
+  elements.reasoningStepDown.checked = config.reasoning_step_down !== false;
   elements.webSearchEnabled.checked = config.web_search_enabled;
   elements.webSearchProvider.value = config.web_search_provider || "exa";
   elements.webSearchEngine.value = config.web_search_engine;
@@ -754,6 +756,7 @@ async function saveSettings() {
     auto_compact: elements.autoCompact.checked,
     compact_threshold_percent: elements.compactThreshold.value,
     reasoning_across_turns: elements.reasoningAcrossTurns.checked,
+    reasoning_step_down: elements.reasoningStepDown.checked,
     web_search_enabled: elements.webSearchEnabled.checked,
     web_search_provider: elements.webSearchProvider.value,
     web_search_engine: elements.webSearchEngine.value,

@@ -28,8 +28,10 @@ READ_CHUNK_BYTES = 4096
 
 
 BASE_DESCRIPTION = (
-    "在工作目录里用 bash 执行一条命令，返回合并后的 stdout/stderr 和退出码。"
-    "不要用它来读写文件（用 read_file / edit_file）。"
+    "在工作目录里用 bash 执行一条命令，返回合并后的 stdout/stderr 和退出码。只用来真正执行命令（跑测试、编译、git、装依赖）；"
+    "读文件用 read_file，找文件用 glob，搜代码内容用 grep，不要拿 find / grep / cat / sed 拼管道绕一圈。"
+    "一次 bash 只回答一个问题：不要用 echo 打分隔标题把好几件事塞进一条命令，那会让输出翻好几倍。"
+    "输出可能很长，自己用 head / tail / -m / 具体的路径把它压到你要看的那几行。"
     "dev server、watch 这类不会自己退出的命令设 run_in_background=true，"
     "拿到 id 后用 bash_output 看输出、用 kill_shell 结束。"
 )

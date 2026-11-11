@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from pocketagent.config import AppConfig, ConfigError, ModelProfile, Settings, config_path
+from pocketagent.config import AppConfig, ConfigError, DEFAULT_TEMPERATURE, ModelProfile, Settings, config_path
 from pocketagent.safety.permissions import ApprovalMode
 from tests.helpers import TemporaryDirectories
 
@@ -349,6 +349,14 @@ class ModelProfileTest(unittest.TestCase):
         self.assertEqual(profile.name, "glm-5.3-flash")
         self.assertEqual(len(profile.id), 8)
         self.assertEqual(profile.temperature, 0.3)
+
+    def test_missing_temperature_falls_back_to_the_agent_default(self) -> None:
+        # 老配置里写的是 null（那时表示「接口默认」），现在统一按 DEFAULT_TEMPERATURE 走：
+        # agent 场景要的是稳，接口默认的 1.0 会放大「换方案 / 自我怀疑」
+        self.assertEqual(ModelProfile.from_dict({"model": "glm-5.3-flash"}).temperature, DEFAULT_TEMPERATURE)
+        self.assertEqual(ModelProfile.from_dict({"model": "glm-5.3-flash", "temperature": None}).temperature, DEFAULT_TEMPERATURE)
+        # 显式写 0 是合法的，不能被当成「没填」
+        self.assertEqual(ModelProfile.from_dict({"model": "glm-5.3-flash", "temperature": 0}).temperature, 0.0)
 
     def test_use_profile_copies_extra_body(self) -> None:
         profile = ModelProfile.from_dict(QWEN_PROFILE)

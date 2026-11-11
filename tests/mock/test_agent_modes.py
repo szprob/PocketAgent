@@ -112,13 +112,15 @@ class AgentModeTest(unittest.IsolatedAsyncioTestCase):
             [
                 LLMResponse(tool_calls=[suggest_call()]),
                 LLMResponse(tool_calls=[write_call(content="x")]),
+                # 被拒之后模型还有一次说话的机会，这一轮不用整段掐掉
+                LLMResponse(text="好的，我先等计划批准"),
             ],
             approver=approver,
         )
 
         await harness.agent.run_turn("帮我改一下")
 
-        self.assertEqual(harness.agent.context.turn.stop_reason, "denied")
+        self.assertEqual(harness.agent.context.turn.stop_reason, "done")
         self.assertFalse((self.directories.workspace / "a.txt").exists())
         tool_messages = [message for message in harness.agent.context.messages if message["role"] == "tool"]
         self.assertIn("计划模式", tool_messages[-1]["content"])
@@ -187,17 +189,22 @@ class AgentModeTest(unittest.IsolatedAsyncioTestCase):
     async def test_ask_mode_denies_writes(self) -> None:
         harness = build_harness(
             self.directories,
-            [LLMResponse(tool_calls=[write_call()])],
+            [
+                LLMResponse(tool_calls=[write_call()]),
+                LLMResponse(text="现在是 Ask 模式，我不能改文件"),
+            ],
             approver=AllowAllApprover(),
         )
         await harness.agent.set_agent_mode(AgentMode.ASK)
 
         await harness.agent.run_turn("顺便把这个文件改了")
 
-        self.assertEqual(harness.agent.context.turn.stop_reason, "denied")
+        self.assertEqual(harness.agent.context.turn.stop_reason, "done")
         self.assertFalse((self.directories.workspace / "a.txt").exists())
         tool_message = next(message for message in harness.agent.context.messages if message["role"] == "tool")
         self.assertIn("Ask 模式", tool_message["content"])
+        prompt = harness.provider.received_messages[0][0]["content"]
+        self.assertIn("现在处于【Ask 模式】", prompt)
         prompt = harness.provider.received_messages[0][0]["content"]
         self.assertIn("现在处于【Ask 模式】", prompt)
 

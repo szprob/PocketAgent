@@ -9,6 +9,7 @@ from pocketagent.config import (
     ConfigError,
     ModelProfile,
     resolve_reasoning,
+    step_down_reasoning,
 )
 from pocketagent.llm import LLMResponse
 from pocketagent.llm.scripted import ScriptedProvider
@@ -41,6 +42,22 @@ class ResolveReasoningTest(unittest.TestCase):
         self.assertEqual(resolve_reasoning("high", choices, "max"), "high")
         # 不知道模型能选哪些档就不传
         self.assertIsNone(resolve_reasoning(REASONING_LOWEST, [], "max"))
+
+    def test_step_down_moves_one_level_but_never_turns_thinking_off(self) -> None:
+        deepseek = ["none", "low", "high", "max"]
+        self.assertEqual(step_down_reasoning("max", deepseek), "high")
+        self.assertEqual(step_down_reasoning("high", deepseek), "low")
+        # 再往下就是 none（关掉思考）：续跑不该关，停在 low
+        self.assertEqual(step_down_reasoning("low", deepseek), "low")
+        self.assertEqual(step_down_reasoning("none", deepseek), "none")
+        # Claude 那种没有 none 的档位表直接退一格
+        claude = ["low", "medium", "high", "xhigh", "max"]
+        self.assertEqual(step_down_reasoning("max", claude), "xhigh")
+        self.assertEqual(step_down_reasoning("medium", claude), "low")
+        self.assertEqual(step_down_reasoning("low", claude), "low")
+        # 不认识的档位、空表：原样
+        self.assertEqual(step_down_reasoning("high", []), "high")
+        self.assertIsNone(step_down_reasoning(None, deepseek))
 
 
 class ReviewConfigTest(unittest.TestCase):
@@ -113,7 +130,8 @@ class ReviewProviderTest(unittest.IsolatedAsyncioTestCase):
 
         await harness.agent.run_turn("新建 out.txt")
 
-        self.assertEqual(provider.requested_efforts, ["none"])
+        # 审批用最低档（none）；工具结果回来之后的续跑按 reasoning_step_down 从 max 降一档到 high
+        self.assertEqual(provider.requested_efforts, ["none", "high"])
         self.assertEqual((self.directories.workspace / "out.txt").read_text(encoding="utf-8"), "hi")
 
     async def test_inherit_keeps_the_task_effort(self) -> None:
@@ -132,7 +150,8 @@ class ReviewProviderTest(unittest.IsolatedAsyncioTestCase):
 
         await harness.agent.run_turn("新建 out.txt")
 
-        self.assertEqual(provider.requested_efforts, [])
+        # 审批跟任务同档位，不换 provider；只有续跑那一步按 reasoning_step_down 降了一档
+        self.assertEqual(provider.requested_efforts, ["high"])
 
     async def test_a_separate_review_model_gets_its_own_provider(self) -> None:
         task_provider = ScriptedProvider([LLMResponse(tool_calls=[WRITE_CALL]), LLMResponse(text="写好了")])

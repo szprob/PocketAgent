@@ -11,6 +11,7 @@ from unittest import mock
 import httpx
 import openai
 
+from pocketagent.core.nodes import MAX_STREAM_RECOVERIES, MAX_TRUNCATION_RECOVERIES
 from pocketagent.core.tokens import IMAGE_TOKENS, estimate_message_tokens, estimate_text_tokens
 from pocketagent.interaction import attachments
 from pocketagent.interaction.attachments import (
@@ -183,12 +184,14 @@ class TruncationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(harness.agent.context.turn.final_text, "拆小了重来")
 
     async def test_gives_up_after_repeated_truncation(self) -> None:
-        responses = [LLMResponse(text=f"第{index}段", finish_reason="length") for index in range(5)]
+        responses = [LLMResponse(text=f"第{index}段", finish_reason="length") for index in range(6)]
         harness = build_harness(self.directories, responses)
 
         await harness.agent.run_turn("写长文")
 
         self.assertEqual(harness.agent.context.turn.stop_reason, "truncated")
+        # 第一次回复 + 3 次补救，一共用掉 4 条剧本
+        self.assertEqual(harness.agent.context.turn.truncations, MAX_TRUNCATION_RECOVERIES + 1)
         self.assertEqual(len(harness.provider.remaining_responses), 2)
 
 
@@ -219,12 +222,27 @@ class CutOffReplyTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_incomplete_stream_is_marked_the_same_way(self) -> None:
         cut_off = LLMResponse(text="只写了一半", finish_reason="incomplete")
-        harness = build_harness(self.directories, [cut_off])
+        harness = build_harness(self.directories, [cut_off, cut_off, cut_off])
 
         await harness.agent.run_turn("随便说说")
 
-        self.assertEqual(harness.agent.context.turn.stop_reason, "incomplete")
-        self.assertEqual(harness.agent.context.messages[-1]["_finish"], "incomplete")
+        context = harness.agent.context
+        self.assertEqual(context.turn.stop_reason, "incomplete")
+        self.assertEqual(context.messages[-1]["_finish"], "incomplete")
+        self.assertEqual(context.turn.stream_cutoffs, MAX_STREAM_RECOVERIES + 1)
+
+    async def test_incomplete_stream_lets_the_model_continue(self) -> None:
+        cut_off = LLMResponse(text="只写了一半", finish_reason="incomplete")
+        harness = build_harness(self.directories, [cut_off, LLMResponse(text="，这是剩下的那一半")])
+
+        await harness.agent.run_turn("随便说说")
+
+        context = harness.agent.context
+        self.assertEqual(context.turn.stop_reason, "done")
+        self.assertEqual(context.turn.final_text, "，这是剩下的那一半")
+        # 断掉的那半句留着，后面跟一条「接着写」的提示，模型不用从头再来
+        self.assertEqual(context.messages[-3]["content"], "只写了一半")
+        self.assertIn("没有收到结束标记", context.messages[-2]["content"])
 
     async def test_cut_off_marker_survives_history_replay(self) -> None:
         cut_off = LLMResponse(text="说到一半", finish_reason="content_filter")

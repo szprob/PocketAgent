@@ -7,9 +7,10 @@ from pocketagent.core.agent import INTERRUPTED_TOOL_RESULT
 from pocketagent.core.compaction import SUMMARY_INSTRUCTION, SUMMARY_PREFIX
 from pocketagent.core.context import TokenAnchor
 from pocketagent.core.events import EventType
-from pocketagent.core.nodes import apply_finished_compaction, start_background_compaction
+from pocketagent.core.nodes import MAX_DENIED_BATCHES, apply_finished_compaction, start_background_compaction
 from pocketagent.core.session import Session, SessionStore
 from pocketagent.llm import ContextOverflowError, LLMResponse, ToolCall
+from pocketagent.llm.scripted import ScriptedProvider
 from pocketagent.safety.permissions import ApprovalMode, DenyAllApprover
 from pocketagent.tools import Tool, ToolContext, ToolKind, ToolResult, default_tool_registry
 from tests.helpers import RoutingProvider, TemporaryDirectories, build_harness, roles, tool_call
@@ -160,7 +161,7 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(store.load(session.id).tool_calls, 2)
 
-    async def test_denied_call_stops_turn_and_skips_the_rest(self) -> None:
+    async def test_denied_call_lets_the_model_explain_and_skips_the_rest(self) -> None:
         harness = build_harness(
             self.directories,
             [
@@ -170,6 +171,29 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
                         tool_call("call_2", "write_file", '{"path": "new.txt", "content": "x"}'),
                     ]
                 ),
+                # 被拒之后模型还有一次说话的机会：解释它想干什么，或者换个做法
+                LLMResponse(text="那我先不动这两个文件"),
+            ],
+            mode=ApprovalMode.ASK,
+            approver=DenyAllApprover(),
+        )
+
+        await harness.agent.run_turn("建两个文件")
+
+        self.assertEqual(harness.agent.context.turn.stop_reason, "done")
+        self.assertEqual(len(harness.provider.received_messages), 2)
+        self.assertFalse((self.directories.workspace / "created_by_bash").exists())
+        self.assertFalse((self.directories.workspace / "new.txt").exists())
+        tool_messages = [message for message in harness.agent.context.messages if message["role"] == "tool"]
+        self.assertEqual([message["tool_call_id"] for message in tool_messages], ["call_1", "call_2"])
+        self.assertIn("不要原样重试", tool_messages[0]["content"])
+
+    async def test_two_denied_batches_in_a_row_stop_the_turn(self) -> None:
+        harness = build_harness(
+            self.directories,
+            [
+                LLMResponse(tool_calls=[tool_call("call_1", "bash", '{"command": "touch a"}')]),
+                LLMResponse(tool_calls=[tool_call("call_2", "bash", '{"command": "touch b"}')]),
             ],
             mode=ApprovalMode.ASK,
             approver=DenyAllApprover(),
@@ -178,23 +202,23 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
         await harness.agent.run_turn("建两个文件")
 
         self.assertEqual(harness.agent.context.turn.stop_reason, "denied")
-        self.assertEqual(len(harness.provider.received_messages), 1)
-        self.assertFalse((self.directories.workspace / "created_by_bash").exists())
-        self.assertFalse((self.directories.workspace / "new.txt").exists())
-        tool_messages = [message for message in harness.agent.context.messages if message["role"] == "tool"]
-        self.assertEqual([message["tool_call_id"] for message in tool_messages], ["call_1", "call_2"])
+        self.assertEqual(harness.agent.context.turn.denied_batches, MAX_DENIED_BATCHES)
 
     async def test_read_only_mode_denies_without_asking(self) -> None:
         harness = build_harness(
             self.directories,
-            [LLMResponse(tool_calls=[tool_call("call_1", "write_file", '{"path": "a.txt", "content": "x"}')])],
+            [
+                LLMResponse(tool_calls=[tool_call("call_1", "write_file", '{"path": "a.txt", "content": "x"}')]),
+                LLMResponse(text="只读模式下我不能写文件"),
+            ],
             mode=ApprovalMode.READ_ONLY,
         )
 
         await harness.agent.run_turn("写个文件")
 
-        self.assertEqual(harness.agent.context.turn.stop_reason, "denied")
-        self.assertIn("read_only", harness.agent.context.messages[-1]["content"])
+        self.assertEqual(harness.agent.context.turn.stop_reason, "done")
+        tool_message = next(message for message in harness.agent.context.messages if message["role"] == "tool")
+        self.assertIn("read_only", tool_message["content"])
 
     async def test_auto_edit_allows_edits_without_asking(self) -> None:
         harness = build_harness(
@@ -433,6 +457,64 @@ class TokenAnchorTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNone(context.token_anchor)
         self.assertTrue(context.messages[0]["content"].startswith("你是 PocketAgent"))
+
+
+class EffortRecordingProvider(ScriptedProvider):
+    """记下每一步被要求用的思考档位；换档位后还是同一份剧本。"""
+
+    def __init__(self, responses: list[LLMResponse]) -> None:
+        super().__init__(responses)
+        self.requested_efforts: list[str | None] = []
+
+    def with_reasoning_effort(self, reasoning_effort: str | None) -> "EffortRecordingProvider":
+        self.requested_efforts.append(reasoning_effort)
+        return self
+
+
+class StepDownReasoningTest(unittest.IsolatedAsyncioTestCase):
+    """工具结果回来之后的续跑降一档思考：规划用配置的档位，照着结果往下做不用想那么久。"""
+
+    CHOICES = ["none", "low", "high", "max"]
+
+    def setUp(self) -> None:
+        self.directories = TemporaryDirectories()
+
+    def tearDown(self) -> None:
+        self.directories.cleanup()
+
+    def _harness(self, **overrides) -> Any:
+        (self.directories.workspace / "a.txt").write_text("x\n", encoding="utf-8")
+        provider = EffortRecordingProvider(
+            [
+                LLMResponse(tool_calls=[tool_call("c1", "read_file", '{"path": "a.txt"}')]),
+                LLMResponse(tool_calls=[tool_call("c2", "read_file", '{"path": "a.txt"}')]),
+                LLMResponse(text="看完了"),
+            ]
+        )
+        harness = build_harness(
+            self.directories,
+            [],
+            provider=provider,
+            reasoning_effort="max",
+            reasoning_choices=self.CHOICES,
+            **overrides,
+        )
+        return harness
+
+    async def test_first_step_keeps_the_configured_effort_and_later_steps_step_down(self) -> None:
+        harness = self._harness()
+
+        await harness.agent.run_turn("看一下 a.txt")
+
+        # 第一步用配置的 max（不换 provider），之后每一步续跑都是 high
+        self.assertEqual(harness.provider.requested_efforts, ["high", "high"])
+
+    async def test_turning_it_off_keeps_the_configured_effort_everywhere(self) -> None:
+        harness = self._harness(reasoning_step_down=False)
+
+        await harness.agent.run_turn("看一下 a.txt")
+
+        self.assertEqual(harness.provider.requested_efforts, [])
 
 
 if __name__ == "__main__":

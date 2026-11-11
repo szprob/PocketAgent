@@ -47,6 +47,10 @@ class TurnState:
     compact_reason: str = ""
     # 这一轮回复被截断了几次
     truncations: int = 0
+    # 这一轮流式回复断了几次（网关没给结束标记就掐了，接着写能救回来）
+    stream_cutoffs: int = 0
+    # 这一轮有几批工具调用被用户拒绝（连续两批就停下来，别一直撞墙）
+    denied_batches: int = 0
     # 这一轮主 agent 自己搜索 / 读网页了几次（到一定次数提醒它把调研交给子 agent）
     web_tool_calls: int = 0
 

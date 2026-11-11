@@ -90,7 +90,10 @@ class BatchApprovalTest(unittest.IsolatedAsyncioTestCase):
         approver = MergingApprover([[ALLOW, DENY, ALLOW]])
         harness = build_harness(
             self.directories,
-            [LLMResponse(tool_calls=[write("c1", "a.txt", "A"), write("c2", "b.txt", "B"), write("c3", "c.txt", "C")])],
+            [
+                LLMResponse(tool_calls=[write("c1", "a.txt", "A"), write("c2", "b.txt", "B"), write("c3", "c.txt", "C")]),
+                LLMResponse(text="b.txt 先不写了"),
+            ],
             mode=ApprovalMode.ASK,
             approver=approver,
         )
@@ -102,7 +105,8 @@ class BatchApprovalTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse((self.workspace / "b.txt").exists())
         self.assertEqual((self.workspace / "c.txt").read_text(encoding="utf-8"), "C")
         self.assertIn("用户拒绝了这次调用", self.tool_results(harness)["c2"])
-        self.assertEqual(harness.recorder.of_type(EventType.TURN_END)[0].data["stop_reason"], "denied")
+        # 一批里有被拒的，先让模型自己解释 / 换做法，不当场把这一轮掐掉
+        self.assertEqual(harness.recorder.of_type(EventType.TURN_END)[0].data["stop_reason"], "done")
 
     async def test_channels_without_merging_are_asked_one_by_one_before_anything_runs(self) -> None:
         approver = OneByOneApprover([ALLOW, ALLOW])
@@ -142,7 +146,10 @@ class BatchApprovalTest(unittest.IsolatedAsyncioTestCase):
         approver = MergingApprover([[DENY]])
         harness = build_harness(
             self.directories,
-            [LLMResponse(tool_calls=[edit("c1", "a.txt", "x", "y"), edit("c2", "a.txt", "y", "z")])],
+            [
+                LLMResponse(tool_calls=[edit("c1", "a.txt", "x", "y"), edit("c2", "a.txt", "y", "z")]),
+                LLMResponse(text="不改了"),
+            ],
             mode=ApprovalMode.ASK,
             approver=approver,
         )

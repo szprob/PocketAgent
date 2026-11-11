@@ -56,6 +56,9 @@ from pocketagent.tools.web import WebSearchSettings
 DEFAULT_MODEL = "deepseek-v4.1-flash"
 DEFAULT_CONTEXT_WINDOW_TOKENS = 256_000
 DEFAULT_MAX_STEPS = 50
+# 不指定温度时用的值：agent 场景要的是稳（同样的局面选同样的做法），
+# 各家接口默认多半是 1.0，长上下文里会明显放大「换方案 / 自我怀疑」
+DEFAULT_TEMPERATURE = 0.3
 CONFIG_FILE_NAME = "config.json"
 
 # agent 正在干活时用户又发了一句话：插话（下一次调用模型时带上）还是排队（这一轮结束后再跑）
@@ -100,6 +103,21 @@ def resolve_reasoning(choice: str, available_choices: list[str], current: str | 
         # 不知道这个模型能选哪些档（比如用环境变量配的模型）就不传，免得传错被 400
         return available_choices[0] if available_choices else None
     return choice
+
+
+def step_down_reasoning(current: str | None, available_choices: list[str]) -> str | None:
+    """续跑时降一档：按这个模型能选的档位往回退一格（high→medium、medium→low）。
+
+    不往回退到 "none"：工具结果回来以后要判断「这结果说明什么、下一步做什么」，把思考整个关掉
+    省不了多少时间，反而容易看错。最低停在第一个真正会思考的档位上。
+    """
+    if not current:
+        return current
+    ladder = [choice for choice in available_choices if choice != REASONING_LOWEST]
+    if current not in ladder:
+        return current
+    candidate = ladder[max(ladder.index(current) - 1, 0)]
+    return current if candidate == "none" else candidate
 
 
 def provider_kind(base_url: str | None) -> str:
@@ -174,6 +192,16 @@ def _optional_float(data: dict[str, Any], key: str, label: str) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         raise ConfigError(f"{label}必须是数字：{value}")
+
+
+def _temperature(value: Any) -> float:
+    """没填就按 DEFAULT_TEMPERATURE；填了（包括 0）就用填的。"""
+    if value in (None, ""):
+        return DEFAULT_TEMPERATURE
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        raise ConfigError(f"温度必须是数字：{value}")
 
 
 def _json_object(data: dict[str, Any], key: str, label: str) -> dict[str, Any]:
@@ -348,7 +376,8 @@ class ModelProfile:
     # openai = chat/completions；anthropic = messages。空着按接口地址猜（见 infer_protocol）
     protocol: str = "openai"
     reasoning_effort: str | None = None
-    temperature: float | None = None
+    # 不填就用 DEFAULT_TEMPERATURE；想让接口按自己的默认来，在 extra_body 里写 temperature
+    temperature: float | None = DEFAULT_TEMPERATURE
     context_window_tokens: int = DEFAULT_CONTEXT_WINDOW_TOKENS
     extra_body: dict[str, Any] = field(default_factory=dict)
     # 能不能看图：不能看的模型，用户上传的图片只以文件路径的形式告诉它
@@ -387,7 +416,9 @@ class ModelProfile:
             api_key=_optional_text(data, "api_key"),
             protocol=_one_of(data.get("protocol"), PROTOCOLS, infer_protocol(base_url), "接口协议"),
             reasoning_effort=_optional_text(data, "reasoning_effort"),
-            temperature=_optional_float(data, "temperature", "温度"),
+            # 老配置里写的是 null（那时用它表示「接口默认」），现在统一按 DEFAULT_TEMPERATURE 走；
+            # 真要按接口默认来，在 extra_body 里自己写 temperature
+            temperature=_temperature(data.get("temperature")),
             context_window_tokens=_positive_int(
                 data, "context_window_tokens", DEFAULT_CONTEXT_WINDOW_TOKENS, "上下文长度"
             ),
@@ -454,6 +485,8 @@ class AppConfig:
     compact_threshold_percent: int = DEFAULT_COMPACT_THRESHOLD_PERCENT
     # 之前几轮的思考内容也发给模型（默认只发这一轮工具调用之间的），见 llm/base.py 的 REASONING_FIELD
     reasoning_across_turns: bool = False
+    # 工具结果回来之后的续跑，思考档位比配置降一级（high→medium、medium→low，不会降到不思考）
+    reasoning_step_down: bool = True
     # 联网：web_search 默认走 Exa（语义搜索，按次计费）；密钥空着就读 EXA_API_KEY，再没有就退回必应（免费）
     web_search_enabled: bool = True
     web_search_provider: str = WEB_SEARCH_DEFAULT_PROVIDER
@@ -539,6 +572,7 @@ class AppConfig:
             auto_compact=_boolean_with_default(data, "auto_compact", True),
             compact_threshold_percent=_compact_threshold_percent(data),
             reasoning_across_turns=_boolean_with_default(data, "reasoning_across_turns", False),
+            reasoning_step_down=_boolean_with_default(data, "reasoning_step_down", True),
             web_search_enabled=_boolean_with_default(data, "web_search_enabled", True),
             web_search_provider=_web_search_provider(data.get("web_search_provider")),
             web_search_engine=_web_search_engine(data.get("web_search_engine")),
@@ -600,6 +634,7 @@ class AppConfig:
             "auto_compact": self.auto_compact,
             "compact_threshold_percent": self.compact_threshold_percent,
             "reasoning_across_turns": self.reasoning_across_turns,
+            "reasoning_step_down": self.reasoning_step_down,
             "web_search_enabled": self.web_search_enabled,
             "web_search_provider": self.web_search_provider,
             "web_search_engine": self.web_search_engine,
@@ -651,6 +686,7 @@ class AppConfig:
             "auto_compact": self.auto_compact,
             "compact_threshold_percent": self.compact_threshold_percent,
             "reasoning_across_turns": self.reasoning_across_turns,
+            "reasoning_step_down": self.reasoning_step_down,
             "web_search_enabled": self.web_search_enabled,
             "web_search_provider": self.web_search_provider,
             "web_search_engine": self.web_search_engine,
@@ -837,7 +873,7 @@ class Settings:
     api_key: str | None = None
     # openai / anthropic，决定用哪个 provider（见 core/agent.py 的 create_provider）
     protocol: str = "openai"
-    temperature: float | None = None
+    temperature: float | None = DEFAULT_TEMPERATURE
     reasoning_effort: str | None = None
     extra_body: dict[str, Any] = field(default_factory=dict)
     supports_images: bool = False
@@ -847,6 +883,8 @@ class Settings:
     model_kind: str = ""
     # 之前几轮的思考内容也发给模型；默认只发这一轮工具调用之间的
     reasoning_across_turns: bool = False
+    # 工具结果回来之后的续跑，思考档位比配置降一级（high→medium、medium→low，不会降到不思考）
+    reasoning_step_down: bool = True
     # 当前模型能选的思考档位（审批、子 agent 选「最低」时从这里取）；环境变量配的模型不知道，空着
     reasoning_choices: list[str] = field(default_factory=list)
     # AI 审批用的模型（None = 跟任务的模型一样）和思考档位（lowest / inherit / 具体档位）
@@ -972,6 +1010,7 @@ class Settings:
         self.max_steps = app_config.max_steps
         self.apply_compaction(app_config)
         self.reasoning_across_turns = app_config.reasoning_across_turns
+        self.reasoning_step_down = app_config.reasoning_step_down
         self.web_search = app_config.web_search_settings()
         self.web_fetch = app_config.web_fetch_enabled
         self.image_gen = app_config.image_gen_settings()

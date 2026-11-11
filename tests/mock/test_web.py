@@ -305,6 +305,8 @@ class WebServerTest(WebTestBase):
                         tool_call("call_2", "write_file", '{"path": "b.txt", "content": "B"}'),
                     ]
                 ),
+                # 有被拒的调用时，模型还能再答一轮（说明它不写了），不会当场断在半路
+                LLMResponse(text="b.txt 就不写了"),
             ]
         )
         session_id = await self._create_session()
@@ -320,7 +322,7 @@ class WebServerTest(WebTestBase):
 
         self.assertEqual([item["tool_name"] for item in approval["items"]], ["write_file", "write_file"])
         self.assertIn("新建 b.txt", approval["items"][1]["preview"])
-        self.assertEqual(turn_end["event"]["stop_reason"], "denied")
+        self.assertEqual(turn_end["event"]["stop_reason"], "done")
         self.assertTrue((self.directories.workspace / "a.txt").exists())
         self.assertFalse((self.directories.workspace / "b.txt").exists())
 

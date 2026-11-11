@@ -269,6 +269,9 @@
                   <label class="checkbox-field"><input type="checkbox" id="reasoning-across-turns-input" />
                     <span>跨轮保留思考内容</span></label>
                   <div class="field-hint">关闭时，模型的思考内容只在同一轮的工具调用之间传回（各家都要求这样做）；打开后，之前几轮的思考也一起发给模型（DeepSeek、智谱、Kimi 等），前后更连贯，但更占上下文。智谱会同时开启它的「保留式思考」。</div>
+                  <label class="checkbox-field"><input type="checkbox" id="reasoning-step-down-input" />
+                    <span>工具结果续跑降一档思考</span></label>
+                  <div class="field-hint">工具结果回来之后接着做的那几步，思考档位比模型配置降一级（high→medium、medium→low，不会降到不思考）。规划时按配置的档位深想，照着结果往下做不用每一步都想那么久。</div>
                 </fieldset>
                 <fieldset class="radio-group">
                   <legend>子 agent</legend>

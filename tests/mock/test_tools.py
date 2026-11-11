@@ -147,6 +147,27 @@ class ToolsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(glob_result.content, "src/app.py")
         self.assertEqual(grep_result.content, "src/app.py:1:def handler():")
 
+    async def test_grep_returns_context_lines_in_rg_format(self) -> None:
+        self.write("src/app.py", "import os\n\ndef handler():\n    return 42\n")
+
+        result = await GrepTool().run({"pattern": "return 42", "context_lines": 2}, self.context)
+
+        self.assertEqual(
+            result.content.splitlines(),
+            ["src/app.py-2-", "src/app.py-3-def handler():", "src/app.py:4:    return 42"],
+        )
+
+    async def test_grep_head_limit_and_files_only(self) -> None:
+        self.write("src/a.py", "needle\nneedle\n")
+        self.write("src/b.py", "needle\n")
+
+        limited = await GrepTool().run({"pattern": "needle", "head_limit": 2}, self.context)
+        files = await GrepTool().run({"pattern": "needle", "files_only": True}, self.context)
+
+        self.assertEqual(len(limited.content.splitlines()), 3)  # 2 条匹配 + 一行「还有更多」
+        self.assertIn("只显示前 2 条", limited.content)
+        self.assertEqual(files.content.splitlines(), ["src/a.py", "src/b.py"])
+
     async def test_todo_write_replaces_the_shared_list(self) -> None:
         tool = TodoWriteTool()
         changed = []

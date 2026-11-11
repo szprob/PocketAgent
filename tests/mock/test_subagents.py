@@ -335,7 +335,9 @@ class SubagentRunTest(unittest.IsolatedAsyncioTestCase):
 
         await harness.agent.run_turn("派个子 agent")
 
-        self.assertEqual(provider.requested_efforts, ["low"])
+        # 子 agent 按自己配的档位（low）；主 agent 在子 agent 结果回来之后的续跑
+        # 按 reasoning_step_down 从 max 降一档到 high
+        self.assertEqual(provider.requested_efforts, ["low", "high"])
 
     async def test_stopping_the_main_task_stops_the_child(self) -> None:
         provider = TwoLevelProvider([LLMResponse(tool_calls=[spawn("p1", "很慢", "慢慢查")])], {"很慢": [LLMResponse(text="不会到这")]})

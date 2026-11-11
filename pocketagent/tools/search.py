@@ -16,7 +16,11 @@ from pocketagent.tools.files import SKIPPED_DIRECTORY_NAMES, path_argument_acces
 from pocketagent.tools.ripgrep import GrepMatch, RipgrepError, RipgrepTimeout
 
 GLOB_MAX_RESULTS = 200
-GREP_MAX_MATCHES = 200
+GREP_MAX_MATCHES = 500
+# 默认只给这么多条：一次把整个仓库的匹配都捞进上下文，比不搜还糟（模型得读一堆无关行，还挤掉了别的信息）
+GREP_DEFAULT_HEAD_LIMIT = 100
+GREP_MAX_CONTEXT_LINES = 5
+GREP_MAX_LINE_CHARS = 400
 GREP_MAX_FILE_BYTES = 2_000_000
 
 
@@ -156,8 +160,9 @@ def _glob_result(matches: list[Path], context: ToolContext) -> ToolResult:
 class GrepTool(Tool):
     name = "grep"
     description = (
-        "用正则表达式搜索文件内容，返回「文件:行号:内容」。优先用 ripgrep（遵守 .gitignore），"
-        "支持大部分 Python 正则写法；可以用 glob 参数限定文件，如 *.py。"
+        "用正则表达式搜索文件内容，返回「文件:行号:内容」。搜代码内容就用它，不要在 bash 里拼 grep / find / cat 管道。"
+        "想把前因后果看清楚就传 context_lines（格式和 rg -C 一样，上下文行用 - 分隔，匹配行用 : 分隔）；"
+        "只想知道哪些文件命中就传 files_only。结果默认最多 head_limit 条：先窄范围搜，不够再加。"
     )
     kind = ToolKind.READ
     parameters = {
@@ -167,6 +172,15 @@ class GrepTool(Tool):
             "path": {"type": "string", "description": "搜索的文件或目录，默认工作目录"},
             "glob": {"type": "string", "description": "只搜文件名匹配这个 glob 的文件，如 *.py"},
             "ignore_case": {"type": "boolean", "description": "是否忽略大小写，默认 false"},
+            "context_lines": {
+                "type": "integer",
+                "description": f"每条匹配前后各带几行上下文，默认 0，最多 {GREP_MAX_CONTEXT_LINES}",
+            },
+            "head_limit": {
+                "type": "integer",
+                "description": f"最多返回多少条匹配，默认 {GREP_DEFAULT_HEAD_LIMIT}，最多 {GREP_MAX_MATCHES}",
+            },
+            "files_only": {"type": "boolean", "description": "只列出命中的文件，不返回行内容；默认 false"},
         },
         "required": ["pattern"],
     }
@@ -182,6 +196,9 @@ class GrepTool(Tool):
 
     async def run(self, arguments: dict[str, Any], context: ToolContext) -> ToolResult:
         root = context.resolve_path(arguments.get("path", "."))
+        limit = _clamped_int(arguments.get("head_limit"), GREP_DEFAULT_HEAD_LIMIT, 1, GREP_MAX_MATCHES)
+        context_lines = _clamped_int(arguments.get("context_lines"), 0, 0, GREP_MAX_CONTEXT_LINES)
+        files_only = bool(arguments.get("files_only"))
         if self.ripgrep:
             file_glob = arguments.get("glob")
 
@@ -196,48 +213,121 @@ class GrepTool(Tool):
                     pattern=arguments["pattern"],
                     root=root,
                     ignore_case=bool(arguments.get("ignore_case")),
-                    max_matches=GREP_MAX_MATCHES,
+                    max_matches=limit,
                     max_file_bytes=GREP_MAX_FILE_BYTES,
                     keep_path=keep_path,
                 )
-                return _grep_matches_result(matches, context)
+                return _grep_matches_result(matches, context, limit=limit, context_lines=context_lines, files_only=files_only)
             except RipgrepTimeout as error:
                 return ToolResult(str(error), is_error=True)
             except RipgrepError:
                 # Rust 正则不认 lookaround，或者 rg 半路出错：回退 Python，顺便给出正则错误
                 pass
-        return await asyncio.to_thread(self._grep_python, arguments, root, context)
+        return await asyncio.to_thread(self._grep_python, arguments, root, context, limit, context_lines, files_only)
 
-    def _grep_python(self, arguments: dict[str, Any], root: Path, context: ToolContext) -> ToolResult:
+    def _grep_python(
+        self,
+        arguments: dict[str, Any],
+        root: Path,
+        context: ToolContext,
+        limit: int = GREP_DEFAULT_HEAD_LIMIT,
+        context_lines: int = 0,
+        files_only: bool = False,
+    ) -> ToolResult:
         flags = re.IGNORECASE if arguments.get("ignore_case") else 0
         try:
             regex = re.compile(arguments["pattern"], flags)
         except re.error as error:
             return ToolResult(f"正则表达式有误：{error}", is_error=True)
-        matches = self._collect_matches(root, regex, arguments.get("glob"), context)
-        return _grep_matches_result(matches, context)
+        matches = self._collect_matches(root, regex, arguments.get("glob"), context, limit)
+        return _grep_matches_result(matches, context, limit=limit, context_lines=context_lines, files_only=files_only)
 
     def _collect_matches(
-        self, root: Path, regex: re.Pattern[str], file_glob: str | None, context: ToolContext
+        self, root: Path, regex: re.Pattern[str], file_glob: str | None, context: ToolContext, limit: int = GREP_MAX_MATCHES
     ) -> list[GrepMatch]:
         matches: list[GrepMatch] = []
         for file_path in _iter_candidate_files(root, file_glob, context):
             for line_number, line in _matching_lines(file_path, regex):
                 matches.append(GrepMatch(path=file_path, line_number=line_number, line=line.rstrip()))
-                if len(matches) >= GREP_MAX_MATCHES:
+                if len(matches) >= limit:
                     return matches
         return matches
 
 
-def _grep_matches_result(matches: list[GrepMatch], context: ToolContext) -> ToolResult:
+def _clamped_int(value: Any, default: int, lowest: int, highest: int) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(lowest, min(highest, number))
+
+
+def _grep_matches_result(
+    matches: list[GrepMatch],
+    context: ToolContext,
+    limit: int = GREP_DEFAULT_HEAD_LIMIT,
+    context_lines: int = 0,
+    files_only: bool = False,
+) -> ToolResult:
+    """渲染匹配。files_only 只给文件；context_lines > 0 时按 rg -C 的格式把上下文一起给出来。"""
     if not matches:
         return ToolResult("没有匹配")
-    lines = []
-    for match in matches[:GREP_MAX_MATCHES]:
-        lines.append(f"{context.display_path(match.path)}:{match.line_number}:{match.line}")
-    if len(matches) >= GREP_MAX_MATCHES:
-        lines.append(f"（已达 {GREP_MAX_MATCHES} 条上限，请缩小范围）")
+    shown = matches[:limit]
+    if files_only:
+        files: list[str] = []
+        for match in shown:
+            path = context.display_path(match.path)
+            if path not in files:
+                files.append(path)
+        lines = files
+    elif context_lines > 0:
+        lines = _matches_with_context(shown, context, context_lines)
+    else:
+        lines = [f"{context.display_path(match.path)}:{match.line_number}:{match.line}" for match in shown]
+    if len(matches) >= limit:
+        lines.append(f"（只显示前 {limit} 条，可能还有更多：缩小 path / glob 范围，或者调大 head_limit）")
     return ToolResult("\n".join(lines))
+
+
+def _matches_with_context(matches: list[GrepMatch], context: ToolContext, context_lines: int) -> list[str]:
+    """把匹配行和它前后的行拼成 rg -C 那样的输出：文件:行号:内容 是匹配行，文件-行号-内容 是上下文。"""
+    grouped: dict[Path, list[GrepMatch]] = {}
+    for match in matches:
+        grouped.setdefault(match.path, []).append(match)
+    lines: list[str] = []
+    for path, items in grouped.items():
+        display = context.display_path(path)
+        file_lines = _read_lines_for_context(path)
+        if file_lines is None:
+            # 读不了（太大、二进制、没权限）就退回只给匹配行
+            lines.extend(f"{display}:{match.line_number}:{match.line}" for match in items)
+            continue
+        wanted: dict[int, bool] = {}
+        for match in items:
+            first = max(1, match.line_number - context_lines)
+            last = min(len(file_lines), match.line_number + context_lines)
+            for number in range(first, last + 1):
+                wanted[number] = wanted.get(number, False) or number == match.line_number
+        previous = None
+        for number in sorted(wanted):
+            if previous is not None and number > previous + 1:
+                lines.append("--")
+            text = file_lines[number - 1]
+            if len(text) > GREP_MAX_LINE_CHARS:
+                text = text[:GREP_MAX_LINE_CHARS] + "…"
+            separator = ":" if wanted[number] else "-"
+            lines.append(f"{display}{separator}{number}{separator}{text}")
+            previous = number
+    return lines
+
+
+def _read_lines_for_context(path: Path) -> list[str] | None:
+    try:
+        if path.stat().st_size > GREP_MAX_FILE_BYTES:
+            return None
+        return path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
 
 
 def _iter_candidate_files(root: Path, file_glob: str | None, context: ToolContext) -> Iterator[Path]:

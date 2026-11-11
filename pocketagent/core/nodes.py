@@ -12,6 +12,7 @@ from typing import Any
 
 from pocketflow import AsyncNode
 
+from pocketagent.config import step_down_reasoning
 from pocketagent.core.compaction import (
     RESTORE_FILE_MAX_TOKENS,
     RESTORE_TOTAL_MAX_TOKENS,
@@ -68,12 +69,22 @@ MAX_COMPACTIONS_PER_TURN = 3
 SUMMARY_INPUT_RATIO = 0.85
 
 # 上游把生成掐掉的 finish_reason → 这一轮停下来时记的 stop_reason。
-# content_filter：模型或网关的审核在句子中间掐断；incomplete：流没给结束标记就断了（多半是连接中途断）。
-# 这两种都只收到半句话，重试没用（同样的内容还会被掐一次），但必须让用户看出「这不是答完了」。
+# content_filter：模型或网关的审核在句子中间掐断，再问一次还是会被掐，只能停。
+# incomplete：流没给结束标记就断了（多半是连接中途断），先让模型接着写，救不回来才停。
 CUT_OFF_FINISH_REASONS = {
     "content_filter": "filtered",
     "incomplete": "incomplete",
 }
+
+# 连续几批工具调用被用户拒绝后停下（第一批拒绝要先让模型自己解释、换做法）
+MAX_DENIED_BATCHES = 2
+
+
+def _is_research_tool(name: str) -> bool:
+    """内置的联网工具，或者 MCP 上提供的搜索（mcp__exa__web_search_exa 这种）。"""
+    if name in WEB_RESEARCH_TOOLS:
+        return True
+    return name.startswith("mcp__") and "search" in name.lower()
 
 
 def messages_for_model(context: AgentContext) -> list[dict[str, Any]]:
@@ -389,6 +400,39 @@ class ThinkRequest:
     messages: list[dict[str, Any]]
     tool_schemas: list[dict[str, Any]]
     events: EventBus
+    # 这一步实际发出去的思考档位（降过档时和配置不一样），trace 里能看到
+    reasoning_effort: str | None = None
+
+
+def _continuing_after_tools(context: AgentContext) -> bool:
+    """这一步是不是「刚拿到工具结果，接着往下做」。只有这种续跑才降档：
+    用户刚说的话、刚压缩完、刚被截断补救的时候都得保持配置的档位。"""
+    return bool(context.messages) and context.messages[-1].get("role") == "tool"
+
+
+def _is_main_model(provider: LLMProvider, settings: Any) -> bool:
+    """子 agent 可能配了别的模型，档位顺序不一样，不在这里降（拿不到模型名时按主的算）。"""
+    model = getattr(provider, "model", None)
+    if model is None:
+        model = getattr(getattr(provider, "inner", None), "model", None)
+    return model is None or model == settings.model
+
+
+def _provider_for_step(context: AgentContext) -> tuple[LLMProvider, str | None]:
+    """按这一步的性质挑 provider：工具结果续跑降一档思考，其余照配置。"""
+    settings = context.settings
+    provider = context.provider
+    if not settings.reasoning_step_down or not _continuing_after_tools(context):
+        return provider, settings.reasoning_effort
+    if not _is_main_model(provider, settings):
+        return provider, settings.reasoning_effort
+    effort = step_down_reasoning(settings.reasoning_effort, settings.reasoning_choices)
+    if effort == settings.reasoning_effort:
+        return provider, effort
+    derive = getattr(provider, "with_reasoning_effort", None)
+    if derive is None:
+        return provider, settings.reasoning_effort
+    return derive(effort), effort
 
 
 class ThinkNode(AgentNode):
@@ -400,11 +444,13 @@ class ThinkNode(AgentNode):
         if context.tool_schemas is None:
             # 工具定义在这时定下来，到下一次压缩之前不再变（见 AgentContext.tool_schemas）
             context.tool_schemas = context.tools.openai_schemas()
+        provider, effort = _provider_for_step(context)
         return ThinkRequest(
-            provider=context.provider,
+            provider=provider,
             messages=messages_for_model(context),
             tool_schemas=context.tool_schemas,
             events=context.events,
+            reasoning_effort=effort,
         )
 
     async def exec_async(self, request: ThinkRequest) -> LLMResponse | ContextOverflowError:
@@ -430,6 +476,8 @@ class ThinkNode(AgentNode):
             EventType.LLM_RESPONSE,
             # 一轮中途换了模型时，trace 里也能看出每一步是谁答的
             model=context.settings.model,
+            # 降过档的续跑，trace 里能看出这一步是按什么档位想的
+            reasoning_effort=request.reasoning_effort,
             text=response.text,
             reasoning=response.reasoning,
             tool_calls=[{"name": call.name, "arguments": call.raw_arguments} for call in response.tool_calls],
@@ -440,7 +488,7 @@ class ThinkNode(AgentNode):
             return await _handle_truncated_response(context, response)
         cut_off_stop_reason = CUT_OFF_FINISH_REASONS.get(response.finish_reason or "")
         if cut_off_stop_reason:
-            return _finish_cut_off(context, response, cut_off_stop_reason)
+            return await _handle_cut_off_response(context, response, cut_off_stop_reason)
         context.messages.append(build_assistant_message(response))
         if response.usage and response.usage.prompt_tokens:
             context.record_usage(response.usage)
@@ -456,12 +504,18 @@ class ThinkNode(AgentNode):
 
 
 # 回复超出输出上限被截断时，最多让模型补救几次
-MAX_TRUNCATION_RECOVERIES = 2
+MAX_TRUNCATION_RECOVERIES = 3
+# 流被掐断（网关没给结束标记）时，最多让它接着写几次
+MAX_STREAM_RECOVERIES = 2
 TRUNCATED_TOOL_NOTE = (
     "（系统提示：你上一条回复超出了单次输出长度上限，被截断了，工具调用的参数不完整，所以没有执行。"
     "请把操作拆小：大文件分几次写，改已有文件用 edit_file 只替换需要改的那一段。）"
 )
 TRUNCATED_TEXT_NOTE = "（系统提示：你上一条回复超出了单次输出长度上限，被截断了。请从断开的地方接着写，不要重复已经写过的内容。）"
+STREAM_CUT_NOTE = (
+    "（系统提示：你上一条回复在下发途中断了，没有收到结束标记，已经写出来的部分在上面。"
+    "接着往下写就行，不要重复已经说过的内容；如果本来就打算调用工具，现在重新调用一次。）"
+)
 
 
 async def _handle_truncated_response(context: AgentContext, response: LLMResponse) -> str:
@@ -486,11 +540,25 @@ async def _handle_truncated_response(context: AgentContext, response: LLMRespons
     return "continue"
 
 
+async def _handle_cut_off_response(context: AgentContext, response: LLMResponse, stop_reason: str) -> str:
+    """上游没给结束标记就断了：审核掐掉的停轮（再问一次还是会被掐），
+    单纯的流中断（incomplete）则留下已经写出来的部分，让模型接着写。"""
+    if stop_reason == "incomplete":
+        context.turn.stream_cutoffs += 1
+        if context.turn.stream_cutoffs <= MAX_STREAM_RECOVERIES:
+            if response.text:
+                context.messages.append({"role": "assistant", "content": response.text})
+            if response.usage and response.usage.prompt_tokens:
+                context.record_usage(response.usage)
+            context.messages.append({"role": "user", "content": STREAM_CUT_NOTE, "_kind": "notice"})
+            return "continue"
+    return _finish_cut_off(context, response, stop_reason)
+
+
 def _finish_cut_off(context: AgentContext, response: LLMResponse, stop_reason: str) -> str:
     """上游把生成掐断了：半截话留在对话里并标上原因，这一轮就停在这儿。
 
-    不重试、也不让模型「接着写」：审核掐掉的内容再问一次还是会被掐，
-    连接断掉的那半句也接不回来，硬续反而会让用户以为后面是完整内容。
+    审核掐掉的内容再问一次还是会被掐，接着写也接不回来，硬续反而会让用户以为后面是完整内容。
     """
     if response.text:
         message = build_assistant_message(response)
@@ -563,8 +631,14 @@ class RunToolsNode(AgentNode):
         append_tool_messages(context, outcomes)
         context.turn.pending_tool_calls = []
         if any(outcome.denied for outcome in outcomes):
-            context.turn.stop_reason = "denied"
-            return "stop"
+            context.turn.denied_batches += 1
+            # 先让模型看到「被拒了」并说明它想干什么：一次拒绝不该让整件事断在半路。
+            # 连着两批都被拒说明它没打算改，再停下来等用户发话
+            if context.turn.denied_batches >= MAX_DENIED_BATCHES:
+                context.turn.stop_reason = "denied"
+                return "stop"
+            return "next"
+        context.turn.denied_batches = 0
         return "next"
 
 
@@ -924,7 +998,7 @@ async def _render_tool_result(context: AgentContext, call: ToolCall, content: st
 def _delegate_research_hint(context: AgentContext, call: ToolCall) -> str:
     """主 agent 自己搜了好几次时，在结果末尾提醒它把剩下的调研交给子 agent。
     搜索结果和网页全文一条条堆在主上下文里，很快就把上下文撑大；子 agent 读完只交回结论。"""
-    if call.name not in WEB_RESEARCH_TOOLS or context.tool_context.spawn_subagent is None:
+    if not _is_research_tool(call.name) or context.tool_context.spawn_subagent is None:
         return ""
     if context.tools.get("subagent") is None:
         return ""
@@ -943,7 +1017,10 @@ def _error_outcome(call: ToolCall, message: str) -> ToolCallOutcome:
 
 
 def _denied_outcome(call: ToolCall, reason: str) -> ToolCallOutcome:
-    message = f"{reason}。不要原样重试，先停下来向用户说明你想做什么。"
+    message = (
+        f"{reason}。不要原样重试：先说明你想做什么、为什么，或者换个用户能接受的做法；"
+        "用户没再要求的事就不要接着做。"
+    )
     return ToolCallOutcome(call=call, result=ToolResult(message, is_error=True), denied=True)
 
 
