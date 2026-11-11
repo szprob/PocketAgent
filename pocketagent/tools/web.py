@@ -81,15 +81,18 @@ SEARCH_PARAMETERS: dict[str, Any] = {
 }
 
 
-def search_parameters(require_objective: bool) -> dict[str, Any]:
-    """Exa 的搜索工具要模型顺带给出 objective（它靠这个判断哪些结果该排前面），别的厂商用不上。"""
+def search_parameters(provider: str) -> dict[str, Any]:
+    """按厂商微调工具参数：Exa 要模型顺带给出 objective（它靠这个判断哪些结果该排前面），
+    而且它不传 numResults 时默认给 10 条，跟其他几家的 5 条不一样。"""
     parameters = deepcopy(SEARCH_PARAMETERS)
-    if require_objective:
-        parameters["properties"]["objective"] = {
-            "type": "string",
-            "description": EXA_OBJECTIVE_DESCRIPTION,
-        }
-        parameters["required"] = ["query", "objective"]
+    if provider != "exa":
+        return parameters
+    parameters["properties"]["objective"] = {
+        "type": "string",
+        "description": EXA_OBJECTIVE_DESCRIPTION,
+    }
+    parameters["properties"]["count"]["description"] = "返回几条，1–10，不填就用 Exa 默认的 10 条"
+    parameters["required"] = ["query", "objective"]
     return parameters
 
 
@@ -103,7 +106,7 @@ class WebSearchTool(Tool):
 
     def __init__(self, settings: WebSearchSettings) -> None:
         self.settings = settings
-        self.parameters = search_parameters(require_objective=settings.provider == "exa")
+        self.parameters = search_parameters(settings.provider)
 
     def describe(self, arguments: dict[str, Any]) -> str:
         return str(arguments.get("query", ""))

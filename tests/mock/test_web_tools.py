@@ -186,8 +186,12 @@ class WebSearchProviderTest(unittest.IsolatedAsyncioTestCase):
         exa = WebSearchTool(WebSearchSettings(provider="exa", api_key="k"))
         self.assertEqual(exa.parameters["required"], ["query", "objective"])
         self.assertIn("rank first", exa.parameters["properties"]["objective"]["description"])
+        # Exa 不传 numResults 时默认 10 条，别的家默认 5 条：参数说明跟着改，不然模型会算错条数
+        self.assertIn("10 条", exa.parameters["properties"]["count"]["description"])
         # 其他厂商还是一次只问 query
-        self.assertEqual(WebSearchTool(WebSearchSettings(provider="bing")).parameters["required"], ["query"])
+        bing = WebSearchTool(WebSearchSettings(provider="bing"))
+        self.assertEqual(bing.parameters["required"], ["query"])
+        self.assertIn("默认 5", bing.parameters["properties"]["count"]["description"])
         self.assertNotIn("objective", WebSearchTool(WebSearchSettings(provider="zhipu")).parameters["properties"])
 
     async def test_zhipu_search_returns_formatted_results(self) -> None:
