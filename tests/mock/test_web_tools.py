@@ -110,6 +110,80 @@ class WebSearchProviderTest(unittest.IsolatedAsyncioTestCase):
             "pocketagent.tools.web.httpx.AsyncClient", side_effect=lambda **kwargs: FakeClient(response, self.calls)
         )
 
+    async def test_tavily_sends_basic_search_and_maps_results(self) -> None:
+        response = FakeResponse(
+            payload={
+                "results": [
+                    {
+                        "title": "结果",
+                        "url": "https://c.example",
+                        "content": "清洗过的正文",
+                        "published_date": "2026-11-04T08:00:00Z",
+                        "score": 0.9,
+                    }
+                ]
+            }
+        )
+
+        with self.patch_client(response):
+            result = await WebSearchTool(WebSearchSettings(provider="tavily", api_key="tvly-key")).run(
+                {"query": "问题", "count": 3, "recency": "oneWeek"}, self.context
+            )
+
+        self.assertFalse(result.is_error)
+        self.assertIn("1. 结果（2026-11-04）", result.content)
+        self.assertIn("https://c.example", result.content)
+        self.assertIn("清洗过的正文", result.content)
+        method, url, kwargs = self.calls[0]
+        self.assertEqual((method, url), ("POST", "https://api.tavily.com/search"))
+        self.assertEqual(kwargs["headers"]["Authorization"], "Bearer tvly-key")
+        body = kwargs["json"]
+        # basic 一档省 credits，摘要自己生成，不需要 Tavily 顺手做一份
+        self.assertEqual(body["search_depth"], "basic")
+        self.assertEqual(body["max_results"], 3)
+        self.assertFalse(body["include_answer"])
+        self.assertEqual(body["time_range"], "week")
+
+    async def test_tavily_omits_time_range_when_not_limited(self) -> None:
+        with self.patch_client(FakeResponse(payload={"results": []})):
+            await WebSearchTool(WebSearchSettings(provider="tavily", api_key="tvly-key")).run(
+                {"query": "问题", "count": 1}, self.context
+            )
+
+        self.assertNotIn("time_range", self.calls[0][2]["json"])
+
+    async def test_tavily_errors_are_reported(self) -> None:
+        with self.patch_client(FakeResponse(status_code=401, payload={"detail": "Invalid API key"})):
+            unauthorized = await WebSearchTool(WebSearchSettings(provider="tavily", api_key="bad")).run(
+                {"query": "问题"}, self.context
+            )
+        self.assertTrue(unauthorized.is_error)
+        self.assertIn("401", unauthorized.content)
+        self.assertIn("app.tavily.com", unauthorized.content)
+
+        with self.patch_client(FakeResponse(status_code=429, text="slow down")):
+            limited = await WebSearchTool(WebSearchSettings(provider="tavily", api_key="k")).run(
+                {"query": "问题"}, self.context
+            )
+        self.assertTrue(limited.is_error)
+        self.assertIn("限速", limited.content)
+
+        with self.patch_client(FakeResponse(status_code=432, text="out of credits")):
+            exhausted = await WebSearchTool(WebSearchSettings(provider="tavily", api_key="k")).run(
+                {"query": "问题"}, self.context
+            )
+        self.assertTrue(exhausted.is_error)
+        self.assertIn("额度用完", exhausted.content)
+
+    async def test_tavily_without_a_key_is_reported(self) -> None:
+        result = await WebSearchTool(WebSearchSettings(provider="tavily")).run(
+            {"query": "问题"}, self.context
+        )
+
+        self.assertTrue(result.is_error)
+        self.assertIn("TAVILY_API_KEY", result.content)
+        self.assertEqual(self.calls, [])
+
     async def test_exa_sends_the_recommended_request(self) -> None:
         response = FakeResponse(
             payload={

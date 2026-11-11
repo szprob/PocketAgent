@@ -326,9 +326,9 @@ def _key_hint(key: str | None) -> str:
     return f"{key[:6]}…{key[-4:]}"
 
 
-WEB_SEARCH_PROVIDERS = ["exa", "bing", "deepseek", "zhipu"]
-WEB_SEARCH_DEFAULT_PROVIDER = "exa"
-# 搜索没单独配密钥时，用对应厂商模型的密钥（Exa 走环境变量 EXA_API_KEY）
+WEB_SEARCH_PROVIDERS = ["tavily", "exa", "bing", "deepseek", "zhipu"]
+WEB_SEARCH_DEFAULT_PROVIDER = "tavily"
+# 搜索没单独配密钥时，用对应厂商模型的密钥（Exa 走环境变量 EXA_API_KEY，Tavily 走 TAVILY_API_KEY）
 WEB_SEARCH_MODEL_KIND = {"deepseek": "deepseek", "zhipu": "bigmodel"}
 WEB_SEARCH_ENGINES = ["search_std", "search_pro"]
 
@@ -487,7 +487,7 @@ class AppConfig:
     reasoning_across_turns: bool = False
     # 工具结果回来之后的续跑，思考档位比配置降一级（high→medium、medium→low，不会降到不思考）
     reasoning_step_down: bool = True
-    # 联网：web_search 默认走 Exa（语义搜索，按次计费）；密钥空着就读 EXA_API_KEY，再没有就退回必应（免费）
+    # 联网：web_search 默认走 Tavily（agent 向搜索，每月 1000 次免费）；密钥空着就读 TAVILY_API_KEY，再没有就退回必应（免费）
     web_search_enabled: bool = True
     web_search_provider: str = WEB_SEARCH_DEFAULT_PROVIDER
     web_search_engine: str = "search_std"
@@ -725,12 +725,14 @@ class AppConfig:
         }
 
     def resolved_web_search_key(self, provider: str | None = None) -> str | None:
-        """单独配的搜索密钥优先；没配就用 Exa 的环境变量，或者对应厂商模型的密钥。"""
+        """单独配的搜索密钥优先；没配就用对应厂商的环境变量，或者对应厂商模型的密钥。"""
         if self.web_search_api_key:
             return self.web_search_api_key
         chosen = provider or self.web_search_provider
         if chosen == "exa":
             return os.environ.get("EXA_API_KEY") or None
+        if chosen == "tavily":
+            return os.environ.get("TAVILY_API_KEY") or None
         kind = WEB_SEARCH_MODEL_KIND.get(chosen)
         for profile in self.models:
             if profile.provider == kind and profile.api_key:
@@ -745,6 +747,10 @@ class AppConfig:
             if os.environ.get("EXA_API_KEY"):
                 return "环境变量 EXA_API_KEY"
             return "没配 Exa 密钥，搜索暂时用必应（免费）"
+        if chosen == "tavily":
+            if os.environ.get("TAVILY_API_KEY"):
+                return "环境变量 TAVILY_API_KEY"
+            return "没配 Tavily 密钥，搜索暂时用必应（免费）"
         kind = WEB_SEARCH_MODEL_KIND.get(chosen)
         for profile in self.models:
             if profile.provider == kind and profile.api_key:
@@ -758,8 +764,8 @@ class AppConfig:
             return WebSearchSettings(provider="bing")
         key = self.resolved_web_search_key()
         if not key:
-            # 默认的 Exa 还没配密钥时不至于把搜索整个关掉，退回必应
-            return WebSearchSettings(provider="bing") if self.web_search_provider == "exa" else None
+            # 默认的 Tavily / Exa 还没配密钥时不至于把搜索整个关掉，退回必应
+            return WebSearchSettings(provider="bing") if self.web_search_provider in ("tavily", "exa") else None
         return WebSearchSettings(provider=self.web_search_provider, api_key=key, engine=self.web_search_engine)
 
     def first_model_of_kind(self, kind: str) -> ModelProfile | None:

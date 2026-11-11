@@ -1,9 +1,9 @@
 """联网工具：web_search 搜索，web_fetch 读网页。
 
-搜索默认走 Exa（语义搜索，按次计费，密钥在设置里配，或者用 EXA_API_KEY 环境变量）；也可以在
-设置里换成必应（免费、直接抓结果页）、DeepSeek 或智谱的搜索接口，后两家按调用次数计费，密钥
-没单独配就用对应厂商模型的密钥。读网页直接用 httpx 抓，HTML 转成纯文本给模型看。两个都是只读
-工具，不需要审批。
+搜索默认走 Tavily（专为 agent 做的搜索接口，返回清洗过的正文，每月 1000 次免费，密钥在设置里
+配，或者用 TAVILY_API_KEY 环境变量）；也可以在设置里换成 Exa（语义搜索，按次计费）、必应（免费、
+直接抓结果页）、DeepSeek 或智谱的搜索接口，后两家按调用次数计费，密钥没单独配就用对应厂商模型
+的密钥。读网页直接用 httpx 抓，HTML 转成纯文本给模型看。两个都是只读工具，不需要审批。
 """
 
 import base64
@@ -20,6 +20,7 @@ import httpx
 
 from pocketagent.tools.base import Tool, ToolContext, ToolKind, ToolResult
 
+TAVILY_SEARCH_URL = "https://api.tavily.com/search"
 EXA_SEARCH_URL = "https://api.exa.ai/search"
 ZHIPU_SEARCH_URL = "https://open.bigmodel.cn/api/paas/v4/web_search"
 DEEPSEEK_SEARCH_URL = "https://api.deepseek.com/v1/tools/search"
@@ -41,6 +42,8 @@ BING_HEADERS = {
 }
 # 必应的时间筛选：它自己只有一天 / 一周 / 一个月三档（结果页上「时间不限」那个下拉用的就是这几个值）
 BING_RECENCY_FILTERS = {"oneDay": "ez1", "oneWeek": "ez2", "oneMonth": "ez3"}
+# Tavily 的 time_range 也是四档，名字换了个叫法
+TAVILY_RECENCY = {"oneDay": "day", "oneWeek": "week", "oneMonth": "month", "oneYear": "year"}
 BING_EPOCH = datetime.date(1970, 1, 1)
 # DeepSeek 没有单独的时间参数，用它的 after: 搜索语法，往前推几天
 DEEPSEEK_RECENCY_DAYS = {"oneDay": 1, "oneWeek": 7, "oneMonth": 30, "oneYear": 365}
@@ -120,7 +123,9 @@ class WebSearchTool(Tool):
             recency = "noLimit"
         objective = str(arguments.get("objective") or "").strip()
         try:
-            if self.settings.provider == "exa":
+            if self.settings.provider == "tavily":
+                results = await self._search_tavily(query, count, recency)
+            elif self.settings.provider == "exa":
                 # Exa 的 numResults 默认就是 10，模型没点名要几条就别硬塞一个数字
                 results = await self._search_exa(query, count if requested_count else None, recency, objective)
             elif self.settings.provider == "zhipu":
@@ -134,6 +139,39 @@ class WebSearchTool(Tool):
         if not results:
             return ToolResult("没有搜到结果，换个说法试试")
         return ToolResult("\n\n".join(_format_result(index, item) for index, item in enumerate(results, start=1)))
+
+    async def _search_tavily(self, query: str, count: int, recency: str) -> list[dict[str, Any]]:
+        if not self.settings.api_key:
+            raise SearchFailed("还没配 Tavily 的 API Key：填到设置里，或者设一个 TAVILY_API_KEY 环境变量")
+        payload: dict[str, Any] = {
+            "query": query,
+            # basic 一档就够：摘要够模型判断值不值得用 web_fetch 打开，还省 credits（advanced 要 2 个）
+            "search_depth": "basic",
+            "max_results": count,
+            # 摘要由自己的模型来生成，不需要 Tavily 顺手做一份
+            "include_answer": False,
+        }
+        time_range = TAVILY_RECENCY.get(recency)
+        if time_range:
+            payload["time_range"] = time_range
+        try:
+            async with httpx.AsyncClient(timeout=SEARCH_TIMEOUT_SECONDS) as client:
+                response = await client.post(
+                    TAVILY_SEARCH_URL,
+                    json=payload,
+                    headers={"Authorization": f"Bearer {self.settings.api_key}"},
+                )
+        except httpx.HTTPError as error:
+            raise SearchFailed(f"连不上 Tavily：{type(error).__name__}: {error}") from error
+        if response.status_code in (401, 403):
+            raise SearchFailed("Tavily 的 API Key 不对或者已经失效（HTTP 401），去 app.tavily.com 重新拿一个")
+        if response.status_code == 429:
+            raise SearchFailed("Tavily 搜索被限速了（HTTP 429），稍后再试")
+        if response.status_code == 432:
+            raise SearchFailed("Tavily 这个月的免费额度用完了（HTTP 432），等月初重置或升级套餐")
+        if response.status_code != 200:
+            raise SearchFailed(f"Tavily 搜索失败（HTTP {response.status_code}）：{response.text[:300]}")
+        return [_tavily_result(item) for item in response.json().get("results") or []]
 
     async def _search_exa(
         self, query: str, count: int | None, recency: str, objective: str
@@ -277,6 +315,21 @@ def _exa_error_message(response: httpx.Response) -> str:
     except ValueError:
         return response.text[:300]
     return payload.get("error") or payload.get("tag") or response.text[:300]
+
+
+# ---- Tavily 搜索 ----
+
+def _tavily_result(item: dict[str, Any]) -> dict[str, Any]:
+    """转成和智谱一样的形状，后面共用一套格式化。
+
+    Tavily 的 content 本来就是为 LLM 清洗过的正文片段，直接用。
+    """
+    return {
+        "title": item.get("title") or "",
+        "link": item.get("url") or "",
+        "content": item.get("content") or item.get("raw_content") or "",
+        "publish_date": str(item.get("published_date") or "")[:10],
+    }
 
 
 # ---- DeepSeek 搜索 ----
