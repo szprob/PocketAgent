@@ -108,7 +108,7 @@ class FirstSyncTest(SyncFixture):
         report = self.engine(self.home_a, "device-a").run()
 
         self.assertEqual(report.count("upload"), 1)
-        self.assertTrue((self.remote / "data" / "sessions" / "s1.json").is_file())
+        self.assertTrue((self.remote / "sessions" / "s1.json").is_file())
         self.assertTrue((self.remote / "devices" / "device-a.json").is_file())
 
         report_b = self.engine(self.home_b, "device-b").run()
@@ -125,7 +125,7 @@ class FirstSyncTest(SyncFixture):
 
         self.engine(self.home_a, "device-a").run()
 
-        names = sorted(path.name for path in (self.remote / "data" / "sessions").iterdir())
+        names = sorted(path.name for path in (self.remote / "sessions").iterdir())
         self.assertEqual(names, ["s2.json"])
 
     def test_excluded_directories_stay_local(self) -> None:
@@ -140,9 +140,9 @@ class FirstSyncTest(SyncFixture):
         self.engine(self.home_a, "device-a").run()
 
         uploaded = sorted(
-            path.relative_to(self.remote / "data").as_posix()
-            for path in (self.remote / "data").rglob("*")
-            if path.is_file()
+            path.relative_to(self.remote).as_posix()
+            for path in self.remote.rglob("*")
+            if path.is_file() and not path.relative_to(self.remote).as_posix().startswith("devices/")
         )
         self.assertEqual(uploaded, ["sessions/s1.json"])
 
@@ -153,10 +153,10 @@ class FirstSyncTest(SyncFixture):
         )
 
         self.engine(self.home_a, "device-a").run()
-        self.assertFalse((self.remote / "data" / "config.json").exists())
+        self.assertFalse((self.remote / "config.json").exists())
 
         self.engine(self.home_a, "device-a", ("sessions", "config")).run()
-        uploaded = json.loads((self.remote / "data" / "config.json").read_text(encoding="utf-8"))
+        uploaded = json.loads((self.remote / "config.json").read_text(encoding="utf-8"))
         self.assertEqual(uploaded["models"][0]["api_key"], "sk-secret")
         self.assertIsNone(uploaded["web_token"])
 
@@ -255,11 +255,11 @@ class DeletionTest(SyncFixture):
         self.engine(self.home_b, "device-b").run()
         self.append_message(self.home_a, "A 还在改", "2026-11-11T12:00:00")
 
-        (self.remote / "data" / "sessions" / "s1.json").unlink()
+        (self.remote / "sessions" / "s1.json").unlink()
         report = self.engine(self.home_a, "device-a").run()
 
         self.assertEqual(report.count("upload"), 1)
-        self.assertTrue((self.remote / "data" / "sessions" / "s1.json").is_file())
+        self.assertTrue((self.remote / "sessions" / "s1.json").is_file())
 
 
 class SafetyTest(SyncFixture):
@@ -273,14 +273,15 @@ class SafetyTest(SyncFixture):
 
         self.assertEqual(report.count("upload"), 1)
         self.assertEqual((self.home_a / "sync" / "state.json").read_text(encoding="utf-8"), state_before)
-        remote_copy = json.loads((self.remote / "data" / "sessions" / "s1.json").read_text(encoding="utf-8"))
+        remote_copy = json.loads((self.remote / "sessions" / "s1.json").read_text(encoding="utf-8"))
         self.assertEqual(len(remote_copy["messages"]), 1)
 
     def test_mass_deletion_in_remote_aborts_before_deleting_local(self) -> None:
         for index in range(5):
             self.write_session(self.home_a, make_session(session_id=f"s{index}", contents=(f"第 {index} 个",)))
         self.engine(self.home_a, "device-a").run()
-        shutil.rmtree(self.remote / "data")
+        shutil.rmtree(self.remote)
+        self.remote.mkdir()
 
         report = self.engine(self.home_a, "device-a").run()
 
@@ -299,7 +300,7 @@ class SafetyTest(SyncFixture):
         report = self.engine(self.home_a, "device-a").run(direction="push")
 
         self.assertEqual(report.count("blocked"), 1)
-        remote_copy = json.loads((self.remote / "data" / "sessions" / "s1.json").read_text(encoding="utf-8"))
+        remote_copy = json.loads((self.remote / "sessions" / "s1.json").read_text(encoding="utf-8"))
         self.assertEqual([message["content"] for message in remote_copy["messages"]], ["你好", "B 的版本"])
 
 
@@ -442,6 +443,28 @@ class SyncConfigTest(unittest.TestCase):
             home = Path(directory)
             (home / "Nutstore Files").mkdir()
             self.assertEqual(default_local_directory(home), home / "Nutstore Files" / "pocketagent")
+
+
+class RemotePrefixTest(unittest.TestCase):
+    def test_prefix_defaults_by_backend_kind(self) -> None:
+        github = SyncConfig.from_dict({"backend": {"kind": "github", "url": "me/repo", "password": "t"}})
+        self.assertEqual(github.remote_prefix, "pocketagent")
+
+        webdav = SyncConfig.from_dict({"backend": {"kind": "webdav", "url": "https://dav.example/dav/pa"}})
+        self.assertEqual(webdav.remote_prefix, "data")
+
+        local = SyncConfig.from_dict({"backend": {"kind": "local", "url": "/tmp/whatever"}})
+        self.assertEqual(local.remote_prefix, "")
+
+    def test_explicit_prefix_is_kept(self) -> None:
+        config = SyncConfig.from_dict(
+            {"backend": {"kind": "github", "url": "me/repo", "password": "t"}, "remote_prefix": "backup/pa"}
+        )
+        self.assertEqual(config.remote_prefix, "backup/pa")
+
+    def test_default_backend_kind_is_github(self) -> None:
+        backend = BackendSettings.from_dict({"url": "me/repo", "password": "t"})
+        self.assertEqual(backend.kind, "github")
 
 
 class ConfigMergeTest(unittest.TestCase):

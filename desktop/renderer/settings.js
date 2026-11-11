@@ -1384,10 +1384,10 @@ function paintSyncFields() {
   }
   if (isGithub) {
     elements.syncUrl.placeholder = "owner/repo";
-    elements.syncUrlHint.textContent = "私有仓库，Token 需要 Contents 读写；仓库要已有初始提交（建仓库时勾 README）";
+    elements.syncUrlHint.textContent = "数据放在仓库的 pocketagent/ 目录下；仓库要已有初始提交，Token 需要 Contents 读写";
   } else if (kind === "local") {
     elements.syncUrl.placeholder = defaultLocalDirectory || "~/PocketAgent";
-    elements.syncUrlHint.textContent = "指向一个本来就在同步的目录：iCloud 云盘、OneDrive、NAS 挂载点都可以；留空用默认目录";
+    elements.syncUrlHint.textContent = "数据直接存在这个目录里：iCloud 云盘、OneDrive、NAS、git 仓库里的子目录都可以；留空用默认目录";
     if (!elements.syncUrl.value.trim()) {
       elements.syncUrl.value = defaultLocalDirectory;
     }
@@ -1448,7 +1448,7 @@ async function loadSync() {
     return;
   }
   syncDraftLoaded = true;
-  elements.syncKind.value = sync.backend.kind || "webdav";
+  elements.syncKind.value = sync.backend.kind || "github";
   elements.syncUrl.value = sync.backend.url || "";
   elements.syncUsername.value = sync.backend.username || "";
   elements.syncPassword.value = "";

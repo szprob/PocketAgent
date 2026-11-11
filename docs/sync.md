@@ -39,14 +39,24 @@
 
 | 方案 | 免费额度 | 国内速度 | 适合 |
 |---|---|---|---|
-| **坚果云 WebDAV**（推荐） | 每月 1GB 上传 / 3GB 下载，空间随上传量增长 | 直连，快 | 会话 + 记忆，通常十几 MB |
-| **已在同步的目录**（iCloud 云盘 / OneDrive / 坚果云客户端 / NAS 挂载点） | 看各家 | 看各家 | 默认目录会优先用坚果云的同步文件夹，其次 iCloud 云盘 |
-| **GitHub 私有仓库** | 仓库免费 | 看网络 | 已经有 Git 工作流、想留提交历史；Token 要 Contents 读写 |
+| **GitHub 私有仓库**（默认） | 仓库免费 | 看网络 | 有 Git 工作流、想留提交历史；Token 要 Contents 读写 |
+| **坚果云 WebDAV** | 每月 1GB 上传 / 3GB 下载，空间随上传量增长 | 直连，快 | 会话 + 记忆，通常十几 MB |
+| **已在同步的目录**（iCloud 云盘 / OneDrive / 坚果云客户端 / NAS / 自己 git 仓库里的目录） | 看各家 | 看各家 | 不想配账号；默认目录优先用坚果云的同步文件夹，其次 iCloud 云盘 |
 | 七牛云 Kodo 等对象存储 | 标准存储 10GB 永久免费（要实名） | 快 | 需要绑域名、走 CDN，配置比 WebDAV 麻烦，这一版还没做后端 |
 | 阿里云 OSS / 腾讯云 COS | 只有新用户试用期 | 快 | 长期用要付费，几毛钱一个月，但不如前两个省事 |
 
 坚果云免费版的额度对这套数据够用：80MB 的 `~/.pocketagent` 里，真正要同步的通常不到 10MB，
 之后每次只传改过的会话文件（一个几百 KB）。注意它是**按上传流量**算的，第一次全量传完就只剩增量。
+
+### 数据放在远端的哪里
+
+- **GitHub 仓库**：自动放在仓库的 `pocketagent/` 目录下（`pocketagent/config.json`、
+  `pocketagent/sessions/…`），不占仓库根——仓库里可以放别的东西；
+- **直接设目录**（local）：就用设置的目录本身，里面直接是 `config.json`、`sessions/`、`projects/`，
+  不再多套一层；
+- **WebDAV**：地址下的 `data/` 目录（历史行为，保持不变）。
+
+想改默认位置，在配置里给这台设备加 `"remote_prefix": "自定义/路径"`。
 
 ## 配置坚果云
 
@@ -87,18 +97,31 @@ pocketagent sync init --backend local
 pocketagent sync init --backend local --url "$HOME/Library/Mobile Documents/com~apple~CloudDocs/PocketAgent"
 ```
 
-### GitHub
+### GitHub（默认）
 
-需要仓库已经有一次提交（建仓库时勾 README），Token 用 fine-grained 的 Contents 读写，或者 classic
-的 `repo` scope。仓库写 `owner/repo` 就行，也可以直接粘 GitHub 的 URL：
+`pocketagent sync init` 不带参数就是它。需要仓库已经有一次提交（建仓库时勾 README），Token 用
+fine-grained 的 Contents 读写，或者 classic 的 `repo` scope。仓库写 `owner/repo` 就行，也可以直接
+粘 GitHub 的 URL；数据自动放进仓库的 `pocketagent/` 目录：
 
 ```bash
-pocketagent sync init --backend github --url szprob/pocketagent-data --branch main
+pocketagent sync init --url szprob/pocketagent-data --branch main
 # 提示输入 Token
 ```
 
-每个文件一个 blob，一次同步一次提交（`pocketagent: update data/sessions/...`），仓库的 commit
-历史就是版本历史。仓库别和代码仓库混用，单独建一个。
+每个文件一个 blob，一次同步一次提交（`pocketagent: update pocketagent/sessions/...`），仓库的
+commit 历史就是版本历史。仓库要建**私有**的——config 里可能有 API Key。
+
+### 已在同步的目录（local）
+
+不用任何账号，数据直接写进目录本身：
+
+```bash
+pocketagent sync init --backend local
+# 或者自己指定，比如 git 仓库里的子目录
+pocketagent sync init --backend local --url ~/git/sync/pocketagent
+```
+
+写进 git 仓库子目录时，程序只负责放文件，commit 和 push 留给你自己的 git 工作流。
 
 ## 日常使用
 

@@ -33,8 +33,9 @@ pocketagent -c                      # 继续这个目录最近的会话
 pocketagent -m "DS 4.1 Flash" -p "跑一下测试，把失败的修好" --mode full_auto   # 指定模型、单次执行后退出
 pocketagent replay <任务 id 或 trace.jsonl> -m 模型A -m 模型B   # 在临时副本里重跑一次任务，和原来那次并排对比
 pocketagent eval examples/eval -m 模型A -m 模型B               # 跑评测用例（提示词 + 样例目录 + 检查）
-pocketagent sync init --url https://dav.jianguoyun.com/dav/pocketagent --username me@example.com
-pocketagent sync                                             # 会话和项目记忆同步到自己的云盘，见 docs/sync.md
+pocketagent sync init --url owner/repo                       # 默认 GitHub 私有仓库（数据放 pocketagent/ 目录）
+pocketagent sync init --backend local --url ~/git/sync/pocketagent
+pocketagent sync                                             # 见 docs/sync.md
 ```
 
 不安装也能用：在仓库根目录 `python -m pocketagent ...`。
@@ -93,7 +94,7 @@ py -3.12 -m pocketagent --web -C D:\SZ\git\foo
 | [运行机制](docs/runtime.md) | 临时任务、上下文压缩、工具输出落盘、会话持久化 |
 | [配置](docs/configuration.md) | config.json 全部字段、模型协议（OpenAI 兼容 / Anthropic） |
 | [回放和评测](docs/evaluation.md) | `pocketagent replay` 重跑 trace、`pocketagent eval` 跑用例、无人值守的审批、对比表和报告 |
-| [云同步](docs/sync.md) | 同步哪些数据、WebDAV / 本地目录 / GitHub 三种后端、冲突与删除规则、什么时候触发 |
+| [云同步](docs/sync.md) | 同步哪些数据、GitHub（默认）/ WebDAV / 本地目录三种后端、数据放在哪、冲突与删除规则 |
 
 ## 怎么扩展
 

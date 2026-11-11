@@ -94,6 +94,15 @@ class SyncSettingsApiTest(AioHTTPTestCase):
         self.assertTrue(body["sync"]["has_password"])
         self.assertEqual(SyncConfig.load(self.home).backend.password, "app-password")
 
+    async def test_default_kind_is_github(self):
+        # 表单里不填 kind（新机器第一次保存）：默认走 GitHub 私有仓库
+        response = await self._put_sync({"url": "me/repo", "password": "tok", "includes": ["sessions"]})
+
+        body = await response.json()
+        self.assertTrue(body["ok"], body)
+        self.assertEqual(body["sync"]["backend"]["kind"], "github")
+        self.assertEqual(body["sync"]["backend"]["url"], "me/repo")
+
     async def test_switching_backend_does_not_reuse_password(self):
         await self._put_sync(self._webdav_form())
         response = await self._put_sync({"kind": "github", "url": "me/repo", "password": "", "includes": ["sessions"]})
@@ -172,7 +181,7 @@ class SyncSettingsApiTest(AioHTTPTestCase):
 
         self.assertTrue(body["ok"], body)
         self.assertEqual(body["counts"]["upload"], 1)
-        self.assertTrue((self.remote / "data" / "sessions" / "s1.json").is_file())
+        self.assertTrue((self.remote / "sessions" / "s1.json").is_file())
         payload = await self._get_sync()
         self.assertTrue(payload["last_synced_at"])
 

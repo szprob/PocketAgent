@@ -34,14 +34,26 @@ from pocketagent.sync.backend import normalize_repo
 
 SYNC_CONFIG_NAME = "sync.json"
 SYNC_DIR_NAME = "sync"
-# 后端类型：webdav = 坚果云这类支持 WebDAV 的网盘；local = 已经在同步的目录（iCloud、OneDrive、NAS）
+# 后端类型：github = 私有仓库（默认）；webdav = 坚果云这类支持 WebDAV 的网盘；
+# local = 已经在同步的目录（iCloud、OneDrive、NAS、自己的 git 仓库）
 BACKEND_KINDS = ("webdav", "local", "github")
 # 可以打开同步的数据集。默认只有会话和项目记忆，其余都带密钥、绝对路径或者会自己跑起来
 INCLUDE_CHOICES = ("sessions", "projects", "config", "automations", "mcp", "hooks")
 DEFAULT_INCLUDES = ("sessions", "projects")
 DEFAULT_MAX_FILE_BYTES = 5 * 1024 * 1024
 DEFAULT_REMOTE_PREFIX = "data"
+# github 仓库是通用的：数据自动放进仓库下的 pocketagent/ 目录，不占仓库根
+GITHUB_REMOTE_PREFIX = "pocketagent"
 DEFAULT_PASSWORD_ENV = "POCKETAGENT_SYNC_PASSWORD"
+
+
+def default_remote_prefix(kind: str) -> str:
+    """数据在远端放在哪：repo 自动用 pocketagent/，直接给目录就用目录本身。"""
+    if kind == "github":
+        return GITHUB_REMOTE_PREFIX
+    if kind == "local":
+        return ""
+    return DEFAULT_REMOTE_PREFIX
 
 
 class SyncConfigError(Exception):
@@ -50,7 +62,7 @@ class SyncConfigError(Exception):
 
 @dataclass
 class BackendSettings:
-    kind: str = "webdav"
+    kind: str = "github"
     # webdav 时是仓库地址（坚果云 https://dav.jianguoyun.com/dav/<目录>）；local 时是目录
     url: str = ""
     username: str = ""
@@ -67,7 +79,7 @@ class BackendSettings:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "BackendSettings":
-        kind = str(data.get("kind") or "webdav").strip()
+        kind = str(data.get("kind") or "github").strip()
         if kind not in BACKEND_KINDS:
             raise SyncConfigError(f"backend.kind 只能是 {' / '.join(BACKEND_KINDS)}，现在是 {kind!r}")
         url = str(data.get("url") or "").strip()
@@ -113,12 +125,15 @@ class SyncConfig:
     backend: BackendSettings
     includes: list[str] = field(default_factory=lambda: list(DEFAULT_INCLUDES))
     max_file_bytes: int = DEFAULT_MAX_FILE_BYTES
-    remote_prefix: str = DEFAULT_REMOTE_PREFIX
+    remote_prefix: str = ""
 
     def __post_init__(self) -> None:
         if self.backend.kind == "github":
             # 存成 owner/repo，别把整条 GitHub URL 写进配置
             self.backend.url = normalize_repo(self.backend.url)
+        if not self.remote_prefix:
+            # 没显式给就按后端类型定：repo 自动用 pocketagent/，local 直接用目录本身
+            self.remote_prefix = default_remote_prefix(self.backend.kind)
 
     # ---- 读 ----
 
@@ -165,9 +180,7 @@ class SyncConfig:
         if max_file_bytes <= 0:
             raise SyncConfigError("max_file_bytes 要大于 0")
         device_id = str(data.get("device_id") or "").strip() or make_device_id()
-        remote_prefix = str(data.get("remote_prefix") or DEFAULT_REMOTE_PREFIX).strip("/")
-        if not remote_prefix:
-            raise SyncConfigError("remote_prefix 不能为空")
+        remote_prefix = str(data.get("remote_prefix") or "").strip().strip("/")
         return cls(
             device_id=device_id,
             backend=backend,

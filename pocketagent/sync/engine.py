@@ -257,10 +257,12 @@ class SyncEngine:
         return self.run(direction="both", dry_run=True)
 
     def _remote_files(self, report: SyncReport) -> dict[str, RemoteEntry]:
-        prefix = self.config.remote_prefix.rstrip("/") + "/"
+        prefix = self.config.remote_prefix.strip("/")
+        if prefix:
+            prefix += "/"
         remote_entries: dict[str, RemoteEntry] = {}
         for entry in self.backend.list_files(self.config.remote_prefix):
-            if not entry.path.startswith(prefix):
+            if prefix and not entry.path.startswith(prefix):
                 continue
             remote_entries[entry.path[len(prefix) :]] = entry
         report.remote_files = len(remote_entries)
@@ -482,7 +484,8 @@ class SyncEngine:
         return str(path)
 
     def _remote_path(self, relative_path: str) -> str:
-        return f"{self.config.remote_prefix.rstrip('/')}/{relative_path}"
+        prefix = self.config.remote_prefix.strip("/")
+        return f"{prefix}/{relative_path}" if prefix else relative_path
 
     def _write_device_record(self, report: SyncReport) -> None:
         payload = {
@@ -496,7 +499,7 @@ class SyncEngine:
         }
         try:
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-            self.backend.write(f"devices/{self.config.device_id}.json", body)
+            self.backend.write(self._remote_path(f"devices/{self.config.device_id}.json"), body)
         except SyncError:
             # 心跳写不进去不影响数据已经同步完这件事
             pass

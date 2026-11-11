@@ -63,7 +63,7 @@ def main(argv: list[str], home_dir: Path | None = None) -> int:
 def _top_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="pocketagent sync",
-        description="把会话和项目记忆同步到自己的云盘（坚果云 WebDAV / iCloud 这类同步目录）",
+        description="把会话和项目记忆同步到自己的云端（GitHub 私有仓库 / 坚果云 WebDAV / 同步目录）",
     )
     parser.add_argument("command", nargs="?", choices=["init", "run", "status", "conflicts"], default="run")
     parser.add_argument("options", nargs="*", help="子命令自己的参数，用 pocketagent sync <子命令> -h 看")
@@ -73,15 +73,16 @@ def _top_parser() -> argparse.ArgumentParser:
 def _init_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="pocketagent sync init",
-        description="配置同步。坚果云：地址填 https://dav.jianguoyun.com/dav/<你建的目录>，密码用「第三方应用密码」",
+        description="配置同步。默认 GitHub 私有仓库（--url owner/repo，数据放仓库的 pocketagent/ 目录）；"
+        "坚果云 --backend webdav，密码用「第三方应用密码」",
     )
     parser.add_argument(
         "--backend",
         choices=BACKEND_KINDS,
-        default="webdav",
-        help="webdav（坚果云等）/ local（已在同步的目录）/ github（私有仓库）",
+        default="github",
+        help="github（私有仓库，默认）/ webdav（坚果云等）/ local（已在同步的目录）",
     )
-    parser.add_argument("--url", help="webdav 仓库地址、local 目录，或 GitHub 的 owner/repo")
+    parser.add_argument("--url", help="github 的 owner/repo（数据放仓库的 pocketagent/ 目录）、webdav 仓库地址，或 local 目录")
     parser.add_argument("--username", default="", help="webdav 用户名（坚果云是登录邮箱）")
     parser.add_argument("--password", default="", help="webdav 密码；不写就现场输入，或从环境变量读")
     parser.add_argument("--password-env", default="POCKETAGENT_SYNC_PASSWORD", help="从哪个环境变量读密码")
@@ -161,7 +162,7 @@ def run_init_command(argv: list[str], home_dir: Path) -> int:
     if arguments.backend == "webdav":
         print("提示：坚果云免费版每月 1GB 上传 / 3GB 下载；会话和项目记忆通常只有十几 MB")
     if arguments.backend == "github":
-        print("提示：仓库要已有初始提交（建仓库时勾 README）；Token 需要 Contents 读写权限")
+        print("提示：数据放在仓库的 pocketagent/ 目录下；仓库要已有初始提交，Token 需要 Contents 读写权限")
 
     if arguments.no_check:
         return EXIT_OK

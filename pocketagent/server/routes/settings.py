@@ -166,7 +166,7 @@ def _sync_payload(home_dir: Path) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "configured": False,
         "device_id": None,
-        "backend": {"kind": "webdav", "url": "", "username": ""},
+        "backend": {"kind": "github", "url": "", "username": ""},
         "has_password": False,
         "password_source": "none",
         "includes": ["sessions", "projects"],
@@ -207,7 +207,7 @@ def _sync_config_from_form(home_dir: Path, data: dict[str, Any]) -> SyncConfig:
         existing = SyncConfig.load(home_dir)
     except SyncConfigError:
         existing = None
-    kind = str(data.get("kind") or (existing.backend.kind if existing is not None else "webdav"))
+    kind = str(data.get("kind") or (existing.backend.kind if existing is not None else "github"))
     password = str(data.get("password") or "")
     if not password and existing is not None and existing.backend.kind == kind:
         # 换后端（WebDAV ↔ GitHub）时不能沿用上一个后端的密码
@@ -237,7 +237,8 @@ def _sync_config_from_form(home_dir: Path, data: dict[str, Any]) -> SyncConfig:
             },
             "includes": includes,
             "max_file_bytes": existing.max_file_bytes if existing is not None else None,
-            "remote_prefix": existing.remote_prefix if existing is not None else "data",
+            # 换后端时前缀跟着新后端的默认走；同后端保留原来的（可能是用户自定义的）
+            "remote_prefix": existing.remote_prefix if existing is not None and existing.backend.kind == kind else "",
         }
     )
 
