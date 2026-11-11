@@ -384,6 +384,36 @@ class WebDavBackendTest(unittest.TestCase):
         self.assertEqual(etag, "v1")
         self.assertEqual(methods, ["MKCOL", "MKCOL", "PUT"])
 
+    def test_put_without_etag_asks_propfind_for_one(self) -> None:
+        methods: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            methods.append(request.method)
+            if request.method == "MKCOL":
+                return httpx.Response(405)
+            if request.method == "PUT":
+                # 坚果云就是这样：PUT 成功但不回 ETag
+                return httpx.Response(201)
+            if request.method == "PROPFIND":
+                return httpx.Response(
+                    207,
+                    text=(
+                        '<d:multistatus xmlns:d="DAV:"><d:response>'
+                        "<d:href>/dav/pa/data/sessions/a.json</d:href><d:propstat><d:prop>"
+                        "<d:getetag>opaque-etag</d:getetag></d:prop></d:propstat></d:response>"
+                        "</d:multistatus>"
+                    ),
+                )
+            return httpx.Response(500)
+
+        client = httpx.Client(transport=httpx.MockTransport(handler), auth=("me", "pw"))
+        backend = WebDavBackend("https://dav.example/dav/pa", "me", "pw", client=client)
+
+        etag = backend.write("data/sessions/a.json", b"{}")
+
+        self.assertEqual(etag, "opaque-etag")
+        self.assertEqual(methods, ["MKCOL", "MKCOL", "PUT", "PROPFIND"])
+
     def test_ping_on_missing_folder_says_to_create_it(self) -> None:
         client = httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(404)))
         backend = WebDavBackend("https://dav.example/dav/pa", "me", "pw", client=client)

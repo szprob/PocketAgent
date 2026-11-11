@@ -201,7 +201,8 @@ def run_sync_command(argv: list[str], home_dir: Path) -> int:
         return EXIT_ERROR
     chosen = "push" if arguments.push else "pull" if arguments.pull else "both"
     try:
-        report = SyncEngine(home_dir, config).run(direction=chosen, dry_run=arguments.dry_run)
+        engine = SyncEngine(home_dir, config)
+        report = engine.run(direction=chosen, dry_run=arguments.dry_run)
     except SyncError as error:
         print(f"同步失败：{error}", file=sys.stderr)
         return EXIT_ERROR

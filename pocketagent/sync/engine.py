@@ -467,10 +467,16 @@ class SyncEngine:
 def create_backend(settings: BackendSettings) -> SyncBackend:
     if settings.kind == "local":
         return LocalDirectoryBackend(Path(settings.url).expanduser())
+    password = settings.resolved_password()
+    if not password:
+        raise SyncError(
+            "WebDAV 密码是空的：把密码写进 sync.json（pocketagent sync init --password ...），"
+            f"或者设环境变量 {settings.password_env}"
+        )
     return WebDavBackend(
         url=settings.url,
         username=settings.username,
-        password=settings.resolved_password(),
+        password=password,
         verify_tls=settings.verify_tls,
         timeout_seconds=settings.timeout_seconds,
     )

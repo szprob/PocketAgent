@@ -216,7 +216,25 @@ class WebDavBackend:
         response = self._request("PUT", path, content=data, headers={"Content-Type": "application/octet-stream"})
         if response.status_code >= 400:
             raise SyncError(f"上传失败（{response.status_code}）：{path}")
-        return _etag_or_hash(response, data)
+        etag = response.headers.get("etag", "").strip().strip('"')
+        if not etag:
+            # 坚果云的 PUT 不回 ETag，得单独问一次；否则下次同步会把刚传的文件当成「远端改过」
+            etag = self._etag_for(path)
+        return etag or _etag_or_hash(response, data)
+
+    def _etag_for(self, path: str) -> str:
+        response = self._request(
+            "PROPFIND",
+            path,
+            headers={"Depth": "0", "Content-Type": "application/xml; charset=utf-8"},
+            content=PROPFIND_BODY.encode("utf-8"),
+        )
+        if response.status_code >= 400:
+            return ""
+        for item in _parse_propfind(response.text, self.base_path):
+            if item["path"] == path.strip("/"):
+                return item["etag"]
+        return ""
 
     def delete(self, path: str) -> None:
         response = self._request("DELETE", path)
