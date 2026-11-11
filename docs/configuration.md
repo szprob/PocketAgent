@@ -19,7 +19,7 @@
   "compact_threshold_percent": 80,
   "reasoning_across_turns": false,
   "web_search_enabled": true,
-  "web_search_provider": "bing",
+  "web_search_provider": "exa",
   "web_search_engine": "search_std",
   "web_fetch_enabled": true,
   "image_gen_enabled": true,
@@ -59,6 +59,9 @@
   去掉之前先压进摘要：做摘要的请求和平时同一份前缀，模型平时看得到的思考做摘要时也看得到；
   退回截短那份时，每一步的思考裁到 3000 字左右写进正文。直连 OpenAI 的 GPT 走 Chat Completions，接口本身不返回思考，传不了
 - `visible: false` 的模型不出现在会话的模型列表里（已经在用它的任务不受影响）
+- 联网搜索：`web_search_provider` 可选 `exa`（默认，0.007 美元/次）/ `bing`（免费）/ `deepseek` / `zhipu`。
+  `web_search_api_key` 空着时，`exa` 读环境变量 `EXA_API_KEY`，`deepseek` / `zhipu` 用对应厂商模型的密钥；
+  Exa 一个密钥都没有时自动退回必应，不会把搜索整个关掉
 - 沙箱联网：`sandbox_network` 是整个打开；关着时 `sandbox_network_allowlist` 里的域名仍然可以访问
   （走 PocketAgent 进程里的本地代理，只认 HTTP(S)；`*.example.com` 连 `example.com` 和子域名一起放行，
   `host:443` 限定端口）。这项只在 macOS 的 Seatbelt 沙箱里生效，Linux 的 bubblewrap 配了也只当不能联网，
@@ -148,3 +151,9 @@
   extra_body 里自己写了 `thinking` 就听你的
 - 单次输出上限默认 32000（`max_output_tokens` 可以按模型改）。新一代 Claude 都能出这么多，
   老一代只能出 8k 的模型要调小，不然接口会报 `max_tokens` 超过上限
+
+## 云同步
+
+同步的配置不在 `config.json` 里：每台机器有自己的设备 id 和云端凭据，放在 `~/.pocketagent/sync.json`
+（权限 0600），由 `pocketagent sync init` 生成；同步进度和冲突备份在 `~/.pocketagent/sync/` 下。
+字段、后端选择和冲突规则见[云同步](sync.md)。

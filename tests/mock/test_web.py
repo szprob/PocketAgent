@@ -1079,12 +1079,12 @@ class WebRound3Test(WebTestBase):
         self.assertNotIn("search-secret-key-1", json.dumps(config))
         self.assertEqual(config["web_search_key_hint"], "search…ey-1")
 
-    async def test_web_search_defaults_to_bing_without_a_key(self) -> None:
+    async def test_web_search_defaults_to_exa_and_falls_back_to_bing(self) -> None:
         config = await self._get_json("/api/config")
         info = await self._get_json("/api/info")
 
-        self.assertEqual(config["web_search_provider"], "bing")
-        # 必应不要密钥：一个智谱模型都没配，搜索也是能用的
+        self.assertEqual(config["web_search_provider"], "exa")
+        # 没配 Exa 密钥时退回必应：一个模型密钥都没配，搜索也是能用的
         self.assertTrue(info["web_search_enabled"])
 
 

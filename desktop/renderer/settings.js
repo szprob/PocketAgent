@@ -326,7 +326,7 @@ function fillGeneral() {
   elements.reasoningAcrossTurns.checked = Boolean(config.reasoning_across_turns);
 
   elements.webSearchEnabled.checked = Boolean(config.web_search_enabled);
-  elements.webSearchProvider.value = config.web_search_provider || "bing";
+  elements.webSearchProvider.value = config.web_search_provider || "exa";
   elements.webSearchEngine.value = config.web_search_engine || "search_std";
   elements.webSearchKey.value = "";
   elements.webSearchKeyHint.textContent = config.web_search_key_hint || "留空表示不修改已保存的密钥";
@@ -376,11 +376,20 @@ function fillGeneral() {
   paintSandboxFields();
 }
 
+// 必应不用密钥，Exa / DeepSeek / 智谱都要（和 web 端同一套）
+const WEB_SEARCH_KEY_LABELS = {
+  exa: { label: "Exa API Key", placeholder: "留空就读环境变量 EXA_API_KEY；都没有就用必应" },
+  deepseek: { label: "DeepSeek 搜索 API Key", placeholder: "留空就用 DeepSeek 模型的密钥" },
+  zhipu: { label: "智谱搜索 API Key", placeholder: "留空就用智谱模型的密钥" },
+};
+
 function paintWebSearchFields() {
   const provider = elements.webSearchProvider.value;
   show(elements.webSearchKeyField, provider !== "bing");
   show(elements.webSearchEngineField, provider === "zhipu");
-  elements.webSearchKeyLabel.textContent = provider === "deepseek" ? "DeepSeek 搜索 API Key" : "智谱 API Key";
+  const labels = WEB_SEARCH_KEY_LABELS[provider] || { label: "搜索 API Key", placeholder: "" };
+  elements.webSearchKeyLabel.textContent = labels.label;
+  elements.webSearchKey.placeholder = labels.placeholder;
 }
 
 // 智谱用官方地址；OpenAI 兼容的可以走网关，没填就用第一个 OpenAI 兼容模型的地址（和 web 端一样）

@@ -193,15 +193,31 @@ class AppConfigTest(unittest.TestCase):
         with self.assertRaises(ConfigError):
             config.set_default_workspace("")
 
-    def test_web_search_defaults_to_free_bing(self) -> None:
+    def test_web_search_defaults_to_exa(self) -> None:
         config = AppConfig.from_dict({})
-        settings = config.web_search_settings()
 
-        self.assertEqual(config.web_search_provider, "bing")
+        self.assertEqual(config.web_search_provider, "exa")
+        self.assertEqual(AppConfig.from_dict(config.to_dict()).web_search_provider, "exa")
+
+    def test_exa_search_key_comes_from_config_then_environment(self) -> None:
+        with mock.patch.dict(os.environ, {"EXA_API_KEY": "env-key"}):
+            from_environment = AppConfig.from_dict({})
+            settings = from_environment.web_search_settings()
+            self.assertEqual(settings.provider, "exa")
+            self.assertEqual(settings.api_key, "env-key")
+            self.assertEqual(from_environment.web_search_key_source(), "环境变量 EXA_API_KEY")
+
+            configured = AppConfig.from_dict({"web_search_api_key": "own-key"})
+            self.assertEqual(configured.web_search_settings().api_key, "own-key")
+
+    def test_exa_without_a_key_falls_back_to_free_bing(self) -> None:
+        without_exa = {key: value for key, value in os.environ.items() if key != "EXA_API_KEY"}
+        with mock.patch.dict(os.environ, without_exa, clear=True):
+            settings = AppConfig.from_dict({}).web_search_settings()
+
+        # 默认的 Exa 还没配密钥时退回必应，免费、不用密钥，搜索不至于整个用不了
         self.assertEqual(settings.provider, "bing")
-        # 必应不要密钥
         self.assertIsNone(settings.api_key)
-        self.assertEqual(AppConfig.from_dict(config.to_dict()).web_search_provider, "bing")
 
     def test_zhipu_search_needs_a_key(self) -> None:
         without_key = AppConfig.from_dict({"web_search_provider": "zhipu"})

@@ -1,14 +1,16 @@
 """联网工具：web_search 搜索，web_fetch 读网页。
 
-搜索默认抓必应的结果页（免费、不用密钥）；也可以在设置里换成 DeepSeek 或智谱的搜索接口，
-按调用次数计费，密钥没单独配就用对应厂商模型的密钥。读网页直接用 httpx 抓，HTML 转成纯文本
-给模型看。两个都是只读工具，不需要审批。
+搜索默认走 Exa（语义搜索，按次计费，密钥在设置里配，或者用 EXA_API_KEY 环境变量）；也可以在
+设置里换成必应（免费、直接抓结果页）、DeepSeek 或智谱的搜索接口，后两家按调用次数计费，密钥
+没单独配就用对应厂商模型的密钥。读网页直接用 httpx 抓，HTML 转成纯文本给模型看。两个都是只读
+工具，不需要审批。
 """
 
 import base64
 import binascii
 import datetime
 import re
+from copy import deepcopy
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from typing import Any
@@ -18,6 +20,7 @@ import httpx
 
 from pocketagent.tools.base import Tool, ToolContext, ToolKind, ToolResult
 
+EXA_SEARCH_URL = "https://api.exa.ai/search"
 ZHIPU_SEARCH_URL = "https://open.bigmodel.cn/api/paas/v4/web_search"
 DEEPSEEK_SEARCH_URL = "https://api.deepseek.com/v1/tools/search"
 BING_SEARCH_URL = "https://www.bing.com/search"
@@ -41,13 +44,19 @@ BING_RECENCY_FILTERS = {"oneDay": "ez1", "oneWeek": "ez2", "oneMonth": "ez3"}
 BING_EPOCH = datetime.date(1970, 1, 1)
 # DeepSeek 没有单独的时间参数，用它的 after: 搜索语法，往前推几天
 DEEPSEEK_RECENCY_DAYS = {"oneDay": 1, "oneWeek": 7, "oneMonth": 30, "oneYear": 365}
+# Exa 的时间范围用 startPublishedDate 卡（硬过滤，会丢掉没写日期的页面），只在模型明确选了范围时才加
+EXA_RECENCY_DAYS = {"oneDay": 1, "oneWeek": 7, "oneMonth": 30, "oneYear": 365}
+# Exa 官方给工具参数 objective 的推荐描述，原样照抄（他们要求一字不改）
+EXA_OBJECTIVE_DESCRIPTION = (
+    "Goal for this search turn; say which documents should rank first, which should be excluded, "
+    "and what specific facts or figures to pull from them."
+)
 
 
 @dataclass
 class WebSearchSettings:
-    # bing 直接抓结果页，免费；deepseek / zhipu 走官方接口，按次计费
-    provider: str = "bing"
-    # 只有智谱要用密钥
+    # exa / deepseek / zhipu 走官方接口，按次计费，要密钥；bing 直接抓结果页，免费、不用密钥
+    provider: str = "exa"
     api_key: str | None = None
     # 智谱的档位：search_std 基础版 / search_pro 高阶版
     engine: str = "search_std"
@@ -57,6 +66,33 @@ class SearchFailed(Exception):
     """搜索没成功；消息直接当工具结果给模型看。"""
 
 
+SEARCH_PARAMETERS: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "query": {"type": "string", "description": "搜索词"},
+        "count": {"type": "integer", "description": "返回几条，1–10，默认 5"},
+        "recency": {
+            "type": "string",
+            "enum": RECENCY_CHOICES,
+            "description": "时间范围：noLimit 不限（默认）/ oneDay / oneWeek / oneMonth / oneYear",
+        },
+    },
+    "required": ["query"],
+}
+
+
+def search_parameters(require_objective: bool) -> dict[str, Any]:
+    """Exa 的搜索工具要模型顺带给出 objective（它靠这个判断哪些结果该排前面），别的厂商用不上。"""
+    parameters = deepcopy(SEARCH_PARAMETERS)
+    if require_objective:
+        parameters["properties"]["objective"] = {
+            "type": "string",
+            "description": EXA_OBJECTIVE_DESCRIPTION,
+        }
+        parameters["required"] = ["query", "objective"]
+    return parameters
+
+
 class WebSearchTool(Tool):
     name = "web_search"
     description = (
@@ -64,34 +100,27 @@ class WebSearchTool(Tool):
         "摘要不够就再用 web_fetch 打开链接看全文。"
     )
     kind = ToolKind.READ
-    parameters = {
-        "type": "object",
-        "properties": {
-            "query": {"type": "string", "description": "搜索词"},
-            "count": {"type": "integer", "description": "返回几条，1–10，默认 5"},
-            "recency": {
-                "type": "string",
-                "enum": RECENCY_CHOICES,
-                "description": "时间范围：noLimit 不限（默认）/ oneDay / oneWeek / oneMonth / oneYear",
-            },
-        },
-        "required": ["query"],
-    }
 
     def __init__(self, settings: WebSearchSettings) -> None:
         self.settings = settings
+        self.parameters = search_parameters(require_objective=settings.provider == "exa")
 
     def describe(self, arguments: dict[str, Any]) -> str:
         return str(arguments.get("query", ""))
 
     async def run(self, arguments: dict[str, Any], context: ToolContext) -> ToolResult:
         query = str(arguments.get("query") or "").strip()
-        count = min(max(int(arguments.get("count") or 5), 1), 10)
+        requested_count = arguments.get("count")
+        count = min(max(int(requested_count or 5), 1), 10)
         recency = arguments.get("recency") or "noLimit"
         if recency not in RECENCY_CHOICES:
             recency = "noLimit"
+        objective = str(arguments.get("objective") or "").strip()
         try:
-            if self.settings.provider == "zhipu":
+            if self.settings.provider == "exa":
+                # Exa 的 numResults 默认就是 10，模型没点名要几条就别硬塞一个数字
+                results = await self._search_exa(query, count if requested_count else None, recency, objective)
+            elif self.settings.provider == "zhipu":
                 results = await self._search_zhipu(query, count, recency)
             elif self.settings.provider == "deepseek":
                 results = await self._search_deepseek(query, count, recency)
@@ -102,6 +131,40 @@ class WebSearchTool(Tool):
         if not results:
             return ToolResult("没有搜到结果，换个说法试试")
         return ToolResult("\n\n".join(_format_result(index, item) for index, item in enumerate(results, start=1)))
+
+    async def _search_exa(
+        self, query: str, count: int | None, recency: str, objective: str
+    ) -> list[dict[str, Any]]:
+        if not self.settings.api_key:
+            raise SearchFailed("还没配 Exa 的 API Key：填到设置里，或者设一个 EXA_API_KEY 环境变量")
+        # Exa 的推荐请求就是 query + type=auto + highlights，别的一律按需加
+        payload: dict[str, Any] = {
+            "query": query,
+            "type": "auto",
+            # 只要摘录不要整页正文：省 token，够模型判断值不值得再用 web_fetch 打开
+            "contents": {"highlights": True},
+        }
+        if objective:
+            payload["objective"] = objective
+        if count is not None:
+            payload["numResults"] = count
+        since = exa_start_published_date(recency)
+        if since:
+            payload["startPublishedDate"] = since
+        try:
+            async with httpx.AsyncClient(timeout=SEARCH_TIMEOUT_SECONDS) as client:
+                response = await client.post(
+                    EXA_SEARCH_URL, json=payload, headers={"x-api-key": self.settings.api_key}
+                )
+        except httpx.HTTPError as error:
+            raise SearchFailed(f"连不上 Exa：{type(error).__name__}: {error}") from error
+        if response.status_code == 401:
+            raise SearchFailed("Exa 的 API Key 不对或者已经失效（HTTP 401），去 dashboard.exa.ai 重新拿一个")
+        if response.status_code == 429:
+            raise SearchFailed("Exa 搜索被限速了（HTTP 429），稍后再试")
+        if response.status_code != 200:
+            raise SearchFailed(f"Exa 搜索失败（HTTP {response.status_code}）：{_exa_error_message(response)}")
+        return [_exa_result(item) for item in response.json().get("results") or []]
 
     async def _search_zhipu(self, query: str, count: int, recency: str) -> list[dict[str, Any]]:
         payload = {
@@ -172,6 +235,45 @@ def _format_result(index: int, item: dict[str, Any]) -> str:
     snippet = re.sub(r"\s+", " ", item.get("content") or "").strip()[:SNIPPET_LIMIT_CHARS]
     date = f"（{item['publish_date']}）" if item.get("publish_date") else ""
     return f"{index}. {item.get('title', '').strip()}{date}\n   {item.get('link', '')}\n   {snippet}"
+
+
+# ---- Exa 搜索 ----
+
+def exa_start_published_date(recency: str) -> str | None:
+    """Exa 的发布时间下界（ISO 日期）。它是硬过滤，会把没写日期的页面丢掉，所以只在明确选了范围时才传。"""
+    days = EXA_RECENCY_DAYS.get(recency)
+    if not days:
+        return None
+    return (datetime.date.today() - datetime.timedelta(days=days)).isoformat()
+
+
+def _exa_result(item: dict[str, Any]) -> dict[str, Any]:
+    """转成和智谱一样的形状，后面共用一套格式化。
+
+    highlights 是若干段和搜索词最相关的摘录，拼起来比整页正文省 token。
+    """
+    pieces = item.get("highlights")
+    excerpt = ""
+    if isinstance(pieces, list):
+        excerpt = " … ".join(str(piece).strip() for piece in pieces if str(piece).strip())
+    elif isinstance(pieces, str):
+        excerpt = pieces.strip()
+    return {
+        "title": item.get("title") or "",
+        "link": item.get("url") or "",
+        "content": excerpt or item.get("text") or item.get("summary") or "",
+        # 发布时间是 ISO 时间戳，只留日期那段
+        "publish_date": str(item.get("publishedDate") or "")[:10],
+    }
+
+
+def _exa_error_message(response: httpx.Response) -> str:
+    """错误体是 {"requestId": ..., "error": "...", "tag": "..."}，取 error 给模型看。"""
+    try:
+        payload = response.json()
+    except ValueError:
+        return response.text[:300]
+    return payload.get("error") or payload.get("tag") or response.text[:300]
 
 
 # ---- DeepSeek 搜索 ----

@@ -1,5 +1,6 @@
-"""联网工具的分支：网页 HTML / 文本截断 / 二进制、三家搜索的响应和错误处理（网络全部打桩）。"""
+"""联网工具的分支：网页 HTML / 文本截断 / 二进制、四家搜索的响应和错误处理（网络全部打桩）。"""
 
+import datetime
 import json
 import unittest
 from pathlib import Path
@@ -108,6 +109,86 @@ class WebSearchProviderTest(unittest.IsolatedAsyncioTestCase):
         return mock.patch(
             "pocketagent.tools.web.httpx.AsyncClient", side_effect=lambda **kwargs: FakeClient(response, self.calls)
         )
+
+    async def test_exa_sends_the_recommended_request(self) -> None:
+        response = FakeResponse(
+            payload={
+                "results": [
+                    {
+                        "title": "标题",
+                        "url": "https://a.example",
+                        "publishedDate": "2026-11-01T08:00:00.000Z",
+                        "highlights": ["第一段摘录", "第二段摘录"],
+                    }
+                ]
+            }
+        )
+
+        with self.patch_client(response):
+            result = await WebSearchTool(WebSearchSettings(provider="exa", api_key="exa-key")).run(
+                {"query": "问题", "objective": "找官方文档，优先一手来源"}, self.context
+            )
+
+        self.assertFalse(result.is_error)
+        self.assertIn("1. 标题（2026-11-01）", result.content)
+        self.assertIn("第一段摘录 … 第二段摘录", result.content)
+        self.assertIn("https://a.example", result.content)
+        method, url, kwargs = self.calls[0]
+        self.assertEqual((method, url), ("POST", "https://api.exa.ai/search"))
+        self.assertEqual(kwargs["headers"]["x-api-key"], "exa-key")
+        body = kwargs["json"]
+        self.assertEqual(body["type"], "auto")
+        self.assertEqual(body["contents"], {"highlights": True})
+        self.assertEqual(body["objective"], "找官方文档，优先一手来源")
+        # 模型没点名要几条就不传 numResults，用 Exa 自己的默认
+        self.assertNotIn("numResults", body)
+        self.assertNotIn("startPublishedDate", body)
+
+    async def test_exa_passes_count_and_recency_through(self) -> None:
+        with self.patch_client(FakeResponse(payload={"results": []})):
+            await WebSearchTool(WebSearchSettings(provider="exa", api_key="exa-key")).run(
+                {"query": "问题", "count": 3, "recency": "oneWeek", "objective": "o"}, self.context
+            )
+
+        body = self.calls[0][2]["json"]
+        self.assertEqual(body["numResults"], 3)
+        expected = (datetime.date.today() - datetime.timedelta(days=7)).isoformat()
+        self.assertEqual(body["startPublishedDate"], expected)
+
+    async def test_exa_errors_are_reported(self) -> None:
+        unauthorized = FakeResponse(
+            status_code=401, payload={"error": "Invalid API key", "tag": "INVALID_API_KEY"}
+        )
+        with self.patch_client(unauthorized):
+            result = await WebSearchTool(WebSearchSettings(provider="exa", api_key="bad")).run(
+                {"query": "问题", "objective": "o"}, self.context
+            )
+        self.assertTrue(result.is_error)
+        self.assertIn("HTTP 401", result.content)
+
+        with self.patch_client(FakeResponse(status_code=429, text="slow down")):
+            limited = await WebSearchTool(WebSearchSettings(provider="exa", api_key="k")).run(
+                {"query": "问题", "objective": "o"}, self.context
+            )
+        self.assertTrue(limited.is_error)
+        self.assertIn("限速", limited.content)
+
+    async def test_exa_without_a_key_is_reported(self) -> None:
+        result = await WebSearchTool(WebSearchSettings(provider="exa")).run(
+            {"query": "问题", "objective": "o"}, self.context
+        )
+
+        self.assertTrue(result.is_error)
+        self.assertIn("EXA_API_KEY", result.content)
+        self.assertEqual(self.calls, [])
+
+    def test_exa_tool_requires_an_objective(self) -> None:
+        exa = WebSearchTool(WebSearchSettings(provider="exa", api_key="k"))
+        self.assertEqual(exa.parameters["required"], ["query", "objective"])
+        self.assertIn("rank first", exa.parameters["properties"]["objective"]["description"])
+        # 其他厂商还是一次只问 query
+        self.assertEqual(WebSearchTool(WebSearchSettings(provider="bing")).parameters["required"], ["query"])
+        self.assertNotIn("objective", WebSearchTool(WebSearchSettings(provider="zhipu")).parameters["properties"])
 
     async def test_zhipu_search_returns_formatted_results(self) -> None:
         response = FakeResponse(

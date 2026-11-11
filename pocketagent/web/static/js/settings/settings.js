@@ -161,15 +161,22 @@ export function initSettings() {
   byId("add-hook").addEventListener("click", addHook);
 }
 
-// 智谱的档位只在选智谱时才有意义；必应不用密钥，DeepSeek / 智谱要
+// 智谱的档位只在选智谱时才有意义；必应不用密钥，Exa / DeepSeek / 智谱都要
+const WEB_SEARCH_KEY_LABELS = {
+  exa: { label: "Exa API Key", placeholder: "留空就读环境变量 EXA_API_KEY；都没有就用必应" },
+  deepseek: { label: "DeepSeek 搜索 API Key", placeholder: "留空就用 DeepSeek 模型的密钥" },
+  zhipu: { label: "智谱搜索 API Key", placeholder: "留空就用智谱模型的密钥" },
+};
+
 function updateWebSearchFields() {
   const provider = elements.webSearchProvider.value;
   const usesZhipu = provider === "zhipu";
   const usesKey = provider !== "bing";
   show(elements.webSearchEngineField, usesZhipu);
   show(elements.webSearchKeyField, usesKey);
-  elements.webSearchKeyLabel.textContent = usesZhipu ? "智谱搜索 API Key" : "DeepSeek 搜索 API Key";
-  elements.webSearchKey.placeholder = usesZhipu ? "留空就用智谱模型的密钥" : "留空就用 DeepSeek 模型的密钥";
+  const labels = WEB_SEARCH_KEY_LABELS[provider] || { label: "搜索 API Key", placeholder: "" };
+  elements.webSearchKeyLabel.textContent = labels.label;
+  elements.webSearchKey.placeholder = labels.placeholder;
 }
 
 // 智谱用官方地址；OpenAI 兼容的可以走网关，没填就用第一个 OpenAI 兼容模型的地址
@@ -389,7 +396,7 @@ export async function openSettings(tabName) {
   elements.compactThreshold.value = String(config.compact_threshold_percent);
   elements.reasoningAcrossTurns.checked = Boolean(config.reasoning_across_turns);
   elements.webSearchEnabled.checked = config.web_search_enabled;
-  elements.webSearchProvider.value = config.web_search_provider || "bing";
+  elements.webSearchProvider.value = config.web_search_provider || "exa";
   elements.webSearchEngine.value = config.web_search_engine;
   elements.webSearchKey.value = "";
   elements.webSearchKeyHint.textContent = config.web_search_key_hint

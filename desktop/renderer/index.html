@@ -346,6 +346,7 @@
                   <div class="field-row">
                     <label class="field"><span>搜索服务</span>
                       <select id="web-search-provider">
+                        <option value="exa">Exa 语义搜索（0.007 美元/次）</option>
                         <option value="bing">必应（免费）</option>
                         <option value="deepseek">DeepSeek 搜索（0.005 元/次）</option>
                         <option value="zhipu">智谱 Web Search（0.01 元/次起）</option>
@@ -359,7 +360,8 @@
                   <label class="field" id="web-search-key-field"><span id="web-search-key-label">搜索 API Key</span>
                     <input id="web-search-key" type="password" placeholder="留空就用对应厂商模型的密钥" />
                     <span class="field-hint" id="web-search-key-hint"></span></label>
-                  <div class="field-hint">必应直接抓搜索结果页，免费、不用密钥；DeepSeek / 智谱按成功调用次数计费。</div>
+                  <div class="field-hint">Exa 按成功调用次数计费（约 0.007 美元/次，密钥留空就读环境变量 EXA_API_KEY，再没有就退回必应）；
+                    必应直接抓搜索结果页，免费、不用密钥；DeepSeek / 智谱按成功调用次数计费。</div>
                   <label class="checkbox-field"><input type="checkbox" id="web-fetch-enabled" />
                     <span>读网页（web_fetch：打开搜索结果里的链接、读文档）</span></label>
                 </fieldset>
