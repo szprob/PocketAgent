@@ -511,7 +511,7 @@ class AppConfig:
     web_search_api_keys: dict[str, str] = field(default_factory=dict)
     web_fetch_enabled: bool = True
     # 图片：generate_image 默认走智谱 CogView（cogview-3-flash 免费），密钥空着就用智谱模型的；
-    # search_images 抓必应图片结果页，免费。模型 / 接口地址空着用 IMAGE 模块里的默认
+    # search_images 依次抓百度 / 360 / 必应的图片结果，免费、不用密钥。模型 / 接口地址空着用 IMAGE 模块里的默认
     image_gen_enabled: bool = True
     image_gen_provider: str = "zhipu"
     image_gen_model: str | None = None

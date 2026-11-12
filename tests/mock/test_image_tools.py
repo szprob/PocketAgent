@@ -1,4 +1,4 @@
-"""图片工具的单元测试：必应结果页解析、命名、配置解析、三个工具的落盘行为（网络全部打桩）。"""
+"""图片工具的单元测试：必应 / 百度 / 360 结果解析、命名、配置解析、三个工具的落盘行为（网络全部打桩）。"""
 
 import asyncio
 import base64
@@ -17,10 +17,13 @@ from pocketagent.tools.image import (
     ImageGenSettings,
     ImagePayload,
     ImageRequestFailed,
+    ImageSearchOutcome,
     SearchImagesTool,
     image_extension,
     image_file_stem,
+    parse_baidu_images,
     parse_bing_images,
+    parse_so360_images,
     sniff_image_extension,
     unique_image_path,
 )
@@ -55,6 +58,88 @@ class BingParseTest(unittest.TestCase):
 
     def test_no_results(self) -> None:
         self.assertEqual(parse_bing_images("<html><body>没有结果</body></html>"), [])
+
+
+class BaiduParseTest(unittest.TestCase):
+    def test_prefers_original_image_and_skips_empty(self) -> None:
+        payload = {
+            "data": [
+                {
+                    "fromPageTitleEnc": "新款特斯拉model y_真不错",
+                    "thumbURL": "https://img0.baidu.com/it/thumb.jpg",
+                    "middleURL": "https://img0.baidu.com/it/middle.jpg",
+                    # objURL 是加密串，正常解析时应该被忽略
+                    "objURL": "ipprf_z2C$qAzdH3FAzdH3Frtvfc",
+                    "replaceUrl": [
+                        {
+                            "ObjURL": "https://pics5.baidu.com/feed/a.jpeg?token=1",
+                            "FromURL": "https://m.yoojia.com/pages/detail?id=1",
+                        }
+                    ],
+                    "width": 1080,
+                    "height": 1440,
+                },
+                {"fromPageTitleEnc": "空对象没有链接"},
+                {},
+            ]
+        }
+
+        results = parse_baidu_images(payload)
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["image_url"], "https://pics5.baidu.com/feed/a.jpeg?token=1")
+        self.assertEqual(results[0]["title"], "新款特斯拉model y 真不错")
+        self.assertEqual(results[0]["source_url"], "https://m.yoojia.com/pages/detail?id=1")
+        self.assertEqual(results[0]["hostname"], "m.yoojia.com")
+        self.assertEqual(results[0]["size"], "1080x1440")
+
+    def test_falls_back_to_baidu_cdn_when_replace_url_missing(self) -> None:
+        payload = {"data": [{"middleURL": "https://img1.baidu.com/it/u=1&fm=253", "width": 0, "height": 0}]}
+
+        results = parse_baidu_images(payload)
+
+        self.assertEqual(results[0]["image_url"], "https://img1.baidu.com/it/u=1&fm=253")
+        self.assertEqual(results[0]["size"], "")
+
+    def test_tolerates_garbage(self) -> None:
+        self.assertEqual(parse_baidu_images({"data": None}), [])
+        self.assertEqual(parse_baidu_images({"data": ["不是对象", None]}), [])
+
+
+class So360ParseTest(unittest.TestCase):
+    def test_parses_list_and_drops_qhimg_link(self) -> None:
+        payload = {
+            "list": [
+                {
+                    "title": "特斯拉 model y 外观",
+                    "img": "http://img1.baidu.com/it/u=1&fm=253",
+                    "thumb": "https://p1.ssl.qhimgs1.com/t04.jpg",
+                    # 360 图床直链不是来源页
+                    "link": "http://p0.so.qhimg.com/t04.jpg",
+                    "site": "img1.baidu.com",
+                    "width": 1067,
+                    "height": 800,
+                },
+                {"title": "缺图", "img": ""},
+            ]
+        }
+
+        results = parse_so360_images(payload)
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["image_url"], "http://img1.baidu.com/it/u=1&fm=253")
+        self.assertEqual(results[0]["source_url"], "")
+        self.assertEqual(results[0]["hostname"], "img1.baidu.com")
+        self.assertEqual(results[0]["size"], "1067x800")
+
+    def test_keeps_real_source_page(self) -> None:
+        payload = {
+            "list": [{"img": "https://a.example/1.jpg", "link": "https://a.example/post/1", "site": "a.example"}]
+        }
+
+        results = parse_so360_images(payload)
+
+        self.assertEqual(results[0]["source_url"], "https://a.example/post/1")
 
 
 class NamingTest(unittest.TestCase):
@@ -194,34 +279,39 @@ class SearchImagesToolTest(unittest.TestCase):
         self.directories.cleanup()
 
     def test_formats_results(self) -> None:
-        results = [
-            {
-                "title": "橘猫照片",
-                "image_url": "https://a.example/1.png",
-                "thumbnail_url": "https://thumb.example/1",
-                "source_url": "https://a.example/page",
-                "hostname": "a.example",
-                "description": "一只橘猫",
-            }
-        ]
+        outcome = ImageSearchOutcome(
+            results=[
+                {
+                    "title": "橘猫照片",
+                    "image_url": "https://a.example/1.png",
+                    "thumbnail_url": "https://thumb.example/1",
+                    "source_url": "https://a.example/page",
+                    "hostname": "a.example",
+                    "description": "一只橘猫",
+                    "size": "800x600",
+                }
+            ],
+            engines=["百度图片"],
+        )
 
         async def fake_search(query, count):
-            return results
+            return outcome
 
-        with patch("pocketagent.tools.image.search_bing_images", fake_search):
+        with patch("pocketagent.tools.image.search_images_online", fake_search):
             result = asyncio.run(self.tool.run({"query": "橘猫"}, self.context))
 
         self.assertFalse(result.is_error)
-        self.assertIn("找到 1 张图", result.content)
+        self.assertIn("找到 1 张图（百度图片）", result.content)
+        self.assertIn("尺寸：800x600", result.content)
         self.assertIn("原图：https://a.example/1.png", result.content)
         self.assertIn("来源：https://a.example/page（a.example）", result.content)
         self.assertIn("download_image", result.content)
 
     def test_failures_become_error_results(self) -> None:
         async def failing(query, count):
-            raise ImageRequestFailed("必应这次没给结果页（可能被限流了），稍后再试")
+            raise ImageRequestFailed("搜图没成功 —— 百度图片：HTTP 403；360图片：没有结果")
 
-        with patch("pocketagent.tools.image.search_bing_images", failing):
+        with patch("pocketagent.tools.image.search_images_online", failing):
             result = asyncio.run(self.tool.run({"query": "猫"}, self.context))
         self.assertTrue(result.is_error)
 

@@ -1,9 +1,9 @@
 """图片工具：generate_image 生图，search_images 搜图，download_image 存图。
 
 生图走 OpenAI 兼容的 /images/generations（默认智谱 CogView，cogview-3-flash 免费；也能换成别的网关）；
-搜图抓必应图片结果页，免费、不用密钥，只给元数据和链接，不下载；下载单独一个工具，因为它是写文件，
-而且默认沙箱里不联网。图片落到工作区后，回复里用相对路径 ![...](...) 引用，界面会直接显示，
-一轮结束的「本轮产出的图片」也会自动带上。
+搜图依次试百度图片、360 图片、必应图片结果页，都免费、不用密钥，只给元数据和链接，不下载；
+下载单独一个工具，因为它是写文件，而且默认沙箱里不联网。图片落到工作区后，回复里用相对路径
+![...](...) 引用，界面会直接显示，一轮结束的「本轮产出的图片」也会自动带上。
 """
 
 import base64
@@ -33,12 +33,54 @@ DEFAULT_IMAGE_DIR = "images"
 MAX_IMAGE_COUNT = 4
 IMAGE_TIMEOUT_SECONDS = 180
 DOWNLOAD_TIMEOUT_SECONDS = 60
-SEARCH_TIMEOUT_SECONDS = 30
+SEARCH_TIMEOUT_SECONDS = 20
 MAX_IMAGE_BYTES = 30 * 1024 * 1024
 DEFAULT_SEARCH_COUNT = 5
 MAX_SEARCH_COUNT = 10
 DESCRIPTION_LIMIT_CHARS = 200
 BING_IMAGE_SEARCH_URL = "https://www.bing.com/images/search"
+BAIDU_IMAGE_SEARCH_URL = "https://image.baidu.com/search/acjson"
+SO360_IMAGE_SEARCH_URL = "https://image.so.com/j"
+# 搜图统一用浏览器 UA：三家都会把机器人 UA 挡掉或者塞一堆无关结果
+IMAGE_SEARCH_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/126.0 Safari/537.36"
+    ),
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+}
+# 百度图片 acjson 的固定参数，少一个都可能返回空结果
+BAIDU_IMAGE_PARAMS = {
+    "tn": "resultjson_com",
+    "ipn": "rj",
+    "ct": "201326592",
+    "is": "",
+    "fp": "result",
+    "fr": "",
+    "cl": "2",
+    "lm": "-1",
+    "ie": "utf-8",
+    "oe": "utf-8",
+    "st": "-1",
+    "ic": "",
+    "hd": "",
+    "latest": "",
+    "copyright": "",
+    "s": "",
+    "se": "",
+    "tab": "",
+    "width": "",
+    "height": "",
+    "face": "0",
+    "istype": "2",
+    "qc": "",
+    "nc": "1",
+    "expermode": "",
+    "nojc": "",
+    "isAsync": "",
+    "pn": "0",
+    "gsm": "1e",
+}
 IMAGE_EXTENSION_BY_MIME = {
     "image/png": ".png",
     "image/jpeg": ".jpg",
@@ -68,6 +110,14 @@ class ImagePayload:
 
     data: bytes
     extension: str
+
+
+@dataclass
+class ImageSearchOutcome:
+    """搜图结果，和这次用到的是哪几家引擎。"""
+
+    results: list[dict[str, Any]]
+    engines: list[str]
 
 
 class ImageRequestFailed(Exception):
@@ -328,40 +378,207 @@ def parse_bing_images(page: str) -> list[dict[str, Any]]:
                 "source_url": source_url,
                 "hostname": urlparse(source_url).hostname or "",
                 "description": re.sub(r"\s+", " ", str(item.get("desc") or "")).strip(),
+                "size": "",
             }
         )
     return results
 
 
-async def search_bing_images(query: str, count: int) -> list[dict[str, Any]]:
+async def _search_bing(client: httpx.AsyncClient, query: str, count: int) -> list[dict[str, Any]]:
     params = {"q": query, "form": "HDRSC2", "first": "1", "setlang": "zh-Hans"}
     try:
-        async with httpx.AsyncClient(
-            timeout=SEARCH_TIMEOUT_SECONDS, follow_redirects=True, headers=BING_HEADERS
-        ) as client:
-            response = await client.get(BING_IMAGE_SEARCH_URL, params=params)
+        response = await client.get(BING_IMAGE_SEARCH_URL, params=params, headers=BING_HEADERS)
     except httpx.HTTPError as error:
-        raise ImageRequestFailed(f"连不上必应图片搜索：{type(error).__name__}: {error}") from error
+        raise ImageRequestFailed(f"连不上：{type(error).__name__}: {error}") from error
     if response.status_code != 200:
-        raise ImageRequestFailed(f"必应图片搜索失败（HTTP {response.status_code}），稍后再试")
+        raise ImageRequestFailed(f"HTTP {response.status_code}")
     results = parse_bing_images(response.text)
     if not results and "iusc" not in response.text:
         # 正常没结果时页面里也有 iusc 结果项；连它都没有，多半是被限流了
-        raise ImageRequestFailed("必应这次没给结果页（可能被限流了），稍后再试")
+        raise ImageRequestFailed("没给结果页（可能被限流了）")
     return results[:count]
 
 
-def format_search_results(results: list[dict[str, Any]]) -> str:
-    lines = [f"找到 {len(results)} 张图："]
+def _clean_title(text: Any) -> str:
+    """百度 / 360 的标题里 _ 是空格的分隔符，顺手把连续的空白压成一个。"""
+    return re.sub(r"\s+", " ", html.unescape(str(text or "")).replace("_", " ")).strip()
+
+
+def _image_size(item: dict[str, Any]) -> str:
+    try:
+        width, height = int(item.get("width") or 0), int(item.get("height") or 0)
+    except (TypeError, ValueError):
+        return ""
+    return f"{width}x{height}" if width > 0 and height > 0 else ""
+
+
+def _baidu_image_url(item: dict[str, Any]) -> str:
+    """百度的 objURL 是加密串用不了，原图在 replaceUrl[].ObjURL；没有再退回它自己图床的 middleURL。"""
+    for entry in item.get("replaceUrl") or []:
+        if not isinstance(entry, dict):
+            continue
+        for key in ("ObjURL", "ObjUrl"):
+            url = str(entry.get(key) or "")
+            if url.startswith(("http://", "https://")):
+                return url
+    for key in ("middleURL", "hoverURL", "thumbURL"):
+        url = str(item.get(key) or "")
+        if url.startswith(("http://", "https://")):
+            return url
+    return ""
+
+
+def parse_baidu_images(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """百度图片 acjson 的 data 数组；末尾常有一条空对象，没有可用链接的条目直接跳过。"""
+    results: list[dict[str, Any]] = []
+    seen_urls: set[str] = set()
+    for item in payload.get("data") or []:
+        if not isinstance(item, dict):
+            continue
+        image_url = _baidu_image_url(item)
+        if not image_url or image_url in seen_urls:
+            continue
+        seen_urls.add(image_url)
+        source_url = ""
+        for entry in item.get("replaceUrl") or []:
+            if isinstance(entry, dict):
+                source_url = str(entry.get("FromURL") or entry.get("FromUrl") or "")
+                if source_url:
+                    break
+        results.append(
+            {
+                "title": _clean_title(item.get("fromPageTitleEnc")),
+                "image_url": image_url,
+                "thumbnail_url": str(item.get("thumbURL") or item.get("middleURL") or ""),
+                "source_url": source_url,
+                "hostname": urlparse(source_url).hostname or str(item.get("fromURLHost") or ""),
+                "description": "",
+                "size": _image_size(item),
+            }
+        )
+    return results
+
+
+async def _search_baidu(client: httpx.AsyncClient, query: str, count: int) -> list[dict[str, Any]]:
+    params = dict(BAIDU_IMAGE_PARAMS)
+    params.update({"word": query, "queryWord": query, "rn": str(min(count, 30))})
+    headers = {**IMAGE_SEARCH_HEADERS, "Referer": "https://image.baidu.com/"}
+    try:
+        response = await client.get(BAIDU_IMAGE_SEARCH_URL, params=params, headers=headers)
+    except httpx.HTTPError as error:
+        raise ImageRequestFailed(f"连不上：{type(error).__name__}: {error}") from error
+    if response.status_code != 200:
+        raise ImageRequestFailed(f"HTTP {response.status_code}")
+    try:
+        payload = response.json()
+    except ValueError as error:
+        raise ImageRequestFailed("返回的不是 JSON（可能被限流了）") from error
+    if not isinstance(payload, dict):
+        raise ImageRequestFailed("返回的结构不对")
+    return parse_baidu_images(payload)
+
+
+def parse_so360_images(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """360 图片的 list 数组。link 有时就是图片直链本身，那种情况下没有来源页可给。"""
+    results: list[dict[str, Any]] = []
+    seen_urls: set[str] = set()
+    for item in payload.get("list") or []:
+        if not isinstance(item, dict):
+            continue
+        image_url = str(item.get("img") or item.get("thumb") or "")
+        if not image_url.startswith(("http://", "https://")) or image_url in seen_urls:
+            continue
+        seen_urls.add(image_url)
+        host = str(item.get("site") or "").strip()
+        link = str(item.get("link") or "")
+        link_host = urlparse(link).hostname or ""
+        # link 常常就是 360 自己图床的直链，那种不算来源页
+        source_url = link if link != image_url and "qhimg" not in link_host else ""
+        results.append(
+            {
+                "title": _clean_title(item.get("title") or item.get("litetitle")),
+                "image_url": image_url,
+                "thumbnail_url": str(item.get("thumb") or ""),
+                "source_url": source_url,
+                "hostname": host or (urlparse(source_url).hostname or ""),
+                "description": "",
+                "size": _image_size(item),
+            }
+        )
+    return results
+
+
+async def _search_so360(client: httpx.AsyncClient, query: str, count: int) -> list[dict[str, Any]]:
+    params = {"q": query, "src": "srp", "sn": "0", "pn": str(min(count, 30))}
+    headers = {**IMAGE_SEARCH_HEADERS, "Referer": "https://image.so.com/"}
+    try:
+        response = await client.get(SO360_IMAGE_SEARCH_URL, params=params, headers=headers)
+    except httpx.HTTPError as error:
+        raise ImageRequestFailed(f"连不上：{type(error).__name__}: {error}") from error
+    if response.status_code != 200:
+        raise ImageRequestFailed(f"HTTP {response.status_code}")
+    try:
+        payload = response.json()
+    except ValueError as error:
+        raise ImageRequestFailed("返回的不是 JSON（可能被限流了）") from error
+    if not isinstance(payload, dict):
+        raise ImageRequestFailed("返回的结构不对")
+    return parse_so360_images(payload)
+
+
+async def search_images_online(query: str, count: int) -> "ImageSearchOutcome":
+    """按百度 → 360 → 必应的顺序累积结果，够数就停；三家都拿不到才报错。
+
+    官方图片搜索 API 这两年集体退场（必应 2025-08-11 退役、Google Custom Search 关了新注册），
+    能免费拿到「像正常搜索一样」结果的只剩各家结果页自己在用的接口，所以这里靠多源兜底而不是单一 API。
+    """
+    collected: list[dict[str, Any]] = []
+    seen_urls: set[str] = set()
+    engines: list[str] = []
+    failures: list[str] = []
+    sources = (("百度图片", _search_baidu), ("360图片", _search_so360), ("必应图片", _search_bing))
+    async with httpx.AsyncClient(
+        timeout=SEARCH_TIMEOUT_SECONDS, follow_redirects=True, headers=IMAGE_SEARCH_HEADERS
+    ) as client:
+        for name, search in sources:
+            if len(collected) >= count:
+                break
+            try:
+                found = await search(client, query, count - len(collected))
+            except ImageRequestFailed as error:
+                failures.append(f"{name}：{error}")
+                continue
+            if not found:
+                failures.append(f"{name}：没有结果")
+                continue
+            engines.append(name)
+            for item in found:
+                if item["image_url"] in seen_urls:
+                    continue
+                seen_urls.add(item["image_url"])
+                collected.append(item)
+                if len(collected) >= count:
+                    break
+    if not collected:
+        raise ImageRequestFailed("搜图没成功 —— " + "；".join(failures))
+    return ImageSearchOutcome(results=collected, engines=engines)
+
+
+def format_search_results(outcome: "ImageSearchOutcome") -> str:
+    results = outcome.results
+    engines = "、".join(dict.fromkeys(outcome.engines))
+    lines = [f"找到 {len(results)} 张图" + (f"（{engines}）：" if engines else "：")]
     for index, item in enumerate(results, start=1):
         lines.append(f"{index}. {item['title'] or '（无标题）'}")
+        if item.get("size"):
+            lines.append(f"   尺寸：{item['size']}")
         lines.append(f"   原图：{item['image_url']}")
-        if item["thumbnail_url"]:
+        if item.get("thumbnail_url"):
             lines.append(f"   缩略图：{item['thumbnail_url']}")
-        if item["source_url"]:
-            host = f"（{item['hostname']}）" if item["hostname"] else ""
+        if item.get("source_url"):
+            host = f"（{item['hostname']}）" if item.get("hostname") else ""
             lines.append(f"   来源：{item['source_url']}{host}")
-        if item["description"]:
+        if item.get("description"):
             lines.append(f"   简介：{item['description'][:DESCRIPTION_LIMIT_CHARS]}")
     lines.append("要把哪张存到工作区，用 download_image 传它的原图链接。")
     return "\n".join(lines)
@@ -370,7 +587,7 @@ def format_search_results(results: list[dict[str, Any]]) -> str:
 class SearchImagesTool(Tool):
     name = "search_images"
     description = (
-        "搜索网上现成的图片，返回标题、原图链接、缩略图和来源。找参考图、素材时用；"
+        "搜索网上现成的图片，返回标题、尺寸、原图链接、缩略图和来源。找参考图、素材时用；"
         "要把图存进项目再用 download_image。"
     )
     kind = ToolKind.READ
@@ -396,12 +613,12 @@ class SearchImagesTool(Tool):
             count = DEFAULT_SEARCH_COUNT
         count = min(max(count, 1), MAX_SEARCH_COUNT)
         try:
-            results = await search_bing_images(query, count)
+            outcome = await search_images_online(query, count)
         except ImageRequestFailed as error:
             return ToolResult(str(error), is_error=True)
-        if not results:
+        if not outcome.results:
             return ToolResult("没有搜到图片，换个说法试试")
-        return ToolResult(format_search_results(results))
+        return ToolResult(format_search_results(outcome))
 
 
 # ---- 下载 ----

@@ -46,8 +46,8 @@ class LiveWebToolsTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("PocketFlow", result.content)
         self.assertGreaterEqual(len(URL_PATTERN.findall(result.content)), 3)
 
-    async def test_bing_image_search_and_download(self) -> None:
-        search_result = await SearchImagesTool().run({"query": "cute cat", "count": 3}, self.context)
+    async def test_image_search_and_download(self) -> None:
+        search_result = await SearchImagesTool().run({"query": "可爱猫咪", "count": 3}, self.context)
         self.assertFalse(search_result.is_error, search_result.content)
         image_urls = URL_PATTERN.findall(search_result.content)
         self.assertTrue(image_urls, "搜图结果里没有图片链接")
