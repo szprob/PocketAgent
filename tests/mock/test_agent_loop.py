@@ -471,8 +471,8 @@ class EffortRecordingProvider(ScriptedProvider):
         return self
 
 
-class StepDownReasoningTest(unittest.IsolatedAsyncioTestCase):
-    """工具结果回来之后的续跑降一档思考：规划用配置的档位，照着结果往下做不用想那么久。"""
+class ConstantReasoningTest(unittest.IsolatedAsyncioTestCase):
+    """主线不降档：每一步都用配置的档位，工具结果回来也接着按这个档位想。"""
 
     CHOICES = ["none", "low", "high", "max"]
 
@@ -482,7 +482,7 @@ class StepDownReasoningTest(unittest.IsolatedAsyncioTestCase):
     def tearDown(self) -> None:
         self.directories.cleanup()
 
-    def _harness(self, **overrides) -> Any:
+    async def test_every_step_keeps_the_configured_effort(self) -> None:
         (self.directories.workspace / "a.txt").write_text("x\n", encoding="utf-8")
         provider = EffortRecordingProvider(
             [
@@ -492,29 +492,13 @@ class StepDownReasoningTest(unittest.IsolatedAsyncioTestCase):
             ]
         )
         harness = build_harness(
-            self.directories,
-            [],
-            provider=provider,
-            reasoning_effort="max",
-            reasoning_choices=self.CHOICES,
-            **overrides,
+            self.directories, [], provider=provider, reasoning_effort="max", reasoning_choices=self.CHOICES
         )
-        return harness
-
-    async def test_first_step_keeps_the_configured_effort_and_later_steps_step_down(self) -> None:
-        harness = self._harness()
 
         await harness.agent.run_turn("看一下 a.txt")
 
-        # 第一步用配置的 max（不换 provider），之后每一步续跑都是 high
-        self.assertEqual(harness.provider.requested_efforts, ["high", "high"])
-
-    async def test_turning_it_off_keeps_the_configured_effort_everywhere(self) -> None:
-        harness = self._harness(reasoning_step_down=False)
-
-        await harness.agent.run_turn("看一下 a.txt")
-
-        self.assertEqual(harness.provider.requested_efforts, [])
+        # 一次都没换过 provider：中间两步拿到工具结果也还是 max
+        self.assertEqual(provider.requested_efforts, [])
 
 
 if __name__ == "__main__":

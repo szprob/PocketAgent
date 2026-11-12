@@ -81,10 +81,12 @@ REASONING_CHOICES_BY_PROVIDER = {
     "openai": ["none", "low", "medium", "high", "max"],
 }
 
-# 审批、子 agent 这类辅助调用的思考档位，除了具体档位还能写这两个：
-# lowest = 这个模型能选的最低档（DeepSeek / new-api 是 none 关掉思考，智谱是 low）；inherit = 跟模型配置的一样
+# 审批、子 agent 这类辅助调用的思考档位，除了具体档位还能写这三个：
+# lowest = 这个模型能选的最低档（DeepSeek / new-api 是 none 关掉思考，智谱是 low）；
+# inherit = 跟模型配置的一样；stepdown = 在配置档位的基础上降一级（max→high、high→medium，不会降到不思考）
 REASONING_LOWEST = "lowest"
 REASONING_INHERIT = "inherit"
+REASONING_STEP_DOWN = "stepdown"
 
 DEFAULT_SUBAGENT_EXPLORE_MINUTES = 10
 DEFAULT_SUBAGENT_GENERAL_MINUTES = 40
@@ -96,28 +98,44 @@ FONT_SCALES = {"small": 0.92, "medium": 1.0, "large": 1.12}
 
 
 def resolve_reasoning(choice: str, available_choices: list[str], current: str | None) -> str | None:
-    """把 lowest / inherit / 具体档位换成真正要发给接口的值；None 表示不传，用接口默认。"""
+    """把 lowest / inherit / stepdown / 具体档位换成真正要发给接口的值；None 表示不传，用接口默认。"""
     if choice == REASONING_INHERIT:
         return current
     if choice == REASONING_LOWEST:
         # 不知道这个模型能选哪些档（比如用环境变量配的模型）就不传，免得传错被 400
         return available_choices[0] if available_choices else None
+    if choice == REASONING_STEP_DOWN:
+        # 相对档位：主模型换档位时子 agent 跟着走，不用跟着改设置
+        return step_down_reasoning(current, available_choices)
     return choice
 
 
-def step_down_reasoning(current: str | None, available_choices: list[str]) -> str | None:
-    """续跑时降一档：按这个模型能选的档位往回退一格（high→medium、medium→low）。
+# 辅助调用降档的下限：主 agent 自己在 medium 以上时，子 agent 不降到 medium 以下
+# （探索只是读得多，但还得判断「这堆结果说明什么」，掉到 low 容易看漏）
+REASONING_FLOOR = "medium"
 
-    不往回退到 "none"：工具结果回来以后要判断「这结果说明什么、下一步做什么」，把思考整个关掉
-    省不了多少时间，反而容易看错。最低停在第一个真正会思考的档位上。
+
+def step_down_reasoning(
+    current: str | None, available_choices: list[str], floor: str | None = REASONING_FLOOR
+) -> str | None:
+    """在 current 的基础上降一档（max→high、high→medium）。
+
+    两条限制：不降到 "none"（思考整个关掉省不了多少时间，反而容易看错）；主 agent 自己就在 floor
+    以上时不降到 floor 以下——它要是本来就在 low / none，那就跟着它走。模型档位表里没有 floor 这个档
+    （比如 DeepSeek 官方只有 low / high / max）时只按第一条来。
     """
     if not current:
         return current
     ladder = [choice for choice in available_choices if choice != REASONING_LOWEST]
     if current not in ladder:
         return current
-    candidate = ladder[max(ladder.index(current) - 1, 0)]
-    return current if candidate == "none" else candidate
+    index = ladder.index(current)
+    candidate = ladder[max(index - 1, 0)]
+    if candidate == "none":
+        candidate = current
+    if floor and floor in ladder and index >= ladder.index(floor):
+        candidate = ladder[max(ladder.index(candidate), ladder.index(floor))]
+    return candidate
 
 
 def provider_kind(base_url: str | None) -> str:
@@ -308,13 +326,20 @@ def _one_of(value: Any, choices: tuple[str, ...], default: str, label: str) -> s
     return text
 
 
+def _legacy_subagent_reasoning(data: dict[str, Any]) -> str | None:
+    """老的单个 subagent_reasoning：inherit 就是那时的默认值，返回 None 交给新默认。"""
+    value = _optional_text(data, "subagent_reasoning")
+    return value if value and value != REASONING_INHERIT else None
+
+
 def _auxiliary_reasoning(value: Any, label: str) -> str:
-    """审批、子 agent 的思考档位：lowest / inherit，或者某家接口认的具体档位。"""
+    """审批、子 agent 的思考档位：lowest / inherit / stepdown，或者某家接口认的具体档位。"""
     text = str(value or REASONING_LOWEST).strip()
     known_efforts = {effort for choices in REASONING_CHOICES_BY_PROVIDER.values() for effort in choices}
-    if text in (REASONING_LOWEST, REASONING_INHERIT) or text in known_efforts:
+    fixed = (REASONING_LOWEST, REASONING_INHERIT, REASONING_STEP_DOWN)
+    if text in fixed or text in known_efforts:
         return text
-    raise ConfigError(f"{label}只能是 {REASONING_LOWEST} / {REASONING_INHERIT} / {' / '.join(sorted(known_efforts))}：{value}")
+    raise ConfigError(f"{label}只能是 {' / '.join(fixed)} / {' / '.join(sorted(known_efforts))}：{value}")
 
 
 def _key_hint(key: str | None) -> str:
@@ -479,9 +504,12 @@ class AppConfig:
     # AI 自动审批用哪个模型（模型 id，空 = 跟任务的模型一样）、什么思考档位（默认最低：判断一次调用安不安全用不着深想）
     review_model: str | None = None
     review_reasoning: str = REASONING_LOWEST
-    # 子 agent 用哪个模型（空 = 跟任务的一样）、什么思考档位（默认跟模型配置一样，可以调低省时间）
+    # 子 agent 用哪个模型（空 = 跟任务的一样）和思考档位。档位按 kind 分开：
+    # explore 只读调研（搜资料、翻代码），默认比主 agent 降一级，省时间也不影响动手质量；
+    # general 要动手改东西，默认跟主 agent 一样。
     subagent_model: str | None = None
-    subagent_reasoning: str = REASONING_INHERIT
+    subagent_explore_reasoning: str = REASONING_STEP_DOWN
+    subagent_general_reasoning: str = REASONING_INHERIT
     # 子 agent 的时长上限（分钟，等用户审批的时间不算）：explore 只读调研，短一点；general 要跑测试 / 编译，长一点
     subagent_explore_minutes: int = DEFAULT_SUBAGENT_EXPLORE_MINUTES
     subagent_general_minutes: int = DEFAULT_SUBAGENT_GENERAL_MINUTES
@@ -501,8 +529,6 @@ class AppConfig:
     compact_threshold_percent: int = DEFAULT_COMPACT_THRESHOLD_PERCENT
     # 之前几轮的思考内容也发给模型（默认只发这一轮工具调用之间的），见 llm/base.py 的 REASONING_FIELD
     reasoning_across_turns: bool = False
-    # 工具结果回来之后的续跑，思考档位比配置降一级（high→medium、medium→low，不会降到不思考）
-    reasoning_step_down: bool = True
     # 联网：web_search 默认走 Tavily（agent 向搜索，每月 1000 次免费）；密钥空着就读 TAVILY_API_KEY，再没有就退回必应（免费）
     web_search_enabled: bool = True
     web_search_provider: str = WEB_SEARCH_DEFAULT_PROVIDER
@@ -573,8 +599,19 @@ class AppConfig:
             review_model=_optional_text(data, "review_model"),
             review_reasoning=_auxiliary_reasoning(data.get("review_reasoning"), "审批的思考档位"),
             subagent_model=_optional_text(data, "subagent_model"),
-            subagent_reasoning=_auxiliary_reasoning(
-                data.get("subagent_reasoning") or REASONING_INHERIT, "子 agent 的思考档位"
+            # 老配置只有一个 subagent_reasoning：其中 inherit 是当时的默认值，按新的默认（explore 降一级、
+            # general 跟主 agent）走；其他值是用户特意选的，两种子 agent 都沿用
+            subagent_explore_reasoning=_auxiliary_reasoning(
+                data.get("subagent_explore_reasoning")
+                or _legacy_subagent_reasoning(data)
+                or REASONING_STEP_DOWN,
+                "explore 子 agent 的思考档位",
+            ),
+            subagent_general_reasoning=_auxiliary_reasoning(
+                data.get("subagent_general_reasoning")
+                or _legacy_subagent_reasoning(data)
+                or REASONING_INHERIT,
+                "general 子 agent 的思考档位",
             ),
             subagent_explore_minutes=_positive_int(
                 data, "subagent_explore_minutes", DEFAULT_SUBAGENT_EXPLORE_MINUTES, "explore 子 agent 的时长上限"
@@ -592,7 +629,6 @@ class AppConfig:
             auto_compact=_boolean_with_default(data, "auto_compact", True),
             compact_threshold_percent=_compact_threshold_percent(data),
             reasoning_across_turns=_boolean_with_default(data, "reasoning_across_turns", False),
-            reasoning_step_down=_boolean_with_default(data, "reasoning_step_down", True),
             web_search_enabled=_boolean_with_default(data, "web_search_enabled", True),
             web_search_provider=normalize_web_search_provider(data.get("web_search_provider")),
             web_search_engine=_web_search_engine(data.get("web_search_engine")),
@@ -642,7 +678,8 @@ class AppConfig:
             "review_model": self.review_model,
             "review_reasoning": self.review_reasoning,
             "subagent_model": self.subagent_model,
-            "subagent_reasoning": self.subagent_reasoning,
+            "subagent_explore_reasoning": self.subagent_explore_reasoning,
+            "subagent_general_reasoning": self.subagent_general_reasoning,
             "subagent_explore_minutes": self.subagent_explore_minutes,
             "subagent_general_minutes": self.subagent_general_minutes,
             "busy_input_mode": self.busy_input_mode,
@@ -655,7 +692,6 @@ class AppConfig:
             "auto_compact": self.auto_compact,
             "compact_threshold_percent": self.compact_threshold_percent,
             "reasoning_across_turns": self.reasoning_across_turns,
-            "reasoning_step_down": self.reasoning_step_down,
             "web_search_enabled": self.web_search_enabled,
             "web_search_provider": self.web_search_provider,
             "web_search_engine": self.web_search_engine,
@@ -694,7 +730,8 @@ class AppConfig:
             "review_model": self.review_model,
             "review_reasoning": self.review_reasoning,
             "subagent_model": self.subagent_model,
-            "subagent_reasoning": self.subagent_reasoning,
+            "subagent_explore_reasoning": self.subagent_explore_reasoning,
+            "subagent_general_reasoning": self.subagent_general_reasoning,
             "subagent_explore_minutes": self.subagent_explore_minutes,
             "subagent_general_minutes": self.subagent_general_minutes,
             "busy_input_mode": self.busy_input_mode,
@@ -708,7 +745,6 @@ class AppConfig:
             "auto_compact": self.auto_compact,
             "compact_threshold_percent": self.compact_threshold_percent,
             "reasoning_across_turns": self.reasoning_across_turns,
-            "reasoning_step_down": self.reasoning_step_down,
             "web_search_enabled": self.web_search_enabled,
             "web_search_provider": self.web_search_provider,
             "web_search_engine": self.web_search_engine,
@@ -925,16 +961,15 @@ class Settings:
     model_kind: str = ""
     # 之前几轮的思考内容也发给模型；默认只发这一轮工具调用之间的
     reasoning_across_turns: bool = False
-    # 工具结果回来之后的续跑，思考档位比配置降一级（high→medium、medium→low，不会降到不思考）
-    reasoning_step_down: bool = True
     # 当前模型能选的思考档位（审批、子 agent 选「最低」时从这里取）；环境变量配的模型不知道，空着
     reasoning_choices: list[str] = field(default_factory=list)
     # AI 审批用的模型（None = 跟任务的模型一样）和思考档位（lowest / inherit / 具体档位）
     review_profile: ModelProfile | None = None
     review_reasoning: str = REASONING_LOWEST
-    # 子 agent 用的模型（None = 跟任务的一样）、思考档位、时长上限（分钟）
+    # 子 agent 用的模型（None = 跟任务的一样）、思考档位（按 kind 分开）、时长上限（分钟）
     subagent_profile: ModelProfile | None = None
-    subagent_reasoning: str = REASONING_INHERIT
+    subagent_explore_reasoning: str = REASONING_STEP_DOWN
+    subagent_general_reasoning: str = REASONING_INHERIT
     subagent_explore_minutes: int = DEFAULT_SUBAGENT_EXPLORE_MINUTES
     subagent_general_minutes: int = DEFAULT_SUBAGENT_GENERAL_MINUTES
     max_output_tokens: int | None = None
@@ -1052,7 +1087,6 @@ class Settings:
         self.max_steps = app_config.max_steps
         self.apply_compaction(app_config)
         self.reasoning_across_turns = app_config.reasoning_across_turns
-        self.reasoning_step_down = app_config.reasoning_step_down
         self.web_search = app_config.web_search_settings()
         self.web_fetch = app_config.web_fetch_enabled
         self.image_gen = app_config.image_gen_settings()
@@ -1074,7 +1108,8 @@ class Settings:
         self.review_profile = app_config.find_model(app_config.review_model) if app_config.review_model else None
         self.review_reasoning = app_config.review_reasoning
         self.subagent_profile = app_config.find_model(app_config.subagent_model) if app_config.subagent_model else None
-        self.subagent_reasoning = app_config.subagent_reasoning
+        self.subagent_explore_reasoning = app_config.subagent_explore_reasoning
+        self.subagent_general_reasoning = app_config.subagent_general_reasoning
         self.subagent_explore_minutes = app_config.subagent_explore_minutes
         self.subagent_general_minutes = app_config.subagent_general_minutes
 

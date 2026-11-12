@@ -113,7 +113,9 @@ agent 可以用 `subagent` 工具派子 agent 去独立干一件事。子 agent 
   主 agent 一轮里自己用 `web_search` / `web_fetch` 每满 3 次，结果末尾会提醒它把剩下的调研交出去（子 agent 自己搜不提醒）
 - `type=general`：能改文件、跑命令，每一步照常按权限审批，审批卡片上标着是哪个子 agent
 - 子 agent 不能问用户，也不能再派子 agent；用量、沙箱、「本任务总是允许」和主 agent 共用
-- 模型默认和任务的一样，⚙ 设置 → 智能体里可以单独选模型和思考档位（`subagent_model` / `subagent_reasoning`）
+- 模型默认和任务的一样，⚙ 设置 → 智能体里可以单独选模型和思考档位（`subagent_model` /
+  `subagent_explore_reasoning` / `subagent_general_reasoning`）；
+  explore 默认比主 agent 降一级（`stepdown`），general 默认跟主 agent 一样（`inherit`）
 - 有时长上限：explore 默认 10 分钟、general 默认 40 分钟（`subagent_explore_minutes` / `subagent_general_minutes`），等你审批的时间不算。到点不会直接丢掉：停下正在跑的命令（连进程树一起杀）、补齐没结果的工具调用，再让它不带工具写一次总结交回来
 - 一批里有 general 子 agent 时按顺序跑，不会和别的改动同时进行
 - general 子 agent 默认在独立 worktree 里做（`worktree_background`），做完自动提交到 `pocketagent/<任务 id>-sub-*` 分支并把分支交回主 agent；explore 只读，不隔离。worktree 建不出来（不是 git 仓库等）就退回共用工作区，结论里会注明

@@ -60,7 +60,8 @@ export function initSettings(handlers) {
   elements.reviewModel = document.getElementById("review-model-select");
   elements.reviewReasoning = document.getElementById("review-reasoning-select");
   elements.subagentModel = document.getElementById("subagent-model-select");
-  elements.subagentReasoning = document.getElementById("subagent-reasoning-select");
+  elements.subagentExploreReasoning = document.getElementById("subagent-explore-reasoning-select");
+  elements.subagentGeneralReasoning = document.getElementById("subagent-general-reasoning-select");
   elements.subagentExploreMinutes = document.getElementById("subagent-explore-minutes");
   elements.subagentGeneralMinutes = document.getElementById("subagent-general-minutes");
   elements.worktreeForeground = document.getElementById("worktree-foreground");
@@ -69,7 +70,6 @@ export function initSettings(handlers) {
   elements.autoCompact = document.getElementById("auto-compact-input");
   elements.compactThreshold = document.getElementById("compact-threshold-select");
   elements.reasoningAcrossTurns = document.getElementById("reasoning-across-turns-input");
-  elements.reasoningStepDown = document.getElementById("reasoning-step-down-input");
   elements.webSearchEnabled = document.getElementById("web-search-enabled");
   elements.webSearchProvider = document.getElementById("web-search-provider");
   elements.webSearchEngineField = document.getElementById("web-search-engine-field");
@@ -173,9 +173,23 @@ export function initSettings(handlers) {
   elements.reviewModel.addEventListener("change", () =>
     renderAuxiliaryReasoningOptions(reviewSelects(), elements.reviewReasoning.value),
   );
-  elements.subagentModel.addEventListener("change", () =>
-    renderAuxiliaryReasoningOptions(subagentSelects(), elements.subagentReasoning.value),
-  );
+  elements.subagentModel.addEventListener("change", () => {
+    // 模型换了，两个档位下拉都得按新模型能选的档位重画
+    fillReasoningSelect(
+      elements.subagentExploreReasoning,
+      elements.subagentModel.value,
+      elements.subagentExploreReasoning.value,
+      "stepdown",
+      [STEP_DOWN_OPTION],
+    );
+    fillReasoningSelect(
+      elements.subagentGeneralReasoning,
+      elements.subagentModel.value,
+      elements.subagentGeneralReasoning.value,
+      "inherit",
+      [STEP_DOWN_OPTION],
+    );
+  });
   elements.sandboxEnabled.addEventListener("change", paintSandboxFields);
 
   elements.mcpForm.addEventListener("input", onMcpFieldInput);
@@ -353,7 +367,7 @@ function fillGeneral() {
   }
   elements.defaultMode.value = config.approval_mode;
   renderAuxiliaryModelOptions(reviewSelects(), config.review_model, config.review_reasoning);
-  renderAuxiliaryModelOptions(subagentSelects(), config.subagent_model, config.subagent_reasoning);
+  renderSubagentOptions(config);
   elements.subagentExploreMinutes.value = config.subagent_explore_minutes;
   elements.subagentGeneralMinutes.value = config.subagent_general_minutes;
   elements.worktreeForeground.checked = Boolean(config.worktree_foreground);
@@ -363,7 +377,6 @@ function fillGeneral() {
   elements.autoCompact.checked = Boolean(config.auto_compact);
   elements.compactThreshold.value = String(config.compact_threshold_percent);
   elements.reasoningAcrossTurns.checked = Boolean(config.reasoning_across_turns);
-  elements.reasoningStepDown.checked = config.reasoning_step_down !== false;
 
   elements.webSearchEnabled.checked = Boolean(config.web_search_enabled);
   elements.webSearchProvider.value = config.web_search_provider || "tavily";
@@ -447,6 +460,19 @@ const AUXILIARY_REASONING_FIXED = [
   { value: "lowest", label: "最低（能关思考就关）" },
   { value: "inherit", label: "跟模型配置一样" },
 ];
+// 只有子 agent 用相对档位：主 agent 换档位时子 agent 跟着走，不用跟着改设置
+const STEP_DOWN_OPTION = { value: "stepdown", label: "比模型配置降一级" };
+
+function fillReasoningSelect(select, modelId, selectedReasoning, fallbackReasoning, extraOptions = []) {
+  const model = (config.models || []).find((each) => each.id === modelId);
+  const options = [...AUXILIARY_REASONING_FIXED, ...extraOptions];
+  for (const choice of model?.reasoning_choices || []) {
+    options.push({ value: choice, label: `${REASONING_LABELS[choice] || choice}（${choice}）` });
+  }
+  select.replaceChildren(...options.map((option) => new Option(option.label, option.value)));
+  // 原来选的档位新模型不支持，就回到这一项的默认档
+  select.value = options.some((option) => option.value === selectedReasoning) ? selectedReasoning : fallbackReasoning;
+}
 
 function renderAuxiliaryModelOptions(selects, selectedModel, selectedReasoning) {
   selects.model.replaceChildren(new Option("跟任务的模型一样", ""));
@@ -458,23 +484,33 @@ function renderAuxiliaryModelOptions(selects, selectedModel, selectedReasoning) 
 }
 
 function renderAuxiliaryReasoningOptions(selects, selectedReasoning) {
-  const model = (config.models || []).find((each) => each.id === selects.model.value);
-  const options = [...AUXILIARY_REASONING_FIXED];
-  for (const choice of model?.reasoning_choices || []) {
-    options.push({ value: choice, label: `${REASONING_LABELS[choice] || choice}（${choice}）` });
+  fillReasoningSelect(selects.reasoning, selects.model.value, selectedReasoning, selects.fallbackReasoning);
+}
+
+function renderSubagentOptions(settings) {
+  elements.subagentModel.replaceChildren(new Option("跟任务的模型一样", ""));
+  for (const model of config.models || []) {
+    elements.subagentModel.append(new Option(model.name, model.id));
   }
-  selects.reasoning.replaceChildren(...options.map((option) => new Option(option.label, option.value)));
-  // 原来选的档位新模型不支持，就回到这一项的默认档
-  const stillAvailable = options.some((option) => option.value === selectedReasoning);
-  selects.reasoning.value = stillAvailable ? selectedReasoning : selects.fallbackReasoning;
+  elements.subagentModel.value = settings.subagent_model || "";
+  fillReasoningSelect(
+    elements.subagentExploreReasoning,
+    elements.subagentModel.value,
+    settings.subagent_explore_reasoning,
+    "stepdown",
+    [STEP_DOWN_OPTION],
+  );
+  fillReasoningSelect(
+    elements.subagentGeneralReasoning,
+    elements.subagentModel.value,
+    settings.subagent_general_reasoning,
+    "inherit",
+    [STEP_DOWN_OPTION],
+  );
 }
 
 function reviewSelects() {
   return { model: elements.reviewModel, reasoning: elements.reviewReasoning, fallbackReasoning: "lowest" };
-}
-
-function subagentSelects() {
-  return { model: elements.subagentModel, reasoning: elements.subagentReasoning, fallbackReasoning: "inherit" };
 }
 
 function paintImageGenFields() {
@@ -883,7 +919,8 @@ async function saveConfig() {
     review_model: elements.reviewModel.value || null,
     review_reasoning: elements.reviewReasoning.value,
     subagent_model: elements.subagentModel.value || null,
-    subagent_reasoning: elements.subagentReasoning.value,
+    subagent_explore_reasoning: elements.subagentExploreReasoning.value,
+    subagent_general_reasoning: elements.subagentGeneralReasoning.value,
     subagent_explore_minutes: Number(elements.subagentExploreMinutes.value) || 10,
     subagent_general_minutes: Number(elements.subagentGeneralMinutes.value) || 40,
     worktree_foreground: elements.worktreeForeground.checked,
@@ -893,7 +930,6 @@ async function saveConfig() {
     auto_compact: elements.autoCompact.checked,
     compact_threshold_percent: Number(elements.compactThreshold.value) || 80,
     reasoning_across_turns: elements.reasoningAcrossTurns.checked,
-    reasoning_step_down: elements.reasoningStepDown.checked,
     web_search_enabled: elements.webSearchEnabled.checked,
     web_search_provider: elements.webSearchProvider.value,
     web_search_engine: elements.webSearchEngine.value,

@@ -76,7 +76,8 @@ export function initSettings() {
     reviewModel: byId("review-model-select"),
     reviewReasoning: byId("review-reasoning-select"),
     subagentModel: byId("subagent-model-select"),
-    subagentReasoning: byId("subagent-reasoning-select"),
+    subagentExploreReasoning: byId("subagent-explore-reasoning-select"),
+    subagentGeneralReasoning: byId("subagent-general-reasoning-select"),
     subagentExploreMinutes: byId("subagent-explore-minutes"),
     subagentGeneralMinutes: byId("subagent-general-minutes"),
     worktreeForeground: byId("worktree-foreground"),
@@ -86,7 +87,6 @@ export function initSettings() {
     autoCompact: byId("auto-compact-input"),
     compactThreshold: byId("compact-threshold-select"),
     reasoningAcrossTurns: byId("reasoning-across-turns-input"),
-    reasoningStepDown: byId("reasoning-step-down-input"),
     webSearchEnabled: byId("web-search-enabled"),
     webSearchProvider: byId("web-search-provider"),
     webSearchEngine: byId("web-search-engine"),
@@ -175,9 +175,23 @@ export function initSettings() {
   elements.reviewModel.addEventListener("change", () =>
     renderAuxiliaryReasoningOptions(reviewSelects(), elements.reviewReasoning.value)
   );
-  elements.subagentModel.addEventListener("change", () =>
-    renderAuxiliaryReasoningOptions(subagentSelects(), elements.subagentReasoning.value)
-  );
+  elements.subagentModel.addEventListener("change", () => {
+    // 模型换了，两个档位下拉都得按新模型能选的档位重画
+    fillReasoningSelect(
+      elements.subagentExploreReasoning,
+      elements.subagentModel.value,
+      elements.subagentExploreReasoning.value,
+      "stepdown",
+      [STEP_DOWN_OPTION]
+    );
+    fillReasoningSelect(
+      elements.subagentGeneralReasoning,
+      elements.subagentModel.value,
+      elements.subagentGeneralReasoning.value,
+      "inherit",
+      [STEP_DOWN_OPTION]
+    );
+  });
   elements.mcpForm.addEventListener("input", onMcpFieldInput);
   elements.mcpForm.addEventListener("submit", (event) => event.preventDefault());
   elements.mcpForm.elements.namedItem("transport").addEventListener("change", updateMcpTransportFields);
@@ -231,6 +245,19 @@ const AUXILIARY_REASONING_FIXED = [
   { value: "lowest", label: "最低（能关思考就关）" },
   { value: "inherit", label: "跟模型配置一样" },
 ];
+// 只有子 agent 用相对档位：主 agent 换档位时子 agent 跟着走，不用跟着改设置
+const STEP_DOWN_OPTION = { value: "stepdown", label: "比模型配置降一级" };
+
+function fillReasoningSelect(select, modelId, selectedReasoning, fallbackReasoning, extraOptions = []) {
+  const model = draft.savedModels.find((each) => each.id === modelId);
+  const options = [...AUXILIARY_REASONING_FIXED, ...extraOptions];
+  for (const choice of model?.reasoning_choices || []) {
+    options.push({ value: choice, label: `${reasoningLabel(choice)}（${choice}）` });
+  }
+  select.replaceChildren(...options.map((option) => new Option(option.label, option.value)));
+  // 原来选的档位新模型不支持，就回到这一项的默认档
+  select.value = options.some((option) => option.value === selectedReasoning) ? selectedReasoning : fallbackReasoning;
+}
 
 function renderAuxiliaryModelOptions(selects, selectedModel, selectedReasoning) {
   selects.model.replaceChildren(new Option("跟任务的模型一样", ""));
@@ -242,23 +269,33 @@ function renderAuxiliaryModelOptions(selects, selectedModel, selectedReasoning) 
 }
 
 function renderAuxiliaryReasoningOptions(selects, selectedReasoning) {
-  const model = draft.savedModels.find((each) => each.id === selects.model.value);
-  const options = [...AUXILIARY_REASONING_FIXED];
-  for (const choice of model?.reasoning_choices || []) {
-    options.push({ value: choice, label: `${reasoningLabel(choice)}（${choice}）` });
+  fillReasoningSelect(selects.reasoning, selects.model.value, selectedReasoning, selects.fallbackReasoning);
+}
+
+function renderSubagentOptions(config) {
+  elements.subagentModel.replaceChildren(new Option("跟任务的模型一样", ""));
+  for (const model of draft.savedModels) {
+    elements.subagentModel.appendChild(new Option(model.name, model.id));
   }
-  selects.reasoning.replaceChildren(...options.map((option) => new Option(option.label, option.value)));
-  // 原来选的档位新模型不支持，就回到这一项的默认档
-  const stillAvailable = options.some((option) => option.value === selectedReasoning);
-  selects.reasoning.value = stillAvailable ? selectedReasoning : selects.fallbackReasoning;
+  elements.subagentModel.value = config.subagent_model || "";
+  fillReasoningSelect(
+    elements.subagentExploreReasoning,
+    elements.subagentModel.value,
+    config.subagent_explore_reasoning,
+    "stepdown",
+    [STEP_DOWN_OPTION]
+  );
+  fillReasoningSelect(
+    elements.subagentGeneralReasoning,
+    elements.subagentModel.value,
+    config.subagent_general_reasoning,
+    "inherit",
+    [STEP_DOWN_OPTION]
+  );
 }
 
 function reviewSelects() {
   return { model: elements.reviewModel, reasoning: elements.reviewReasoning, fallbackReasoning: "lowest" };
-}
-
-function subagentSelects() {
-  return { model: elements.subagentModel, reasoning: elements.subagentReasoning, fallbackReasoning: "inherit" };
 }
 
 function updateImageGenFields() {
@@ -426,7 +463,7 @@ export async function openSettings(tabName) {
   elements.defaultMode.value = config.approval_mode;
   draft.savedModels = config.models;
   renderAuxiliaryModelOptions(reviewSelects(), config.review_model, config.review_reasoning);
-  renderAuxiliaryModelOptions(subagentSelects(), config.subagent_model, config.subagent_reasoning);
+  renderSubagentOptions(config);
   elements.subagentExploreMinutes.value = config.subagent_explore_minutes;
   elements.subagentGeneralMinutes.value = config.subagent_general_minutes;
   elements.worktreeForeground.checked = Boolean(config.worktree_foreground);
@@ -443,7 +480,6 @@ export async function openSettings(tabName) {
   elements.autoCompact.checked = config.auto_compact;
   elements.compactThreshold.value = String(config.compact_threshold_percent);
   elements.reasoningAcrossTurns.checked = Boolean(config.reasoning_across_turns);
-  elements.reasoningStepDown.checked = config.reasoning_step_down !== false;
   elements.webSearchEnabled.checked = config.web_search_enabled;
   elements.webSearchProvider.value = config.web_search_provider || "tavily";
   elements.webSearchEngine.value = config.web_search_engine;
@@ -786,7 +822,8 @@ async function saveSettings() {
     review_model: elements.reviewModel.value || null,
     review_reasoning: elements.reviewReasoning.value,
     subagent_model: elements.subagentModel.value || null,
-    subagent_reasoning: elements.subagentReasoning.value,
+    subagent_explore_reasoning: elements.subagentExploreReasoning.value,
+    subagent_general_reasoning: elements.subagentGeneralReasoning.value,
     subagent_explore_minutes: elements.subagentExploreMinutes.value,
     subagent_general_minutes: elements.subagentGeneralMinutes.value,
     worktree_foreground: elements.worktreeForeground.checked,
@@ -801,7 +838,6 @@ async function saveSettings() {
     auto_compact: elements.autoCompact.checked,
     compact_threshold_percent: elements.compactThreshold.value,
     reasoning_across_turns: elements.reasoningAcrossTurns.checked,
-    reasoning_step_down: elements.reasoningStepDown.checked,
     web_search_enabled: elements.webSearchEnabled.checked,
     web_search_provider: elements.webSearchProvider.value,
     web_search_engine: elements.webSearchEngine.value,

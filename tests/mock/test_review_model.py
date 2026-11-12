@@ -5,6 +5,7 @@ import unittest
 from pocketagent.config import (
     REASONING_INHERIT,
     REASONING_LOWEST,
+    REASONING_STEP_DOWN,
     AppConfig,
     ConfigError,
     ModelProfile,
@@ -43,21 +44,41 @@ class ResolveReasoningTest(unittest.TestCase):
         # 不知道模型能选哪些档就不传
         self.assertIsNone(resolve_reasoning(REASONING_LOWEST, [], "max"))
 
+    def test_stepdown_is_relative_to_the_configured_effort(self) -> None:
+        deepseek = ["none", "low", "high", "max"]
+
+        self.assertEqual(resolve_reasoning(REASONING_STEP_DOWN, deepseek, "max"), "high")
+        self.assertEqual(resolve_reasoning(REASONING_STEP_DOWN, deepseek, "high"), "low")
+        # 最低档不再往下退（不关思考），没配档位就跟着不传，认不出档位表就原样
+        self.assertEqual(resolve_reasoning(REASONING_STEP_DOWN, deepseek, "low"), "low")
+        self.assertIsNone(resolve_reasoning(REASONING_STEP_DOWN, deepseek, None))
+        self.assertEqual(resolve_reasoning(REASONING_STEP_DOWN, [], "max"), "max")
+
     def test_step_down_moves_one_level_but_never_turns_thinking_off(self) -> None:
         deepseek = ["none", "low", "high", "max"]
         self.assertEqual(step_down_reasoning("max", deepseek), "high")
         self.assertEqual(step_down_reasoning("high", deepseek), "low")
-        # 再往下就是 none（关掉思考）：续跑不该关，停在 low
+        # 再往下就是 none（关掉思考）：不该关，停在 low
         self.assertEqual(step_down_reasoning("low", deepseek), "low")
         self.assertEqual(step_down_reasoning("none", deepseek), "none")
-        # Claude 那种没有 none 的档位表直接退一格
-        claude = ["low", "medium", "high", "xhigh", "max"]
-        self.assertEqual(step_down_reasoning("max", claude), "xhigh")
-        self.assertEqual(step_down_reasoning("medium", claude), "low")
-        self.assertEqual(step_down_reasoning("low", claude), "low")
         # 不认识的档位、空表：原样
         self.assertEqual(step_down_reasoning("high", []), "high")
         self.assertIsNone(step_down_reasoning(None, deepseek))
+
+    def test_step_down_stops_at_medium_when_the_model_has_it(self) -> None:
+        newapi = ["none", "low", "medium", "high", "max"]
+        claude = ["low", "medium", "high", "xhigh", "max"]
+
+        self.assertEqual(step_down_reasoning("max", newapi), "high")
+        self.assertEqual(step_down_reasoning("high", newapi), "medium")
+        # 主 agent 自己在 medium：降下去就跌破下限了，停在 medium
+        self.assertEqual(step_down_reasoning("medium", newapi), "medium")
+        self.assertEqual(step_down_reasoning("max", claude), "xhigh")
+        self.assertEqual(step_down_reasoning("high", claude), "medium")
+        self.assertEqual(step_down_reasoning("medium", claude), "medium")
+        # 主 agent 本来就在 medium 以下：按它自己的档位走，不再兜
+        self.assertEqual(step_down_reasoning("low", newapi), "low")
+        self.assertEqual(step_down_reasoning("low", claude), "low")
 
 
 class ReviewConfigTest(unittest.TestCase):
@@ -85,7 +106,8 @@ class ReviewConfigTest(unittest.TestCase):
             {
                 "models": models,
                 "subagent_model": "glm",
-                "subagent_reasoning": "lowest",
+                "subagent_explore_reasoning": "lowest",
+                "subagent_general_reasoning": "high",
                 "subagent_explore_minutes": 5,
                 "subagent_general_minutes": 60,
             }
@@ -93,15 +115,39 @@ class ReviewConfigTest(unittest.TestCase):
         gone = AppConfig.from_dict({"models": models, "subagent_model": "removed"})
 
         self.assertIsNone(default.subagent_model)
-        self.assertEqual(default.subagent_reasoning, REASONING_INHERIT)
+        # 探索的默认比主 agent 降一级；动手改东西的 general 默认跟主 agent 一样
+        self.assertEqual(default.subagent_explore_reasoning, REASONING_STEP_DOWN)
+        self.assertEqual(default.subagent_general_reasoning, REASONING_INHERIT)
         self.assertEqual((default.subagent_explore_minutes, default.subagent_general_minutes), (10, 40))
         reloaded = AppConfig.from_dict(chosen.to_dict())
         self.assertEqual(reloaded.subagent_model, "glm")
-        self.assertEqual(reloaded.subagent_reasoning, REASONING_LOWEST)
+        self.assertEqual(reloaded.subagent_explore_reasoning, REASONING_LOWEST)
+        self.assertEqual(reloaded.subagent_general_reasoning, "high")
         self.assertEqual((reloaded.subagent_explore_minutes, reloaded.subagent_general_minutes), (5, 60))
+        # 存回去的配置只有按 kind 分开的两个键
+        self.assertNotIn("subagent_reasoning", chosen.to_dict())
         self.assertIsNone(gone.subagent_model)
         with self.assertRaises(ConfigError):
             AppConfig.from_dict({"subagent_general_minutes": 0})
+
+    def test_legacy_single_subagent_reasoning_applies_to_both_kinds(self) -> None:
+        models = [{"id": "ds", "model": "deepseek"}]
+
+        legacy = AppConfig.from_dict({"models": models, "subagent_reasoning": "lowest"})
+        self.assertEqual((legacy.subagent_explore_reasoning, legacy.subagent_general_reasoning), (REASONING_LOWEST, REASONING_LOWEST))
+
+        # 新键优先，老键只在没写新键时兜底
+        mixed = AppConfig.from_dict(
+            {"models": models, "subagent_reasoning": "lowest", "subagent_explore_reasoning": "high"}
+        )
+        self.assertEqual((mixed.subagent_explore_reasoning, mixed.subagent_general_reasoning), ("high", REASONING_LOWEST))
+
+        # 老配置里的 inherit 是当时的默认值，不该把新的 explore 默认盖回去
+        default_ish = AppConfig.from_dict({"models": models, "subagent_reasoning": "inherit"})
+        self.assertEqual(
+            (default_ish.subagent_explore_reasoning, default_ish.subagent_general_reasoning),
+            (REASONING_STEP_DOWN, REASONING_INHERIT),
+        )
 
     def test_unknown_reasoning_is_rejected(self) -> None:
         with self.assertRaises(ConfigError):
@@ -130,8 +176,8 @@ class ReviewProviderTest(unittest.IsolatedAsyncioTestCase):
 
         await harness.agent.run_turn("新建 out.txt")
 
-        # 审批用最低档（none）；工具结果回来之后的续跑按 reasoning_step_down 从 max 降一档到 high
-        self.assertEqual(provider.requested_efforts, ["none", "high"])
+        # 只有审批换了档（最低档 none）；主线两步都还是配置的 max，不换 provider
+        self.assertEqual(provider.requested_efforts, ["none"])
         self.assertEqual((self.directories.workspace / "out.txt").read_text(encoding="utf-8"), "hi")
 
     async def test_inherit_keeps_the_task_effort(self) -> None:
@@ -150,8 +196,8 @@ class ReviewProviderTest(unittest.IsolatedAsyncioTestCase):
 
         await harness.agent.run_turn("新建 out.txt")
 
-        # 审批跟任务同档位，不换 provider；只有续跑那一步按 reasoning_step_down 降了一档
-        self.assertEqual(provider.requested_efforts, ["high"])
+        # 审批跟任务同档位，从头到尾没换过 provider
+        self.assertEqual(provider.requested_efforts, [])
 
     async def test_a_separate_review_model_gets_its_own_provider(self) -> None:
         task_provider = ScriptedProvider([LLMResponse(tool_calls=[WRITE_CALL]), LLMResponse(text="写好了")])

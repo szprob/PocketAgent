@@ -60,6 +60,18 @@ class TwoLevelProvider:
         return response
 
 
+class EffortRecordingProvider(TwoLevelProvider):
+    """记下每次换思考档位换成了什么（主 agent 和子 agent 共用一个实例）。"""
+
+    def __init__(self, parent_script, child_scripts) -> None:
+        super().__init__(parent_script, child_scripts)
+        self.requested_efforts = []
+
+    def with_reasoning_effort(self, effort):
+        self.requested_efforts.append(effort)
+        return self
+
+
 class FakeSearchTool(Tool):
     name = "web_search"
     description = "假的搜索"
@@ -311,15 +323,6 @@ class SubagentRunTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((self.directories.workspace / "out.txt").read_text(encoding="utf-8"), "hi")
 
     async def test_subagent_uses_its_own_reasoning_setting(self) -> None:
-        class EffortRecordingProvider(TwoLevelProvider):
-            def __init__(self, parent_script, child_scripts) -> None:
-                super().__init__(parent_script, child_scripts)
-                self.requested_efforts = []
-
-            def with_reasoning_effort(self, effort):
-                self.requested_efforts.append(effort)
-                return self
-
         provider = EffortRecordingProvider(
             [LLMResponse(tool_calls=[spawn("p1", "查", "查一下")]), LLMResponse(text="好")],
             {"查": [LLMResponse(text="查到了")]},
@@ -330,14 +333,88 @@ class SubagentRunTest(unittest.IsolatedAsyncioTestCase):
             provider=provider,
             reasoning_effort="max",
             reasoning_choices=["none", "low", "high", "max"],
-            subagent_reasoning="low",
+            subagent_explore_reasoning="low",
         )
 
         await harness.agent.run_turn("派个子 agent")
 
-        # 子 agent 按自己配的档位（low）；主 agent 在子 agent 结果回来之后的续跑
-        # 按 reasoning_step_down 从 max 降一档到 high
-        self.assertEqual(provider.requested_efforts, ["low", "high"])
+        # 子 agent 按自己配的档位（low）；主 agent 一直用配置的 max，不换 provider
+        self.assertEqual(provider.requested_efforts, ["low"])
+
+    async def test_explore_steps_down_one_level_and_general_keeps_the_main_effort(self) -> None:
+        """两种子 agent 各取各的档位：explore 默认降一级（max→high），general 默认跟主 agent 一样。"""
+        provider = EffortRecordingProvider(
+            [
+                LLMResponse(tool_calls=[spawn("p1", "查", "查一下")]),
+                LLMResponse(tool_calls=[spawn("p2", "改", "改一下", kind="general")]),
+                LLMResponse(text="都做完了"),
+            ],
+            {"查": [LLMResponse(text="查到了")], "改": [LLMResponse(text="改好了")]},
+        )
+        harness = build_harness(
+            self.directories,
+            [],
+            provider=provider,
+            reasoning_effort="max",
+            reasoning_choices=["none", "low", "high", "max"],
+        )
+
+        await harness.agent.run_turn("先查再改")
+
+        self.assertEqual(provider.requested_efforts, ["high"])
+
+    async def test_explore_does_not_drop_below_medium_unless_the_main_agent_is_lower(self) -> None:
+        """主 agent 在 medium 以上时 explore 最多降到 medium；主 agent 自己就在 low 才跟着低。"""
+        # 期望的是「换成了什么」：和主 agent 一样就不换 provider（空列表）
+        cases = [
+            ("max", ["high"]),
+            ("high", ["medium"]),
+            ("medium", []),
+            ("low", []),
+        ]
+        for main_effort, expected in cases:
+            with self.subTest(main_effort=main_effort):
+                provider = EffortRecordingProvider(
+                    [LLMResponse(tool_calls=[spawn("p1", "查", "查一下")]), LLMResponse(text="好")],
+                    {"查": [LLMResponse(text="查到了")]},
+                )
+                harness = build_harness(
+                    self.directories,
+                    [],
+                    provider=provider,
+                    reasoning_effort=main_effort,
+                    reasoning_choices=["none", "low", "medium", "high", "max"],
+                )
+
+                await harness.agent.run_turn("派个子 agent")
+
+                self.assertEqual(provider.requested_efforts, expected)
+
+    async def test_a_subagent_keeps_its_own_level_across_its_tool_results(self) -> None:
+        """子 agent 内部也有工具续跑，但档位按 kind 定好之后就不再变（不降也不抬）。"""
+        provider = EffortRecordingProvider(
+            [LLMResponse(tool_calls=[spawn("p1", "查", "查一下")]), LLMResponse(text="好")],
+            {
+                "查": [
+                    LLMResponse(tool_calls=[tool_call("c1", "list_dir", '{"path": "."}')]),
+                    LLMResponse(text="查到了"),
+                ]
+            },
+        )
+        harness = build_harness(
+            self.directories,
+            [],
+            provider=provider,
+            reasoning_effort="max",
+            reasoning_choices=["none", "low", "high", "max"],
+            subagent_explore_reasoning="low",
+        )
+
+        await harness.agent.run_turn("派个子 agent")
+
+        # low 是子 agent 自己的档位；它内部那次续跑不该再换档（之前会拿主模型的 max
+        # 当基数算出 high，把 low 抬回去）
+        self.assertEqual(provider.requested_efforts, ["low"])
 
     async def test_stopping_the_main_task_stops_the_child(self) -> None:
         provider = TwoLevelProvider([LLMResponse(tool_calls=[spawn("p1", "很慢", "慢慢查")])], {"很慢": [LLMResponse(text="不会到这")]})

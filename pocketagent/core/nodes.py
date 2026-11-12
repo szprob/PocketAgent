@@ -12,7 +12,6 @@ from typing import Any
 
 from pocketflow import AsyncNode
 
-from pocketagent.config import step_down_reasoning
 from pocketagent.core.compaction import (
     RESTORE_FILE_MAX_TOKENS,
     RESTORE_TOTAL_MAX_TOKENS,
@@ -400,39 +399,17 @@ class ThinkRequest:
     messages: list[dict[str, Any]]
     tool_schemas: list[dict[str, Any]]
     events: EventBus
-    # 这一步实际发出去的思考档位（降过档时和配置不一样），trace 里能看到
+    # 这一步实际发出去的思考档位（子 agent 会和主 agent 不一样），trace 里能看到
     reasoning_effort: str | None = None
 
 
-def _continuing_after_tools(context: AgentContext) -> bool:
-    """这一步是不是「刚拿到工具结果，接着往下做」。只有这种续跑才降档：
-    用户刚说的话、刚压缩完、刚被截断补救的时候都得保持配置的档位。"""
-    return bool(context.messages) and context.messages[-1].get("role") == "tool"
-
-
-def _is_main_model(provider: LLMProvider, settings: Any) -> bool:
-    """子 agent 可能配了别的模型，档位顺序不一样，不在这里降（拿不到模型名时按主的算）。"""
-    model = getattr(provider, "model", None)
-    if model is None:
-        model = getattr(getattr(provider, "inner", None), "model", None)
-    return model is None or model == settings.model
-
-
 def _provider_for_step(context: AgentContext) -> tuple[LLMProvider, str | None]:
-    """按这一步的性质挑 provider：工具结果续跑降一档思考，其余照配置。"""
-    settings = context.settings
+    """每一步都用同一个 provider、同一个思考档位，主线不降档。
+
+    降档只发生在派子 agent 的时候，按 kind 取（见 agent.py 的 subagent_provider）：
+    搜索、探索类的 explore 降一级，动手改东西的 general 跟主 agent 一样。"""
     provider = context.provider
-    if not settings.reasoning_step_down or not _continuing_after_tools(context):
-        return provider, settings.reasoning_effort
-    if not _is_main_model(provider, settings):
-        return provider, settings.reasoning_effort
-    effort = step_down_reasoning(settings.reasoning_effort, settings.reasoning_choices)
-    if effort == settings.reasoning_effort:
-        return provider, effort
-    derive = getattr(provider, "with_reasoning_effort", None)
-    if derive is None:
-        return provider, settings.reasoning_effort
-    return derive(effort), effort
+    return provider, getattr(provider, "reasoning_effort", context.settings.reasoning_effort)
 
 
 class ThinkNode(AgentNode):

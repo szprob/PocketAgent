@@ -87,8 +87,8 @@ class AgentContext:
     journal: SessionJournal | None = None
     # AI 自动审批用的 provider（按设置里的审批模型和思考档位现取）；None 表示就用 provider
     review_provider: Callable[[], LLMProvider] | None = None
-    # 子 agent 用的 provider（按设置里的子 agent 模型和思考档位现取）；None 表示就用 provider
-    subagent_provider: Callable[[], LLMProvider] | None = None
+    # 子 agent 用的 provider（按设置里的子 agent 模型和思考档位现取，参数是 kind）；None 表示就用 provider
+    subagent_provider: Callable[[str], LLMProvider] | None = None
     # MCP 连接（同一进程里同 home_dir 的会话共用一个）；None 表示这个上下文不接 MCP（子 agent 就是）
     mcp_manager: McpManager | None = None
     # 用户配的钩子（见 safety/hooks.py）；None 表示这个上下文不跑钩子

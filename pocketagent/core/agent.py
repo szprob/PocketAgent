@@ -712,8 +712,11 @@ def attach_auxiliary_providers(context: AgentContext, usage_log: UsageLog | None
     def review_provider() -> LLMProvider:
         return provider_for(context.settings.review_profile, context.settings.review_reasoning)
 
-    def subagent_provider() -> LLMProvider:
-        return provider_for(context.settings.subagent_profile, context.settings.subagent_reasoning)
+    def subagent_provider(kind: str) -> LLMProvider:
+        # 按 kind 取档位：explore 默认在主 agent 的档位上降一级，general 默认跟主 agent 一样
+        settings = context.settings
+        choice = settings.subagent_explore_reasoning if kind == "explore" else settings.subagent_general_reasoning
+        return provider_for(settings.subagent_profile, choice)
 
     context.review_provider = review_provider
     context.subagent_provider = subagent_provider

@@ -3,7 +3,8 @@
 - 消息：主 agent 的系统提示 + 一段「你是子 agent」的说明 + 任务本身，看不到主对话
 - 工具：explore 只给只读工具；general 给全部工具。都去掉 ask_user（不能问用户）和 subagent（不能再派）
 - 权限：和主 agent 用同一个审批模式、同一组「本任务总是允许」；要审批时卡片上标明是哪个子 agent
-- 模型：默认和主 agent 一样，设置里可以单独选模型 / 思考档位（subagent_model / subagent_reasoning）；
+- 模型：默认和主 agent 一样，设置里可以单独选模型 / 思考档位（subagent_model /
+  subagent_explore_reasoning / subagent_general_reasoning，explore 默认比主 agent 降一级）；
   用量记录、沙箱、记忆目录都和主 agent 共用；检查点不单独拍，主 agent 这一轮动手前已经拍过
 - 时长：explore / general 各有上限（分钟，等用户审批的时间不算）。到点不直接丢掉：取消正在做的事（bash 连进程树一起杀）、
   补齐没结果的工具调用，再让它不带工具写一次总结交回来
@@ -267,8 +268,8 @@ async def run_subagent(parent: AgentContext, request: SubagentRequest, call_id: 
     events.subscribe(forwarder)
     context = AgentContext(
         settings=settings,
-        # 设置里可以给子 agent 单独选模型和思考档位
-        provider=parent.subagent_provider() if parent.subagent_provider else parent.provider,
+        # 设置里可以给子 agent 单独选模型和思考档位（explore / general 各一套）
+        provider=parent.subagent_provider(request.kind) if parent.subagent_provider else parent.provider,
         tools=tools,
         tool_context=tool_context,
         permissions=permissions,
