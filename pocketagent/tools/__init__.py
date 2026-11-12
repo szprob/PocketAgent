@@ -36,11 +36,13 @@ def default_tool_registry(
     ripgrep_path: str | None = None,
     image_gen: ImageGenSettings | None = None,
     image_search: bool = True,
+    image_search_tavily_key: str | None = None,
     computer_use: bool = False,
 ) -> ToolRegistry:
     """内置工具。配了联网搜索的密钥才有 web_search；web_fetch 不要密钥，默认带上；有技能才有 activate_skill。
-    image_gen 配了密钥才有 generate_image；search_images（百度 / 360 / 必应，免费）和 download_image 默认带上；
-    screenshot / computer 能操作整台电脑，只在 macOS 上、而且用户在设置里勾了才有。"""
+    image_gen 配了密钥才有 generate_image；search_images（Tavily / 百度 / 360）和 download_image 默认带上，
+    配了 Tavily 密钥就多一个带画面描述的搜图源；screenshot / computer 能操作整台电脑，只在 macOS 上、
+    而且用户在设置里勾了才有。"""
     tools: list[Tool] = [
         ReadFileTool(),
         ListDirTool(),
@@ -64,7 +66,7 @@ def default_tool_registry(
     if image_gen is not None:
         tools.append(GenerateImageTool(image_gen))
     if image_search:
-        tools.append(SearchImagesTool())
+        tools.append(SearchImagesTool(tavily_api_key=image_search_tavily_key))
     if image_gen is not None or image_search:
         tools.append(DownloadImageTool())
     if skills:

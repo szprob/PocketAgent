@@ -1,16 +1,15 @@
 """图片工具：generate_image 生图，search_images 搜图，download_image 存图。
 
 生图走 OpenAI 兼容的 /images/generations（默认智谱 CogView，cogview-3-flash 免费；也能换成别的网关）；
-搜图依次试百度图片、360 图片、必应图片结果页，都免费、不用密钥，只给元数据和链接，不下载；
-下载单独一个工具，因为它是写文件，而且默认沙箱里不联网。图片落到工作区后，回复里用相对路径
-![...](...) 引用，界面会直接显示，一轮结束的「本轮产出的图片」也会自动带上。
+搜图按 Tavily（配了密钥才有，带画面描述）→ 百度图片 → 360 图片的顺序累积结果，后两家免费、不用密钥，
+只给元数据和链接，不下载；下载单独一个工具，因为它是写文件，而且默认沙箱里不联网。图片落到工作区后，
+回复里用相对路径 ![...](...) 引用，界面会直接显示，一轮结束的「本轮产出的图片」也会自动带上。
 """
 
 import base64
 import binascii
 import datetime
 import html
-import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,7 +19,7 @@ from urllib.parse import unquote, urlparse
 import httpx
 
 from pocketagent.tools.base import Tool, ToolAccess, ToolContext, ToolKind, ToolResult
-from pocketagent.tools.web import BING_HEADERS, USER_AGENT
+from pocketagent.tools.web import USER_AGENT
 
 IMAGE_GEN_PROVIDERS = ["zhipu", "openai"]
 DEFAULT_IMAGE_MODEL_BY_PROVIDER = {"zhipu": "cogview-3-flash", "openai": "gpt-image-1"}
@@ -38,10 +37,12 @@ MAX_IMAGE_BYTES = 30 * 1024 * 1024
 DEFAULT_SEARCH_COUNT = 5
 MAX_SEARCH_COUNT = 10
 DESCRIPTION_LIMIT_CHARS = 200
-BING_IMAGE_SEARCH_URL = "https://www.bing.com/images/search"
 BAIDU_IMAGE_SEARCH_URL = "https://image.baidu.com/search/acjson"
 SO360_IMAGE_SEARCH_URL = "https://image.so.com/j"
-# 搜图统一用浏览器 UA：三家都会把机器人 UA 挡掉或者塞一堆无关结果
+TAVILY_SEARCH_URL = "https://api.tavily.com/search"
+# Tavily 的图片一次最多给 5 张，跟 max_results 无关；要更多只能靠百度 / 360 补
+TAVILY_MAX_IMAGES = 5
+# 搜图统一用浏览器 UA：百度 / 360 会把机器人 UA 挡掉或者塞一堆无关结果
 IMAGE_SEARCH_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -88,10 +89,6 @@ IMAGE_EXTENSION_BY_MIME = {
     "image/gif": ".gif",
     "image/avif": ".avif",
 }
-
-# 必应把每张图的元数据放在结果项 <a class="iusc" m="{...}"> 的 m 属性里（HTML 转义过的 JSON）
-BING_IMAGE_ITEM_PATTERN = re.compile(r'<a\b[^>]*class="[^"]*\biusc\b[^"]*"[^>]*>', re.IGNORECASE)
-BING_IMAGE_METADATA_PATTERN = re.compile(r'\bm="([^"]*)"')
 
 
 @dataclass
@@ -352,51 +349,78 @@ class GenerateImageTool(Tool):
 
 # ---- 搜图 ----
 
+# 官方图片搜索 API 这两年集体退场：必应 2025-08-11 退役，Google Custom Search 关了新注册、2027-01-01 停服。
+# 必应结果页抓取也别用了——实测它会给和 query 完全无关的结果（搜「特斯拉 model y」出辣椒图），是反爬降级。
+# 现在这套是：Tavily（有密钥才用，带画面描述，一次最多 5 张）→ 百度图片 acjson → 360 图片 /j，
+# 后两家免费无密钥、中文 / 英文各有擅长，哪家空结果或者挂了就自动换下一家。
 
-def parse_bing_images(page: str) -> list[dict[str, Any]]:
-    """从必应图片结果页里抠出标题、原图、缩略图、来源；解析不出来的条目直接跳过。"""
+
+def _clip(text: str, limit: int) -> str:
+    text = text.strip()
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+def parse_tavily_images(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Tavily 的 images 只给 url 和一句画面描述，没有标题、来源页和尺寸。
+
+    开 include_image_descriptions 时是对象数组，关着的时候是纯 URL 字符串数组，两种都认。
+    """
     results: list[dict[str, Any]] = []
     seen_urls: set[str] = set()
-    for tag in BING_IMAGE_ITEM_PATTERN.findall(page):
-        metadata = BING_IMAGE_METADATA_PATTERN.search(tag)
-        if metadata is None:
-            continue
-        try:
-            item = json.loads(html.unescape(metadata.group(1)))
-        except json.JSONDecodeError:
-            continue
-        image_url = str(item.get("murl") or "")
-        if not image_url or image_url in seen_urls:
+    for entry in payload.get("images") or []:
+        if isinstance(entry, dict):
+            image_url = str(entry.get("url") or "")
+            description = re.sub(r"\s+", " ", str(entry.get("description") or "")).strip()
+        else:
+            image_url, description = str(entry or ""), ""
+        if not image_url.startswith(("http://", "https://")) or image_url in seen_urls:
             continue
         seen_urls.add(image_url)
-        source_url = str(item.get("purl") or "")
         results.append(
             {
-                "title": str(item.get("t") or "").strip(),
+                # 没有标题，就把画面描述当标题（模型看不到图，这句描述比什么都值钱）
+                "title": _clip(description, 80),
                 "image_url": image_url,
-                "thumbnail_url": str(item.get("turl") or ""),
-                "source_url": source_url,
-                "hostname": urlparse(source_url).hostname or "",
-                "description": re.sub(r"\s+", " ", str(item.get("desc") or "")).strip(),
+                "thumbnail_url": "",
+                "source_url": "",
+                "hostname": urlparse(image_url).hostname or "",
+                "description": "",
                 "size": "",
             }
         )
     return results
 
 
-async def _search_bing(client: httpx.AsyncClient, query: str, count: int) -> list[dict[str, Any]]:
-    params = {"q": query, "form": "HDRSC2", "first": "1", "setlang": "zh-Hans"}
+async def _search_tavily(
+    client: httpx.AsyncClient, api_key: str, query: str, count: int
+) -> list[dict[str, Any]]:
+    body = {
+        "query": query,
+        "max_results": max(count, TAVILY_MAX_IMAGES),
+        "include_images": True,
+        "include_image_descriptions": True,
+        # basic 一刀一次（advanced 两次），图片搜索用不着更深的抓取
+        "search_depth": "basic",
+    }
     try:
-        response = await client.get(BING_IMAGE_SEARCH_URL, params=params, headers=BING_HEADERS)
+        response = await client.post(
+            TAVILY_SEARCH_URL, json=body, headers={"Authorization": f"Bearer {api_key}"}
+        )
     except httpx.HTTPError as error:
         raise ImageRequestFailed(f"连不上：{type(error).__name__}: {error}") from error
+    if response.status_code in (401, 403):
+        raise ImageRequestFailed(f"密钥无效（HTTP {response.status_code}）")
+    if response.status_code == 429:
+        raise ImageRequestFailed("额度用完了（HTTP 429）")
     if response.status_code != 200:
         raise ImageRequestFailed(f"HTTP {response.status_code}")
-    results = parse_bing_images(response.text)
-    if not results and "iusc" not in response.text:
-        # 正常没结果时页面里也有 iusc 结果项；连它都没有，多半是被限流了
-        raise ImageRequestFailed("没给结果页（可能被限流了）")
-    return results[:count]
+    try:
+        payload = response.json()
+    except ValueError as error:
+        raise ImageRequestFailed("返回的不是 JSON") from error
+    if not isinstance(payload, dict):
+        raise ImageRequestFailed("返回的结构不对")
+    return parse_tavily_images(payload)[:count]
 
 
 def _clean_title(text: Any) -> str:
@@ -526,17 +550,24 @@ async def _search_so360(client: httpx.AsyncClient, query: str, count: int) -> li
     return parse_so360_images(payload)
 
 
-async def search_images_online(query: str, count: int) -> "ImageSearchOutcome":
-    """按百度 → 360 → 必应的顺序累积结果，够数就停；三家都拿不到才报错。
+async def search_images_online(
+    query: str, count: int, tavily_api_key: str | None = None
+) -> "ImageSearchOutcome":
+    """按 Tavily（配了密钥才用）→ 百度 → 360 的顺序累积结果，够数就停；全都拿不到才报错。
 
-    官方图片搜索 API 这两年集体退场（必应 2025-08-11 退役、Google Custom Search 关了新注册），
-    能免费拿到「像正常搜索一样」结果的只剩各家结果页自己在用的接口，所以这里靠多源兜底而不是单一 API。
+    Tavily 一次最多给 5 张但带画面描述（模型看不到图，这句描述能决定它选哪张），所以排最前；
+    要得比 5 张多、或者没配密钥 / 额度用完，就由百度、360 补齐。
     """
     collected: list[dict[str, Any]] = []
     seen_urls: set[str] = set()
     engines: list[str] = []
     failures: list[str] = []
-    sources = (("百度图片", _search_baidu), ("360图片", _search_so360), ("必应图片", _search_bing))
+    sources: list[tuple[str, Any]] = []
+    if tavily_api_key:
+        sources.append(
+            ("Tavily", lambda client, q, n: _search_tavily(client, tavily_api_key, q, n))
+        )
+    sources += [("百度图片", _search_baidu), ("360图片", _search_so360)]
     async with httpx.AsyncClient(
         timeout=SEARCH_TIMEOUT_SECONDS, follow_redirects=True, headers=IMAGE_SEARCH_HEADERS
     ) as client:
@@ -578,6 +609,8 @@ def format_search_results(outcome: "ImageSearchOutcome") -> str:
         if item.get("source_url"):
             host = f"（{item['hostname']}）" if item.get("hostname") else ""
             lines.append(f"   来源：{item['source_url']}{host}")
+        elif item.get("hostname"):
+            lines.append(f"   图源：{item['hostname']}")
         if item.get("description"):
             lines.append(f"   简介：{item['description'][:DESCRIPTION_LIMIT_CHARS]}")
     lines.append("要把哪张存到工作区，用 download_image 传它的原图链接。")
@@ -587,7 +620,7 @@ def format_search_results(outcome: "ImageSearchOutcome") -> str:
 class SearchImagesTool(Tool):
     name = "search_images"
     description = (
-        "搜索网上现成的图片，返回标题、尺寸、原图链接、缩略图和来源。找参考图、素材时用；"
+        "搜索网上现成的图片，返回标题 / 画面描述、尺寸、原图链接和来源。找参考图、素材时用；"
         "要把图存进项目再用 download_image。"
     )
     kind = ToolKind.READ
@@ -599,6 +632,10 @@ class SearchImagesTool(Tool):
         },
         "required": ["query"],
     }
+
+    def __init__(self, tavily_api_key: str | None = None) -> None:
+        # 配了 Tavily 密钥就多一个带画面描述的源，没配就只走百度 / 360
+        self.tavily_api_key = tavily_api_key
 
     def describe(self, arguments: dict[str, Any]) -> str:
         return str(arguments.get("query", ""))
@@ -613,7 +650,7 @@ class SearchImagesTool(Tool):
             count = DEFAULT_SEARCH_COUNT
         count = min(max(count, 1), MAX_SEARCH_COUNT)
         try:
-            outcome = await search_images_online(query, count)
+            outcome = await search_images_online(query, count, self.tavily_api_key)
         except ImageRequestFailed as error:
             return ToolResult(str(error), is_error=True)
         if not outcome.results:

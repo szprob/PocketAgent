@@ -211,6 +211,7 @@ def build_tool_registry(settings: Settings, skills: list[Skill]) -> ToolRegistry
         ripgrep_path=settings.ripgrep_path,
         image_gen=settings.image_gen,
         image_search=settings.image_search,
+        image_search_tavily_key=settings.image_search_tavily_key,
         computer_use=settings.computer_use,
     )
 

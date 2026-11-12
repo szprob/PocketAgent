@@ -1,9 +1,7 @@
-"""图片工具的单元测试：必应 / 百度 / 360 结果解析、命名、配置解析、三个工具的落盘行为（网络全部打桩）。"""
+"""图片工具的单元测试：Tavily / 百度 / 360 结果解析、命名、配置解析、三个工具的落盘行为（网络全部打桩）。"""
 
 import asyncio
 import base64
-import html
-import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -22,8 +20,8 @@ from pocketagent.tools.image import (
     image_extension,
     image_file_stem,
     parse_baidu_images,
-    parse_bing_images,
     parse_so360_images,
+    parse_tavily_images,
     sniff_image_extension,
     unique_image_path,
 )
@@ -35,29 +33,44 @@ TINY_PNG = base64.b64decode(
 )
 
 
-def bing_item(title: str, image_url: str, source_url: str) -> str:
-    metadata = {"t": title, "murl": image_url, "turl": "https://thumb.example/x", "purl": source_url, "desc": "一张图"}
-    return f'<a class="iusc" m="{html.escape(json.dumps(metadata), quote=True)}"></a>'
+def tavily_image(url: str, description: str | None) -> dict:
+    return {"url": url, "description": description}
 
 
-class BingParseTest(unittest.TestCase):
-    def test_extracts_and_deduplicates(self) -> None:
-        page = (
-            "<html><body>"
-            + bing_item("标题一", "https://a.example/1.png", "https://a.example/page")
-            + bing_item("标题二", "https://b.example/2.jpg", "https://b.example/page")
-            + bing_item("重复", "https://a.example/1.png", "https://a.example/page")
-            + '<a class="other" m="{}"></a>'
-            + "</body></html>"
-        )
-        results = parse_bing_images(page)
-        self.assertEqual([item["title"] for item in results], ["标题一", "标题二"])
-        self.assertEqual(results[0]["image_url"], "https://a.example/1.png")
+class TavilyParseTest(unittest.TestCase):
+    def test_description_becomes_title_and_dedupes(self) -> None:
+        payload = {
+            "images": [
+                tavily_image("https://a.example/1.jpg", "A sleek silver Tesla Model 3 driving along a coast road"),
+                tavily_image("https://a.example/1.jpg", "重复"),
+                tavily_image("https://b.example/2.jpg", None),
+                tavily_image("ftp://bad.example/3.jpg", "协议不对"),
+            ]
+        }
+
+        results = parse_tavily_images(payload)
+
+        self.assertEqual([item["image_url"] for item in results], ["https://a.example/1.jpg", "https://b.example/2.jpg"])
+        # 没有标题，描述直接当标题；模型看不到图，这句描述就是它唯一的判断依据
+        self.assertEqual(results[0]["title"], "A sleek silver Tesla Model 3 driving along a coast road")
         self.assertEqual(results[0]["hostname"], "a.example")
-        self.assertEqual(results[0]["description"], "一张图")
+        self.assertEqual(results[1]["title"], "")
 
-    def test_no_results(self) -> None:
-        self.assertEqual(parse_bing_images("<html><body>没有结果</body></html>"), [])
+    def test_accepts_plain_url_list(self) -> None:
+        results = parse_tavily_images({"images": ["https://a.example/1.jpg", "https://b.example/2.jpg"]})
+
+        self.assertEqual(len(results), 2)
+        self.assertEqual(results[0]["title"], "")
+
+    def test_clips_long_description(self) -> None:
+        results = parse_tavily_images({"images": [tavily_image("https://a.example/1.jpg", "很长" * 100)]})
+
+        self.assertLessEqual(len(results[0]["title"]), 80)
+        self.assertTrue(results[0]["title"].endswith("…"))
+
+    def test_tolerates_garbage(self) -> None:
+        self.assertEqual(parse_tavily_images({}), [])
+        self.assertEqual(parse_tavily_images({"images": [None, 42, {"url": ""}]}), [])
 
 
 class BaiduParseTest(unittest.TestCase):
@@ -294,7 +307,7 @@ class SearchImagesToolTest(unittest.TestCase):
             engines=["百度图片"],
         )
 
-        async def fake_search(query, count):
+        async def fake_search(query, count, tavily_api_key=None):
             return outcome
 
         with patch("pocketagent.tools.image.search_images_online", fake_search):
@@ -307,8 +320,47 @@ class SearchImagesToolTest(unittest.TestCase):
         self.assertIn("来源：https://a.example/page（a.example）", result.content)
         self.assertIn("download_image", result.content)
 
+    def test_tavily_only_result_shows_image_host(self) -> None:
+        outcome = ImageSearchOutcome(
+            results=[
+                {
+                    "title": "A white cat sleeping on a wooden table",
+                    "image_url": "https://cdn.example/cat.jpg",
+                    "thumbnail_url": "",
+                    "source_url": "",
+                    "hostname": "cdn.example",
+                    "description": "",
+                    "size": "",
+                }
+            ],
+            engines=["Tavily"],
+        )
+
+        async def fake_search(query, count, tavily_api_key=None):
+            return outcome
+
+        with patch("pocketagent.tools.image.search_images_online", fake_search):
+            result = asyncio.run(self.tool.run({"query": "cat"}, self.context))
+
+        self.assertIn("找到 1 张图（Tavily）", result.content)
+        self.assertIn("1. A white cat sleeping on a wooden table", result.content)
+        self.assertIn("图源：cdn.example", result.content)
+
+    def test_passes_tavily_key_from_settings(self) -> None:
+        seen: list[str | None] = []
+
+        async def fake_search(query, count, tavily_api_key=None):
+            seen.append(tavily_api_key)
+            return ImageSearchOutcome(results=[], engines=[])
+
+        tool = SearchImagesTool(tavily_api_key="tvly-test")
+        with patch("pocketagent.tools.image.search_images_online", fake_search):
+            asyncio.run(tool.run({"query": "猫"}, self.context))
+
+        self.assertEqual(seen, ["tvly-test"])
+
     def test_failures_become_error_results(self) -> None:
-        async def failing(query, count):
+        async def failing(query, count, tavily_api_key=None):
             raise ImageRequestFailed("搜图没成功 —— 百度图片：HTTP 403；360图片：没有结果")
 
         with patch("pocketagent.tools.image.search_images_online", failing):

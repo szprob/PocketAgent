@@ -537,7 +537,8 @@ class AppConfig:
     web_search_api_keys: dict[str, str] = field(default_factory=dict)
     web_fetch_enabled: bool = True
     # 图片：generate_image 默认走智谱 CogView（cogview-3-flash 免费），密钥空着就用智谱模型的；
-    # search_images 依次抓百度 / 360 / 必应的图片结果，免费、不用密钥。模型 / 接口地址空着用 IMAGE 模块里的默认
+    # search_images 按 Tavily → 百度 → 360 累积结果（Tavily 配了搜索密钥才用，带画面描述）。
+    # 模型 / 接口地址空着用 IMAGE 模块里的默认
     image_gen_enabled: bool = True
     image_gen_provider: str = "zhipu"
     image_gen_model: str | None = None
@@ -979,6 +980,9 @@ class Settings:
     # 图片工具：image_gen 为 None 表示没开（或没有密钥）
     image_gen: ImageGenSettings | None = None
     image_search: bool = True
+    # 搜图用的 Tavily 密钥（沿用联网搜索那套解析：单独配的槽 → TAVILY_API_KEY 环境变量）；
+    # 空着就只走百度 / 360 这两个免费源
+    image_search_tavily_key: str | None = None
     computer_use: bool = False
     # 钩子：在固定时机跑用户自己的脚本（见 safety/hooks.py）
     hooks: list[HookDefinition] = field(default_factory=list)
@@ -1091,6 +1095,10 @@ class Settings:
         self.web_fetch = app_config.web_fetch_enabled
         self.image_gen = app_config.image_gen_settings()
         self.image_search = app_config.image_search_enabled
+        # 搜图复用联网搜索的 Tavily 密钥：有就用带画面描述的源，没有就只走百度 / 360
+        self.image_search_tavily_key = (
+            app_config.resolved_web_search_key("tavily") if app_config.image_search_enabled else None
+        )
         self.computer_use = app_config.computer_use_enabled
         self.hooks = list(app_config.hooks)
         self.sandbox_enabled = app_config.sandbox_enabled

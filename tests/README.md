@@ -48,7 +48,7 @@ make test-live          # = POCKETAGENT_LIVE=1 python -m unittest discover -s te
 
 - 模型：OpenAI 兼容接口的 `:free` 模型 —— 流式文本、工具调用、usage
 - agent 主循环：读文件、写文件、bash、`web_fetch`，顺带检查会话 / trace / 用量落盘
-- 网页：`web_fetch` 读 example.com、必应搜索、搜图（百度 / 360 / 必应）、下载图片
+- 网页：`web_fetch` 读 example.com、必应搜索、搜图（Tavily / 百度 / 360）、下载图片
 - 生图：智谱 `cogview-3-flash`（需要配置里有智谱密钥，没有就跳过）
 - CLI：真的起 `python -m pocketagent` 子进程跑一句话，检查退出码和输出
 
