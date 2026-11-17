@@ -3859,6 +3859,7 @@ code.md-inline-code {
   --trace-model-thinking: #c6b4ea;
   --trace-tool: #e08a2c;
   --trace-error: var(--red);
+  --trace-review: #1f9a9a;
   gap: 8px;
 }
 .trace-toolbar { display: flex; align-items: center; gap: 6px; flex: none; }
@@ -3982,3 +3983,21 @@ code.md-inline-code {
 .trace-child-summary { overflow: hidden; color: var(--text-faint); text-overflow: ellipsis; white-space: nowrap; }
 .trace-empty { padding: 18px 4px; color: var(--text-faint); font-size: calc(13px * var(--font-scale)); }
 .trace-empty.error { color: var(--trace-error); }
+.trace-export {
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: calc(12px * var(--font-scale));
+  cursor: pointer;
+}
+.trace-export:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.trace-export:disabled { opacity: 0.45; cursor: default; }
+.trace-source { flex: none; margin-top: -2px; color: var(--text-faint); font-size: calc(11px * var(--font-scale)); }
+.trace-source:empty { display: none; }
+.trace-block.kind-review { background: var(--trace-review); }
+.trace-block.kind-summary { background: var(--trace-context); }
+.trace-badge.kind-review { color: var(--trace-review); background: color-mix(in srgb, var(--trace-review) 14%, transparent); }
+.trace-badge.kind-summary { color: var(--trace-context); background: color-mix(in srgb, var(--trace-context) 12%, transparent); }

@@ -1,6 +1,7 @@
 // 右侧栏「轨迹」：参考 DeepSeek Harness 的轨迹页，放在对话旁边，不用切页。
 // 上面一条时间轴（输入 / 模型 / 工具三行色块，模型的色块浅色是思考、深色是输出），下面按轮列出每一步，点开看完整内容。
-// 数据来自 GET /api/sessions/{id}/trace（服务端从 trace 文件整理，见 server/trace_view.py）；
+// 数据来自 GET /api/sessions/{id}/trace：服务端从模型调用原文整理（轨迹就是原文，这里只是排得好看），
+// 老任务没有原文才退回事件记录（见 server/trace_view.py）。「导出」下载的就是这份原文（GET .../calls）。
 // 任务跑着时收到事件就节流后重新取一遍，面板没打开时只记一笔，打开时再取。
 
 import { button, el } from "./dom.js";
@@ -14,6 +15,12 @@ const KIND_LABELS = {
   tool: "工具",
   context: "上下文",
   error: "出错",
+  review: "审批",
+  summary: "压缩",
+};
+const SOURCE_NOTES = {
+  calls: "来源：模型调用原文（每次请求和回复原样）",
+  trace: "来源：事件记录（这个任务没有原文，导出不了）",
 };
 const LANES = [
   { key: "input", label: "输入" },
@@ -27,6 +34,8 @@ const LANE_OF_KIND = {
   context: "input",
   assistant: "model",
   error: "model",
+  review: "model",
+  summary: "model",
   tool: "tool",
 };
 const REFRESH_DELAY_MS = 600;
@@ -50,6 +59,7 @@ export class TraceView {
     this.byDuration = true;
     this.showChildren = true;
     this.query = "";
+    this.notice = "";
     this.expanded = new Set();
     this.selectedId = null;
     this.build();
@@ -73,11 +83,14 @@ export class TraceView {
       this.query = this.search.value.trim().toLowerCase();
       this.renderList();
     });
-    toolbar.append(this.durationToggle, this.childrenToggle, this.search);
+    this.exportButton = button("trace-export", "导出", "", "下载这个任务每次调模型的完整请求和回复（JSONL，一行一次调用）");
+    this.exportButton.addEventListener("click", () => this.exportCalls());
+    toolbar.append(this.durationToggle, this.childrenToggle, this.search, this.exportButton);
 
+    this.sourceNote = el("div", "trace-source");
     this.timeline = el("div", "trace-timeline");
     this.list = el("div", "trace-list");
-    this.container.replaceChildren(toolbar, this.timeline, this.list);
+    this.container.replaceChildren(toolbar, this.sourceNote, this.timeline, this.list);
     this.render();
   }
 
@@ -161,6 +174,9 @@ export class TraceView {
   render() {
     this.durationToggle.classList.toggle("active", this.byDuration);
     this.childrenToggle.classList.toggle("active", this.showChildren);
+    const source = this.data?.source;
+    this.sourceNote.textContent = this.notice || SOURCE_NOTES[source] || "";
+    this.exportButton.disabled = !this.taskId || source === "trace";
     this.renderTimeline();
     this.renderList();
   }
@@ -360,6 +376,32 @@ export class TraceView {
     return detail;
   }
 
+  // 导出原文：取这个任务每次调用的完整请求和回复，拼成 JSONL 让浏览器 / 桌面端存下来
+  async exportCalls() {
+    const taskId = this.taskId;
+    if (!taskId) {
+      return;
+    }
+    this.notice = "正在导出…";
+    this.render();
+    try {
+      const { calls } = await requestJson(`/api/sessions/${encodeURIComponent(taskId)}/calls`);
+      if (!calls?.length) {
+        this.notice = "这个任务没有模型调用原文可以导出";
+      } else {
+        downloadText(`pocketagent-calls-${taskId}.jsonl`, calls.map((call) => JSON.stringify(call)).join("\n") + "\n");
+        this.notice = `已导出 ${calls.length} 次调用`;
+      }
+    } catch (error) {
+      this.notice = `导出失败：${error.message || error}`;
+    }
+    this.render();
+    window.setTimeout(() => {
+      this.notice = "";
+      this.render();
+    }, 4000);
+  }
+
   // 时间轴上点了一个色块：列表里选中那一步并滚过去（被搜索过滤掉的先清掉搜索）
   select(entryId) {
     this.selectedId = entryId;
@@ -372,6 +414,17 @@ export class TraceView {
     row = this.list.querySelector(`[data-entry-id="${entryId}"]`);
     row?.scrollIntoView({ block: "nearest" });
   }
+}
+
+function downloadText(fileName, text) {
+  const url = URL.createObjectURL(new Blob([text], { type: "application/x-ndjson" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 function durationSeconds(entry) {

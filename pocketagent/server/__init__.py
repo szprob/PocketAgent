@@ -36,7 +36,8 @@ REST（都在 /api 下）：
   sessions/{id}       GET / PATCH / DELETE   快照 / 改标题 / 删除
   sessions/{id}/rewind                   POST 删掉某条用户消息和之后的全部对话，把这句话放回输入框
   sessions/{id}/overview                 右侧栏概要（用量、缓存命中、最新回复），比快照轻
-  sessions/{id}/trace                    右侧栏轨迹：每一步（用户、模型、工具、子调用、压缩、出错）和起止时间
+  sessions/{id}/trace                    右侧栏轨迹：每一步和起止时间（有模型调用原文就从原文整理，source 写明来源）
+  sessions/{id}/calls                    这个任务每次调模型的完整请求体和回复（轨迹页「导出」用）
   sessions/{id}/attachments              POST 上传（multipart），GET .../{附件 id} 取文件
   sessions/{id}/file/raw                 GET 会话工作区里的原始文件（聊天和产出里的图片）
   sessions/{id}/changes                  GET 文件变更 + 检查点（影子 git），GET .../diff?path=，POST .../revert

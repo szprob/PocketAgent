@@ -1022,11 +1022,16 @@ class WebRound3Test(WebTestBase):
             await self._receive_until(socket_client, is_event("turn_end"))
 
         trace = await self._get_json(f"/api/sessions/{session_id}/trace")
+        calls = await self._get_json(f"/api/sessions/{session_id}/calls")
 
+        # 轨迹就是模型调用原文整理出来的；导出拿到的是同一份原文
+        self.assertEqual(trace["source"], "calls")
+        self.assertEqual(len(calls["calls"]), 1)
+        self.assertEqual(calls["calls"][0]["response"]["text"], "你好呀")
         self.assertEqual([entry["kind"] for entry in trace["entries"]], ["system", "user", "assistant"])
         self.assertEqual(trace["entries"][1]["text"], "你好")
         self.assertEqual(trace["entries"][2]["text"], "你好呀")
-        self.assertEqual(trace["turns"][0]["stop_reason"], "done")
+        self.assertEqual(calls["calls"][0]["request"]["messages"][-1]["content"], "你好")
         missing = await self.client.get("/api/sessions/nope/trace", params=AUTH)
         self.assertEqual(missing.status, 404)
 

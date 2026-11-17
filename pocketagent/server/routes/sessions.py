@@ -9,7 +9,8 @@ from aiohttp import web
 from pocketagent.server import files
 from pocketagent.server.common import error_response, find_session, json_response, session_manager
 from pocketagent.server.session import SessionBusyError, WebSession
-from pocketagent.server.trace_view import build_trace_view
+from pocketagent.evaluation.call_log import read_calls
+from pocketagent.server.trace_view import build_task_trace
 
 
 async def list_sessions(request: web.Request) -> web.Response:
@@ -49,15 +50,28 @@ async def get_session(request: web.Request) -> web.Response:
 
 
 async def get_trace(request: web.Request) -> web.Response:
-    """右侧栏「轨迹」：这个任务的每一步（模型、工具、子调用……）和时间，从 trace 文件整理出来。"""
+    """右侧栏「轨迹」：这个任务的每一步和时间。有模型调用原文就从原文整理（轨迹就是原文，只是排得好看），
+    没有（老任务）退回事件记录。"""
     web_session = find_session(request)
     messages = web_session.session.messages
     system_prompt = ""
     if messages and messages[0].get("role") == "system":
         system_prompt = str(messages[0].get("content") or "")
-    trace_path = web_session.settings.traces_dir / f"{web_session.id}.jsonl"
-    # trace 可能有几兆，放到线程里读，不挡别的请求
-    return json_response(await asyncio.to_thread(build_trace_view, trace_path, system_prompt))
+    settings = web_session.settings
+    calls_path = settings.calls_dir / f"{web_session.id}.jsonl"
+    trace_path = settings.traces_dir / f"{web_session.id}.jsonl"
+    # 文件可能有几兆，放到线程里读，不挡别的请求
+    return json_response(await asyncio.to_thread(build_task_trace, calls_path, trace_path, system_prompt))
+
+
+async def get_calls(request: web.Request) -> web.Response:
+    """轨迹页的「导出」：这个任务每次调模型的完整请求体和回复（还原后的原文，和 pocketagent export-calls 一样）。"""
+    web_session = find_session(request)
+    calls_path = web_session.settings.calls_dir / f"{web_session.id}.jsonl"
+    if not calls_path.is_file():
+        return json_response({"calls": []})
+    calls = await asyncio.to_thread(lambda: list(read_calls(calls_path)))
+    return json_response({"calls": calls})
 
 
 async def update_session(request: web.Request) -> web.Response:

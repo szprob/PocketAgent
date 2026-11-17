@@ -45,13 +45,17 @@ class CallLog:
         self.recent: list[tuple[int, list[str]]] = []
         self.last_tools: tuple[int, str] | None = None
 
-    def record(self, request: dict[str, Any], response: LLMResponse, metadata: CallMetadata) -> int:
+    def record(
+        self, request: dict[str, Any], response: LLMResponse, metadata: CallMetadata, started: float | None = None
+    ) -> int:
+        """started：发请求的时间；time（写入时）就是收完回复的时间。轨迹的时间轴靠这两个画模型花了多久。"""
         body = copy.deepcopy(request)
         messages = body.pop("messages", [])
         tools = body.pop("tools", None)
         call_id = self.next_id
         record: dict[str, Any] = {
             "id": call_id,
+            "started": started,
             "time": time.time(),
             "meta": asdict(metadata),
             "request": body,
@@ -155,10 +159,11 @@ class CallRecordingProvider:
                 request = wire_request(self.inner, messages, tools)
             except Exception:
                 request = None
+        started = time.time()
         response = await self.inner.complete(messages, tools, listener)
         if request is not None:
             try:
-                self.call_log.record(request, response, self.metadata)
+                self.call_log.record(request, response, self.metadata, started)
             except OSError:
                 pass
         return response
@@ -188,7 +193,14 @@ def read_calls(path: Path) -> Iterator[dict[str, Any]]:
             elif "same_as" in tools_delta:
                 tools_by_id[record["id"]] = tools_by_id.get(tools_delta["same_as"])
                 request["tools"] = tools_by_id[record["id"]]
-            yield {"id": record["id"], "time": record.get("time"), "meta": record.get("meta"), "request": request, "response": record.get("response")}
+            yield {
+                "id": record["id"],
+                "started": record.get("started"),
+                "time": record.get("time"),
+                "meta": record.get("meta"),
+                "request": request,
+                "response": record.get("response"),
+            }
 
 
 def export_calls(directory: Path, output: Path, session_ids: list[str] | None = None) -> int:
