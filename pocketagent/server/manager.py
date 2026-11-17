@@ -14,6 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from pocketagent.evaluation.call_log import forget_call_log
 from pocketagent.account.usage import UsageLog
 from pocketagent.config import AppConfig, ConfigError, ModelProfile, Settings, normalize_web_search_provider
 from pocketagent.core.agent import close_shared_mcp_managers, create_provider, shared_mcp_manager
@@ -292,6 +293,9 @@ class SessionManager:
         self.store.delete(session_id)
         settings = self.base_settings
         (settings.traces_dir / f"{session_id}.jsonl").unlink(missing_ok=True)
+        if self.app_config.delete_calls_with_task:
+            # 模型调用原文默认跟着删；设置里关掉就留着当训练数据（见 evaluation/call_log.py）
+            forget_call_log(settings.calls_dir, session_id)
         shutil.rmtree(settings.attachments_dir / session_id, ignore_errors=True)
         shutil.rmtree(session_directory(settings.tool_outputs_root, session_id), ignore_errors=True)
 

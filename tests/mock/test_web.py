@@ -1035,6 +1035,26 @@ class WebRound3Test(WebTestBase):
         missing = await self.client.get("/api/sessions/nope/trace", params=AUTH)
         self.assertEqual(missing.status, 404)
 
+    async def test_deleting_a_task_deletes_or_keeps_its_raw_calls_as_configured(self) -> None:
+        """删任务时模型调用原文默认跟着删；设置里关掉就留着当训练数据。"""
+        manager = self.app[MANAGER_KEY]
+        paths = []
+        for keep in (False, True):
+            manager.app_config.delete_calls_with_task = not keep
+            self.responses.append(LLMResponse(text="好"))
+            session_id = await self._create_session()
+            async with self._connect(session_id) as socket_client:
+                await socket_client.receive_json()
+                await socket_client.send_json({"type": "user_message", "text": "你好"})
+                await self._receive_until(socket_client, is_event("turn_end"))
+            path = manager.base_settings.calls_dir / f"{session_id}.jsonl"
+            self.assertTrue(path.exists())
+            await self._send_json("DELETE", f"/api/sessions/{session_id}", {})
+            paths.append(path)
+
+        self.assertFalse(paths[0].exists())
+        self.assertTrue(paths[1].exists())
+
     async def test_file_tree_preview_and_folder_browsing(self) -> None:
         workspace = self.directories.workspace
         (workspace / "src").mkdir()

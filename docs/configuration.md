@@ -19,6 +19,7 @@
   "compact_threshold_percent": 80,
   "reasoning_across_turns": false,
   "record_model_calls": true,
+  "delete_calls_with_task": true,
   "web_search_enabled": true,
   "web_search_provider": "exa",
   "web_search_engine": "search_std",
@@ -63,7 +64,9 @@
   （系统提示、工具定义、全部消息、思考档位等参数，按各家 provider 的拼法，`extra_body` 展开到顶层）和收到的完整回复
   （文字、思考、工具调用的原始参数、各家的思考签名、用量、结束原因）存进 `~/.pocketagent/calls/<任务 id>.jsonl`。
   两次压缩之间历史只追加，所以消息只存相对之前某次调用的增量，工具定义没变只记「同第几次」；
-  `pocketagent export-calls [-s 任务id] [-o 文件]` 还原成每次完整的请求 + 回复，一字不差，拿去训练。密钥在请求头里，不会写进来
+  `pocketagent export-calls [-s 任务id] [-o 文件]` 还原成每次完整的请求 + 回复，一字不差，拿去训练。密钥在请求头里，不会写进来。
+  调用失败（重试完还是不行）的那次也记：回复是空的、带上出错原因。
+  删任务时原文默认一起删（`delete_calls_with_task`，同一栏的「删除任务时一起删除它的模型调用原文」），关掉就留着当训练数据
 - `visible: false` 的模型不出现在会话的模型列表里（已经在用它的任务不受影响）
 - 联网搜索：`web_search_provider` 可选 `exa`（默认，0.007 美元/次）/ `bing`（免费）/ `deepseek` / `zhipu`。
   `web_search_api_key` 空着时，`exa` 读环境变量 `EXA_API_KEY`，`deepseek` / `zhipu` 用对应厂商模型的密钥；

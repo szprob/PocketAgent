@@ -88,6 +88,7 @@ export function initSettings() {
     compactThreshold: byId("compact-threshold-select"),
     reasoningAcrossTurns: byId("reasoning-across-turns-input"),
     recordModelCalls: byId("record-model-calls-input"),
+    deleteCallsWithTask: byId("delete-calls-with-task-input"),
     webSearchEnabled: byId("web-search-enabled"),
     webSearchProvider: byId("web-search-provider"),
     webSearchEngine: byId("web-search-engine"),
@@ -482,6 +483,7 @@ export async function openSettings(tabName) {
   elements.compactThreshold.value = String(config.compact_threshold_percent);
   elements.reasoningAcrossTurns.checked = Boolean(config.reasoning_across_turns);
   elements.recordModelCalls.checked = config.record_model_calls !== false;
+  elements.deleteCallsWithTask.checked = config.delete_calls_with_task !== false;
   elements.webSearchEnabled.checked = config.web_search_enabled;
   elements.webSearchProvider.value = config.web_search_provider || "tavily";
   elements.webSearchEngine.value = config.web_search_engine;
@@ -841,6 +843,7 @@ async function saveSettings() {
     compact_threshold_percent: elements.compactThreshold.value,
     reasoning_across_turns: elements.reasoningAcrossTurns.checked,
     record_model_calls: elements.recordModelCalls.checked,
+    delete_calls_with_task: elements.deleteCallsWithTask.checked,
     web_search_enabled: elements.webSearchEnabled.checked,
     web_search_provider: elements.webSearchProvider.value,
     web_search_engine: elements.webSearchEngine.value,

@@ -307,6 +307,30 @@ class TraceViewFromCallsTest(unittest.TestCase):
             [("system", "系统提示词"), ("user", "读 a.txt"), ("assistant", "嗯"), ("tool", "a.txt"), ("assistant", "是 hi")],
         )
 
+    def test_failed_calls_show_up_and_tool_errors_come_from_the_event_trace(self) -> None:
+        system = {"role": "system", "content": "系统"}
+        user = {"role": "user", "content": "跑一下"}
+        calls = [
+            openai_call(0, [system, user], {"tool_calls": [{"id": "b1", "name": "bash", "arguments": '{"command": "false"}'}]}, 1.0, 2.0),
+            {**openai_call(1, [system, user, assistant_with_calls("", [("b1", "bash", '{"command": "false"}')]), {"role": "tool", "tool_call_id": "b1", "content": "退出码 1"}], {}, 3.0, 9.0), "response": None, "error": "APIConnectionError: 连不上"},
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            calls_path = Path(tmp) / "calls.jsonl"
+            raw = [{"id": c["id"], "started": c["started"], "time": c["time"], "meta": c["meta"], "request": {"model": "m"},
+                    "messages": {"base": None, "keep": 0, "append": c["request"]["messages"]}, "tools": {"absent": True},
+                    "response": c["response"], **({"error": c["error"]} if "error" in c else {})} for c in calls]
+            calls_path.write_text("\n".join(json.dumps(item, ensure_ascii=False) for item in raw) + "\n", encoding="utf-8")
+            trace_path = Path(tmp) / "trace.jsonl"
+            trace_path.write_text(json.dumps({"type": "tool_result", "time": 2.5, "call_id": "b1", "is_error": True, "denied": False}) + "\n", encoding="utf-8")
+            view = build_task_trace(calls_path, trace_path)
+
+        kinds = [entry["kind"] for entry in view["entries"]]
+        self.assertEqual(kinds, ["system", "user", "assistant", "tool", "error"])
+        tool, error = view["entries"][3], view["entries"][4]
+        self.assertTrue(tool["is_error"])
+        self.assertEqual(tool["result"], "退出码 1")
+        self.assertIn("调用模型失败：APIConnectionError", error["text"])
+
     def test_without_raw_calls_falls_back_to_the_event_trace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             view = build_task_trace(Path(tmp) / "none.jsonl", write_trace(Path(tmp)), "系统")

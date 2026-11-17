@@ -3,8 +3,8 @@
 默认只传会话和项目记忆：这是换台机器后真正想接着用的东西，加起来通常十几 MB。
 config / automations / mcp / hooks 要显式打开——它们带密钥、带绝对路径，或者会在另一台机器上
 自己跑起来（自动化尤其容易变成两边同时触发）。
-不传：shadow/（影子 git 检查点，和本机工作区状态绑死）、traces/、tool_outputs/、attachments/、
-usage.jsonl、sync/ 自己。
+不传：shadow/（影子 git 检查点，和本机工作区状态绑死）、traces/、calls/（模型调用原文，量大、内容原样）、
+tool_outputs/、attachments/、usage.jsonl、sync/ 自己。
 """
 
 import hashlib

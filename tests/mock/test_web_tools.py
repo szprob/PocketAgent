@@ -339,3 +339,58 @@ class WebSearchProviderTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result.is_error)
         self.assertIn("必应搜索失败（HTTP 500）", result.content)
+
+
+class WebFetchHintTest(unittest.IsolatedAsyncioTestCase):
+    """读不到正文时直接说为什么、该怎么办，别让模型对着同一个网址反复试（以前的轨迹里这几类最多）。"""
+
+    def setUp(self) -> None:
+        self.calls: list = []
+        self.context = ToolContext(workspace=Path("."))
+
+    def patch_client(self, response=None, error=None):
+        def build(**kwargs):
+            client = FakeClient(response, self.calls)
+            if error is not None:
+                async def fail(url, **kwargs):
+                    raise error
+                client.get = fail
+            return client
+
+        return mock.patch("pocketagent.tools.web.httpx.AsyncClient", side_effect=build)
+
+    async def test_search_pages_and_google_news_links_are_not_fetched(self) -> None:
+        with self.patch_client(FakeResponse()):
+            baidu = await WebFetchTool().run({"url": "https://www.baidu.com/s?wd=天气"}, self.context)
+            news = await WebFetchTool().run({"url": "https://news.google.com/rss/articles/CBMiak?oc=5"}, self.context)
+            homepage = await WebFetchTool().run({"url": "https://www.baidu.com/"}, self.context)
+
+        self.assertTrue(baidu.is_error)
+        self.assertIn("web_search", baidu.content)
+        self.assertIn("Google 新闻的跳转链接", news.content)
+        # 没有搜索词的首页照常抓
+        self.assertFalse(homepage.is_error)
+        self.assertEqual(len(self.calls), 1)
+
+    async def test_not_found_blocked_and_unreachable_explain_what_to_do(self) -> None:
+        import httpx
+
+        with self.patch_client(FakeResponse(status_code=404, headers={"content-type": "text/html"})):
+            missing = await WebFetchTool().run({"url": "https://example.com/story20261027-0000000"}, self.context)
+        with self.patch_client(FakeResponse(status_code=403, headers={"content-type": "text/html"})):
+            blocked = await WebFetchTool().run({"url": "https://example.com/a"}, self.context)
+        with self.patch_client(error=httpx.ConnectTimeout("timed out")):
+            unreachable = await WebFetchTool().run({"url": "https://slow.example.com/a"}, self.context)
+
+        self.assertIn("别再猜", missing.content)
+        self.assertIn("反爬", blocked.content)
+        self.assertTrue(unreachable.is_error)
+        self.assertIn("连不上 slow.example.com（ConnectTimeout）", unreachable.content)
+
+    async def test_challenge_or_empty_pages_get_a_hint(self) -> None:
+        page = "<html><head><title>正在验证</title></head><body><p>正在验证浏览器，请稍候…</p></body></html>"
+        with self.patch_client(FakeResponse(text=page, headers={"content-type": "text/html"})):
+            result = await WebFetchTool().run({"url": "https://www.example.com/poi/1"}, self.context)
+
+        self.assertFalse(result.is_error)
+        self.assertIn("别重试同一个网址", result.content)

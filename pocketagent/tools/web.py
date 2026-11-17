@@ -544,9 +544,54 @@ def html_to_text(html: str) -> tuple[str, str]:
     return extractor.title.strip(), extractor.text()
 
 
+# 读不到正文的几类网址 / 页面：直接告诉模型为什么、该怎么办，别让它对着同一个网址换着花样反复试
+# （以前的轨迹里：自己拼的新闻网址 404、Google 新闻跳转链接抓回空壳、百度结果页和人机验证页抓回来是空的）
+SEARCH_RESULT_PAGES = (
+    ("baidu.com", "/s"),
+    ("bing.com", "/search"),
+    ("so.com", "/s"),
+    ("sogou.com", "/web"),
+    ("google.", "/search"),
+    ("duckduckgo.com", "/"),
+)
+CHALLENGE_MARKERS = (
+    "正在验证", "安全验证", "人机验证", "请完成验证", "访问异常",
+    "Just a moment", "Attention Required", "captcha", "Access denied", "enable JavaScript",
+)
+MIN_BODY_CHARS = 200
+NOT_FOUND_HINT = "网址不存在。如果这是自己拼出来的网址，别再猜：只打开搜索结果里或用户给的链接。"
+BLOCKED_HINT = "网站拒绝了抓取（多半是反爬），重试也一样：换搜索结果里的其他来源。"
+EMPTY_PAGE_HINT = (
+    "（这页的正文几乎是空的：多半要浏览器执行脚本才出内容，或者挡了一道人机验证。"
+    "别重试同一个网址，换搜索结果里的其他来源。）"
+)
+
+
+def unreadable_url_hint(url: str) -> str | None:
+    """一看网址就知道抓不到正文的：搜索引擎的结果页、Google 新闻的跳转链接。"""
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    path = parsed.path or "/"
+    if host == "news.google.com" and ("/articles/" in path):
+        return "这是 Google 新闻的跳转链接，真正的地址要浏览器执行脚本才拿得到，抓下来是空壳；用新闻标题去 web_search 搜原文链接。"
+    for domain, prefix in SEARCH_RESULT_PAGES:
+        if domain in host and path.startswith(prefix) and parsed.query:
+            return "这是搜索引擎的结果页，抓下来基本是空的（结果要脚本渲染、还常有反爬）；查东西用 web_search 工具。"
+    return None
+
+
+def looks_unreadable(title: str, body: str) -> bool:
+    """HTML 抓回来了但正文几乎没有：要脚本渲染，或者是人机验证页。"""
+    head = f"{title}\n{body[:2000]}".lower()
+    return len(body.strip()) < MIN_BODY_CHARS or any(marker.lower() in head for marker in CHALLENGE_MARKERS)
+
+
 class WebFetchTool(Tool):
     name = "web_fetch"
-    description = "打开一个网页（http / https），返回标题和正文纯文本。看文档、读搜索结果里的链接时用。"
+    description = (
+        "打开一个网页（http / https），返回标题和正文纯文本。看文档、读搜索结果里的链接时用。"
+        "只打开搜索结果里或用户给的链接，不要自己拼网址；查东西用 web_search，不要拿它打开搜索引擎的结果页。"
+    )
     kind = ToolKind.READ
     parameters = {
         "type": "object",
@@ -567,17 +612,35 @@ class WebFetchTool(Tool):
         url = str(arguments["url"]).strip()
         if urlparse(url).scheme not in ("http", "https"):
             return ToolResult("只支持 http / https 网址", is_error=True)
+        hint = unreadable_url_hint(url)
+        if hint:
+            return ToolResult(f"没有打开 {url}：{hint}", is_error=True)
         limit = min(int(arguments.get("max_chars") or DEFAULT_FETCH_LIMIT_CHARS), MAX_FETCH_LIMIT_CHARS)
-        async with httpx.AsyncClient(
-            timeout=FETCH_TIMEOUT_SECONDS, follow_redirects=True, headers={"User-Agent": USER_AGENT}
-        ) as client:
-            response = await client.get(url)
+        try:
+            async with httpx.AsyncClient(
+                timeout=FETCH_TIMEOUT_SECONDS, follow_redirects=True, headers={"User-Agent": USER_AGENT}
+            ) as client:
+                response = await client.get(url)
+        except httpx.HTTPError as error:
+            host = urlparse(url).hostname or url
+            return ToolResult(
+                f"连不上 {host}（{type(error).__name__}）：这个站可能在当前网络下打不开或者很慢，别反复重试，换其他来源。",
+                is_error=True,
+            )
         if response.status_code >= 400:
-            return ToolResult(f"打开失败（HTTP {response.status_code}）：{url}", is_error=True)
+            reason = ""
+            if response.status_code in (404, 410):
+                reason = NOT_FOUND_HINT
+            elif response.status_code in (401, 403, 429, 451):
+                reason = BLOCKED_HINT
+            message = f"打开失败（HTTP {response.status_code}）：{url}"
+            return ToolResult(f"{message}。{reason}" if reason else message, is_error=True)
         content_type = response.headers.get("content-type", "")
         if "html" in content_type:
             title, body = html_to_text(response.text)
             text = f"# {title}\n{response.url}\n\n{body}" if title else f"{response.url}\n\n{body}"
+            if looks_unreadable(title, body):
+                text = f"{text}\n\n{EMPTY_PAGE_HINT}"
         elif content_type.startswith("text/") or "json" in content_type or "xml" in content_type:
             text = f"{response.url}\n\n{response.text}"
         else:

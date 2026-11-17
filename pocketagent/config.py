@@ -531,6 +531,8 @@ class AppConfig:
     reasoning_across_turns: bool = False
     # 每次调模型的请求体和回复原样存进 ~/.pocketagent/calls/（拿去训练、排查），见 evaluation/call_log.py
     record_model_calls: bool = True
+    # 删任务时把它的模型调用原文一起删掉；关掉就留着当训练数据
+    delete_calls_with_task: bool = True
     # 联网：web_search 默认走 Tavily（agent 向搜索，每月 1000 次免费）；密钥空着就读 TAVILY_API_KEY，再没有就退回必应（免费）
     web_search_enabled: bool = True
     web_search_provider: str = WEB_SEARCH_DEFAULT_PROVIDER
@@ -633,6 +635,7 @@ class AppConfig:
             compact_threshold_percent=_compact_threshold_percent(data),
             reasoning_across_turns=_boolean_with_default(data, "reasoning_across_turns", False),
             record_model_calls=_boolean_with_default(data, "record_model_calls", True),
+            delete_calls_with_task=_boolean_with_default(data, "delete_calls_with_task", True),
             web_search_enabled=_boolean_with_default(data, "web_search_enabled", True),
             web_search_provider=normalize_web_search_provider(data.get("web_search_provider")),
             web_search_engine=_web_search_engine(data.get("web_search_engine")),
@@ -697,6 +700,7 @@ class AppConfig:
             "compact_threshold_percent": self.compact_threshold_percent,
             "reasoning_across_turns": self.reasoning_across_turns,
             "record_model_calls": self.record_model_calls,
+            "delete_calls_with_task": self.delete_calls_with_task,
             "web_search_enabled": self.web_search_enabled,
             "web_search_provider": self.web_search_provider,
             "web_search_engine": self.web_search_engine,
@@ -751,6 +755,7 @@ class AppConfig:
             "compact_threshold_percent": self.compact_threshold_percent,
             "reasoning_across_turns": self.reasoning_across_turns,
             "record_model_calls": self.record_model_calls,
+            "delete_calls_with_task": self.delete_calls_with_task,
             "web_search_enabled": self.web_search_enabled,
             "web_search_provider": self.web_search_provider,
             "web_search_engine": self.web_search_engine,

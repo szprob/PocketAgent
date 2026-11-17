@@ -178,6 +178,7 @@ class ReasoningChoicesTest(unittest.TestCase):
         # 跨轮保留思考默认关；模型调用原文默认记
         self.assertFalse(reloaded.reasoning_across_turns)
         self.assertTrue(reloaded.record_model_calls)
+        self.assertTrue(reloaded.delete_calls_with_task)
         self.assertFalse(AppConfig.from_dict({**config.to_dict(), "record_model_calls": False}).record_model_calls)
         self.assertTrue(AppConfig.from_dict({**config.to_dict(), "reasoning_across_turns": True}).reasoning_across_turns)
         self.assertEqual(reloaded.web_search_settings().api_key, "glm-key")

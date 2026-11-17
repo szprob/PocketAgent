@@ -58,6 +58,7 @@ class TraceEntry:
     is_error: bool = False
     denied: bool = False
     children: list[TraceChild] = field(default_factory=list)
+    call_id: str = ""
 
 
 @dataclass
@@ -145,6 +146,7 @@ class _TraceBuilder:
             start=time,
             name=name,
             arguments=_clip(arguments_text, ARGUMENTS_LIMIT_CHARS),
+            call_id=str(record.get("call_id") or ""),
         )
         self.tools_by_call[str(record.get("call_id") or "")] = entry
 
@@ -260,14 +262,33 @@ def build_trace_view_from_calls(calls: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def build_task_trace(calls_path: Path, trace_path: Path, system_prompt: str = "") -> dict[str, Any]:
-    """有原文就用原文，没有（老任务、关了记录）就退回事件记录。"""
+    """有原文就用原文，没有（老任务、关了记录）就退回事件记录。
+    原文里只有工具返回的文字，没有「出错 / 被拒绝」的标记：这两个标记从事件记录里按调用 id 补上（内容还是原文的）。"""
     if calls_path.is_file():
         calls = list(read_calls(calls_path))
         if calls:
-            return build_trace_view_from_calls(calls)
+            view = build_trace_view_from_calls(calls)
+            _mark_tool_outcomes(view["entries"], trace_path)
+            return view
     view = build_trace_view(trace_path, system_prompt)
     view["source"] = "trace"
     return view
+
+
+def _mark_tool_outcomes(entries: list[dict[str, Any]], trace_path: Path) -> None:
+    outcomes: dict[str, tuple[bool, bool]] = {}
+    if trace_path.is_file():
+        with trace_path.open(encoding="utf-8", errors="replace") as trace_file:
+            for line in trace_file:
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(record, dict) and record.get("type") == "tool_result":
+                    outcomes[str(record.get("call_id") or "")] = (bool(record.get("is_error")), bool(record.get("denied")))
+    for entry in entries:
+        if entry["kind"] == "tool" and entry["call_id"] in outcomes:
+            entry["is_error"], entry["denied"] = outcomes[entry["call_id"]]
 
 
 class _CallsTraceBuilder:
@@ -291,6 +312,10 @@ class _CallsTraceBuilder:
     def feed(self, call: dict[str, Any]) -> None:
         messages = normalize_request(call.get("request") or {})
         purpose = _call_purpose(messages)
+        if call.get("error") is not None and purpose != "main":
+            labels = {"review": "AI 审批调用失败", "summary": "做压缩摘要失败", "subagent": "子 agent 调用模型失败"}
+            self._add_error(call, f"{labels[purpose]}：{call['error']}")
+            return
         if purpose == "review":
             self._review(call, messages)
         elif purpose == "summary":
@@ -308,8 +333,16 @@ class _CallsTraceBuilder:
             self._add("context", "历史换过了（压缩或恢复到之前的消息），下面是模型这一次看到的内容", start=_started(call), end=_started(call))
         for message in messages[common:]:
             self._show_input(message, call)
+        if call.get("error") is not None:
+            # 这次调用失败了（重试完还是不行）：请求照样显示，回复换成出错原因
+            self._add_error(call, f"调用模型失败：{call['error']}")
+            self.shown = keys
+            return
         response_message = self._show_response(call)
         self.shown = keys + [response_message.key()]
+
+    def _add_error(self, call: dict[str, Any], message: str) -> None:
+        self._add("error", _one_line(message), start=_started(call), end=call.get("time"), detail=_clip(message, CALL_DETAIL_LIMIT_CHARS))
 
     def _show_input(self, message: _Message, call: dict[str, Any]) -> None:
         moment = _started(call)
@@ -325,7 +358,7 @@ class _CallsTraceBuilder:
             self._add("assistant", _one_line(message.text or message.reasoning or "（回复）"), detail=_clip(_assistant_detail(message), CALL_DETAIL_LIMIT_CHARS))
             for call_id, name, arguments in message.tool_calls:
                 self.tools_by_call[call_id] = self._add(
-                    "tool", _argument_summary(arguments), name=name, arguments=_clip(arguments, ARGUMENTS_LIMIT_CHARS)
+                    "tool", _argument_summary(arguments), name=name, arguments=_clip(arguments, ARGUMENTS_LIMIT_CHARS), call_id=call_id
                 )
         else:
             self._show_user(message, moment)
@@ -371,7 +404,7 @@ class _CallsTraceBuilder:
         )
         for call_id, name, arguments in message.tool_calls:
             self.tools_by_call[call_id] = self._add(
-                "tool", _argument_summary(arguments), start=end, name=name, arguments=_clip(arguments, ARGUMENTS_LIMIT_CHARS)
+                "tool", _argument_summary(arguments), start=end, name=name, arguments=_clip(arguments, ARGUMENTS_LIMIT_CHARS), call_id=call_id
             )
         return message
 

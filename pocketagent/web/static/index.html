@@ -338,6 +338,9 @@
                 <label class="checkbox-field"><input type="checkbox" id="record-model-calls-input">
                   <span>记录模型调用原文</span></label>
                 <div class="field-hint">每次调模型时原样发出去的请求体（系统提示、工具定义、全部消息）和收到的完整回复（思考、工具调用、用量），一字不改存进 ~/.pocketagent/calls/，可以用 <code>pocketagent export-calls</code> 导出拿去训练。只存在本机，不含密钥。</div>
+                <label class="checkbox-field"><input type="checkbox" id="delete-calls-with-task-input">
+                  <span>删除任务时一起删除它的模型调用原文</span></label>
+                <div class="field-hint">关掉后，删掉的任务的原文还留在 ~/.pocketagent/calls/ 里，可以继续导出训练；打开时连同轨迹、附件一起删除。</div>
               </fieldset>
               <fieldset class="radio-group">
                 <legend>子 agent</legend>

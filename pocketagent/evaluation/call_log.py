@@ -46,9 +46,15 @@ class CallLog:
         self.last_tools: tuple[int, str] | None = None
 
     def record(
-        self, request: dict[str, Any], response: LLMResponse, metadata: CallMetadata, started: float | None = None
+        self,
+        request: dict[str, Any],
+        response: LLMResponse | None,
+        metadata: CallMetadata,
+        started: float | None = None,
+        error: str | None = None,
     ) -> int:
-        """started：发请求的时间；time（写入时）就是收完回复的时间。轨迹的时间轴靠这两个画模型花了多久。"""
+        """started：发请求的时间；time（写入时）就是收完回复的时间。轨迹的时间轴靠这两个画模型花了多久。
+        调用失败（重试完还是不行）时 response 是 None、error 写原因：请求确实发出去了，原文里也要有。"""
         body = copy.deepcopy(request)
         messages = body.pop("messages", [])
         tools = body.pop("tools", None)
@@ -61,8 +67,10 @@ class CallLog:
             "request": body,
             "messages": self._messages_delta(call_id, messages),
             "tools": self._tools_delta(call_id, tools),
-            "response": response_record(response),
+            "response": response_record(response) if response is not None else None,
         }
+        if error is not None:
+            record["error"] = error
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("a", encoding="utf-8") as log_file:
             log_file.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
@@ -97,6 +105,13 @@ def call_log_for(directory: Path, session_id: str) -> CallLog:
     if path not in _LOGS:
         _LOGS[path] = CallLog(path)
     return _LOGS[path]
+
+
+def forget_call_log(directory: Path, session_id: str) -> None:
+    """删任务时删掉它的原文文件，内存里的实例也扔掉（不然编号和底子还指着已经删掉的记录）。"""
+    path = (directory / f"{session_id}.jsonl").resolve()
+    _LOGS.pop(path, None)
+    path.unlink(missing_ok=True)
 
 
 def wire_request(provider: Any, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
@@ -160,13 +175,22 @@ class CallRecordingProvider:
             except Exception:
                 request = None
         started = time.time()
-        response = await self.inner.complete(messages, tools, listener)
-        if request is not None:
-            try:
-                self.call_log.record(request, response, self.metadata, started)
-            except OSError:
-                pass
+        try:
+            response = await self.inner.complete(messages, tools, listener)
+        except Exception as error:
+            # 失败的调用也记：请求确实发出去了，轨迹里要看得到这一步卡在哪
+            self._record(request, None, started, f"{type(error).__name__}: {error}")
+            raise
+        self._record(request, response, started, None)
         return response
+
+    def _record(self, request: dict[str, Any] | None, response: LLMResponse | None, started: float, error: str | None) -> None:
+        if request is None:
+            return
+        try:
+            self.call_log.record(request, response, self.metadata, started, error)
+        except OSError:
+            pass
 
 
 def read_calls(path: Path) -> Iterator[dict[str, Any]]:
@@ -200,6 +224,7 @@ def read_calls(path: Path) -> Iterator[dict[str, Any]]:
                 "meta": record.get("meta"),
                 "request": request,
                 "response": record.get("response"),
+                **({"error": record["error"]} if "error" in record else {}),
             }
 
 

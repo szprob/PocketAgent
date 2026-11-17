@@ -152,6 +152,24 @@ class CallLogFileTest(unittest.TestCase):
             self.assertEqual(run_export_calls_command(["-o", str(cli_output)]), 0)
         self.assertEqual(len(cli_output.read_text(encoding="utf-8").splitlines()), 2)
 
+    def test_failed_calls_are_kept_too(self) -> None:
+        """请求发出去了、重试完还是失败：原文里也要有这一条（轨迹上看得到卡在哪），错误照常往上抛。"""
+
+        class Failing:
+            async def complete(self, messages, tools, listener):
+                raise RuntimeError("HTTP 500")
+
+        path = Path(self.tmp.name) / "calls" / "s1.jsonl"
+        provider = CallRecordingProvider(Failing(), CallLog(path), self.metadata, enabled=lambda: True)
+
+        with self.assertRaises(RuntimeError):
+            asyncio.run(provider.complete([{"role": "user", "content": "hi"}], [], SilentListener()))
+
+        call = list(read_calls(path))[0]
+        self.assertIsNone(call["response"])
+        self.assertEqual(call["error"], "RuntimeError: HTTP 500")
+        self.assertEqual(call["request"]["messages"], [{"role": "user", "content": "hi"}])
+
     def test_recording_failure_never_breaks_the_call(self) -> None:
         log = CallLog(Path(self.tmp.name) / "calls" / "s1.jsonl")
         provider = CallRecordingProvider(ScriptedProvider([LLMResponse(text="照常回复")]), log, self.metadata, enabled=lambda: True)
