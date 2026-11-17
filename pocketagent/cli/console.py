@@ -31,9 +31,9 @@ from pocketagent.safety.permissions import (
 )
 
 TOOL_RESULT_PREVIEW_LINES = 4
-# 第一个参数是这些词时走子命令（trace 回放、评测见 cli/evaluation.py，云同步见 sync/cli.py），
+# 第一个参数是这些词时走子命令（trace 回放、评测、导出模型调用原文见 cli/evaluation.py，云同步见 sync/cli.py），
 # 不当成第一句话
-SUBCOMMANDS = ("replay", "eval", "sync")
+SUBCOMMANDS = ("replay", "eval", "export-calls", "sync")
 # 这一轮为什么没说完：界面上要在回复末尾说一句，不然用户以为模型只是话说一半
 CUT_OFF_NOTES = {
     "filtered": "回复被上游内容审核掐断，上面是已经输出的部分",

@@ -334,6 +334,12 @@
                 <div class="field-hint">关闭时，模型的思考内容只在同一轮的工具调用之间传回（各家都要求这样做）；打开后，之前几轮的思考也一起发给模型（DeepSeek、智谱、Kimi 等），前后更连贯，但更占上下文。智谱会同时开启它的「保留式思考」。</div>
               </fieldset>
               <fieldset class="radio-group">
+                <legend>训练数据</legend>
+                <label class="checkbox-field"><input type="checkbox" id="record-model-calls-input">
+                  <span>记录模型调用原文</span></label>
+                <div class="field-hint">每次调模型时原样发出去的请求体（系统提示、工具定义、全部消息）和收到的完整回复（思考、工具调用、用量），一字不改存进 ~/.pocketagent/calls/，可以用 <code>pocketagent export-calls</code> 导出拿去训练。只存在本机，不含密钥。</div>
+              </fieldset>
+              <fieldset class="radio-group">
                 <legend>子 agent</legend>
                 <div class="field-row">
                   <label class="field"><span>子 agent 用的模型</span>

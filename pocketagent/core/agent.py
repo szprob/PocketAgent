@@ -44,6 +44,7 @@ from pocketagent.core.session import Session, SessionJournal, SessionStore
 from pocketagent.core.subagents import attach_subagent_runner
 from pocketagent.core.tool_outputs import session_directory
 from pocketagent.core.trace import JsonlTracer
+from pocketagent.evaluation.call_log import CallMetadata, CallRecordingProvider, call_log_for
 from pocketagent.interaction.attachments import DISPLAY_KEY, message_display
 from pocketagent.interaction.modes import (
     AgentMode,
@@ -662,6 +663,7 @@ def _hook_context_message(text: str) -> dict[str, Any]:
 def _with_usage_recording(
     provider: LLMProvider, usage_log: UsageLog | None, settings: Settings, session: Session
 ) -> LLMProvider:
+    provider = _with_call_recording(provider, settings, session)
     if usage_log is None:
         return provider
     metadata = UsageMetadata(
@@ -672,6 +674,19 @@ def _with_usage_recording(
         workspace=str(settings.workspace),
     )
     return UsageRecordingProvider(provider, usage_log, metadata)
+
+
+def _with_call_recording(provider: LLMProvider, settings: Settings, session: Session) -> LLMProvider:
+    """每次调模型的请求体和回复原样记下来（设置里能关，关了不写）。包在最里层，拿得到 provider 自己拼的请求体。"""
+    metadata = CallMetadata(
+        session_id=session.id,
+        model=settings.model,
+        model_id=settings.model_profile_id,
+        model_name=settings.model_profile_name,
+        base_url=settings.base_url,
+    )
+    call_log = call_log_for(settings.calls_dir, session.id)
+    return CallRecordingProvider(provider, call_log, metadata, enabled=lambda: settings.record_model_calls)
 
 
 ProviderBuilder = Callable[[Settings], LLMProvider]

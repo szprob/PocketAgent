@@ -529,6 +529,8 @@ class AppConfig:
     compact_threshold_percent: int = DEFAULT_COMPACT_THRESHOLD_PERCENT
     # 之前几轮的思考内容也发给模型（默认只发这一轮工具调用之间的），见 llm/base.py 的 REASONING_FIELD
     reasoning_across_turns: bool = False
+    # 每次调模型的请求体和回复原样存进 ~/.pocketagent/calls/（拿去训练、排查），见 evaluation/call_log.py
+    record_model_calls: bool = True
     # 联网：web_search 默认走 Tavily（agent 向搜索，每月 1000 次免费）；密钥空着就读 TAVILY_API_KEY，再没有就退回必应（免费）
     web_search_enabled: bool = True
     web_search_provider: str = WEB_SEARCH_DEFAULT_PROVIDER
@@ -630,6 +632,7 @@ class AppConfig:
             auto_compact=_boolean_with_default(data, "auto_compact", True),
             compact_threshold_percent=_compact_threshold_percent(data),
             reasoning_across_turns=_boolean_with_default(data, "reasoning_across_turns", False),
+            record_model_calls=_boolean_with_default(data, "record_model_calls", True),
             web_search_enabled=_boolean_with_default(data, "web_search_enabled", True),
             web_search_provider=normalize_web_search_provider(data.get("web_search_provider")),
             web_search_engine=_web_search_engine(data.get("web_search_engine")),
@@ -693,6 +696,7 @@ class AppConfig:
             "auto_compact": self.auto_compact,
             "compact_threshold_percent": self.compact_threshold_percent,
             "reasoning_across_turns": self.reasoning_across_turns,
+            "record_model_calls": self.record_model_calls,
             "web_search_enabled": self.web_search_enabled,
             "web_search_provider": self.web_search_provider,
             "web_search_engine": self.web_search_engine,
@@ -746,6 +750,7 @@ class AppConfig:
             "auto_compact": self.auto_compact,
             "compact_threshold_percent": self.compact_threshold_percent,
             "reasoning_across_turns": self.reasoning_across_turns,
+            "record_model_calls": self.record_model_calls,
             "web_search_enabled": self.web_search_enabled,
             "web_search_provider": self.web_search_provider,
             "web_search_engine": self.web_search_engine,
@@ -962,6 +967,8 @@ class Settings:
     model_kind: str = ""
     # 之前几轮的思考内容也发给模型；默认只发这一轮工具调用之间的
     reasoning_across_turns: bool = False
+    # 每次调模型的请求体和回复原样存进 calls_dir
+    record_model_calls: bool = True
     # 当前模型能选的思考档位（审批、子 agent 选「最低」时从这里取）；环境变量配的模型不知道，空着
     reasoning_choices: list[str] = field(default_factory=list)
     # AI 审批用的模型（None = 跟任务的模型一样）和思考档位（lowest / inherit / 具体档位）
@@ -1029,6 +1036,11 @@ class Settings:
         return self.home_dir / "traces"
 
     @property
+    def calls_dir(self) -> Path:
+        """模型调用原文（请求体 + 回复），一个任务一个文件，见 evaluation/call_log.py。"""
+        return self.home_dir / "calls"
+
+    @property
     def config_path(self) -> Path:
         return config_path(self.home_dir)
 
@@ -1091,6 +1103,7 @@ class Settings:
         self.max_steps = app_config.max_steps
         self.apply_compaction(app_config)
         self.reasoning_across_turns = app_config.reasoning_across_turns
+        self.record_model_calls = app_config.record_model_calls
         self.web_search = app_config.web_search_settings()
         self.web_fetch = app_config.web_fetch_enabled
         self.image_gen = app_config.image_gen_settings()

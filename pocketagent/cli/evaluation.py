@@ -1,4 +1,4 @@
-"""命令行的 replay / eval 子命令：解析参数，把进度和对比表打到终端，报告路径打在最后。
+"""命令行的 replay / eval / export-calls 子命令：解析参数，把进度和对比表打到终端，报告路径打在最后。
 
 主入口（console.main）看到第一个参数是 replay / eval 就交给这里；其他情况照旧，第一个参数当成第一句话。
 """
@@ -12,6 +12,7 @@ from pocketagent.cli.console import ConsoleRenderer, Style
 from pocketagent.config import ConfigError, default_home_dir
 from pocketagent.core import agent as agent_module
 from pocketagent.core.events import EventHandler
+from pocketagent.evaluation.call_log import export_calls
 from pocketagent.evaluation.cases import CaseError
 from pocketagent.evaluation.evaluate import EvalRequest, evaluate_cases
 from pocketagent.evaluation.replay import ReplayError, ReplayRequest, replay_trace
@@ -31,7 +32,28 @@ def main(argv: list[str], provider_factory: ProviderFactory | None = None) -> in
     command, rest = argv[0], argv[1:]
     if command == "replay":
         return run_replay_command(rest, provider_factory)
+    if command == "export-calls":
+        return run_export_calls_command(rest)
     return run_eval_command(rest, provider_factory)
+
+
+def run_export_calls_command(argv: list[str]) -> int:
+    """把 ~/.pocketagent/calls/ 里的模型调用原文还原成完整的请求 + 回复，写进一个 JSONL（拿去训练）。"""
+    parser = argparse.ArgumentParser(
+        prog="pocketagent export-calls",
+        description="导出每次调模型时原样发出去的请求体和收到的完整回复，一行一次调用",
+    )
+    parser.add_argument("-o", "--output", default="pocketagent-calls.jsonl", metavar="PATH", help="写到哪个文件，默认当前目录的 pocketagent-calls.jsonl")
+    parser.add_argument("-s", "--session", action="append", default=[], metavar="ID", help="只导出这个任务，可以给多次；不给就全部导出")
+    arguments = parser.parse_args(argv)
+    calls_dir = default_home_dir() / "calls"
+    if not calls_dir.is_dir():
+        print(f"还没有记录：{calls_dir} 不存在（设置里「记录模型调用原文」打开后，调用过模型才会有）", file=sys.stderr)
+        return 1
+    output = Path(arguments.output).expanduser()
+    count = export_calls(calls_dir, output, arguments.session or None)
+    print(f"导出了 {count} 次调用 → {output}")
+    return 0
 
 
 def _add_common_options(parser: argparse.ArgumentParser) -> None:

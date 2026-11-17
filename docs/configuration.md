@@ -18,6 +18,7 @@
   "auto_compact": true,
   "compact_threshold_percent": 80,
   "reasoning_across_turns": false,
+  "record_model_calls": true,
   "web_search_enabled": true,
   "web_search_provider": "exa",
   "web_search_engine": "search_std",
@@ -58,6 +59,11 @@
   `extra_content.google.thought_signature`。压缩时旧的思考一律去掉（「跨轮保留」开着也一样，正在跑的这一轮除外），
   去掉之前先压进摘要：做摘要的请求和平时同一份前缀，模型平时看得到的思考做摘要时也看得到；
   退回截短那份时，每一步的思考裁到 3000 字左右写进正文。直连 OpenAI 的 GPT 走 Chat Completions，接口本身不返回思考，传不了
+- 模型调用原文（`record_model_calls`，默认开，⚙ 设置 → 智能体 →「训练数据」）：每次调模型时原样发出去的请求体
+  （系统提示、工具定义、全部消息、思考档位等参数，按各家 provider 的拼法，`extra_body` 展开到顶层）和收到的完整回复
+  （文字、思考、工具调用的原始参数、各家的思考签名、用量、结束原因）存进 `~/.pocketagent/calls/<任务 id>.jsonl`。
+  两次压缩之间历史只追加，所以消息只存相对之前某次调用的增量，工具定义没变只记「同第几次」；
+  `pocketagent export-calls [-s 任务id] [-o 文件]` 还原成每次完整的请求 + 回复，一字不差，拿去训练。密钥在请求头里，不会写进来
 - `visible: false` 的模型不出现在会话的模型列表里（已经在用它的任务不受影响）
 - 联网搜索：`web_search_provider` 可选 `exa`（默认，0.007 美元/次）/ `bing`（免费）/ `deepseek` / `zhipu`。
   `web_search_api_key` 空着时，`exa` 读环境变量 `EXA_API_KEY`，`deepseek` / `zhipu` 用对应厂商模型的密钥；
