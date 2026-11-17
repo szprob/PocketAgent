@@ -7,6 +7,24 @@ const PANEL_DEFAULT_PIXELS = 320;
 const SIDEBAR_MIN_PIXELS = 200;
 const SIDEBAR_MAX_PIXELS = 460;
 const PANEL_MIN_PIXELS = 260;
+// 右侧栏切到「轨迹」时一行要放下角色、内容和耗时，默认比概览宽；两个页签的宽度各记各的
+const TRACE_PANEL_DEFAULT_PIXELS = 520;
+let panelMode = "overview";
+
+function panelPreferenceKey() {
+  return panelMode === "trace" ? "tracePanelWidth" : "panelWidth";
+}
+
+function panelDefaultPixels() {
+  return panelMode === "trace" ? TRACE_PANEL_DEFAULT_PIXELS : PANEL_DEFAULT_PIXELS;
+}
+
+// 右侧栏换页签时调：换成那个页签记住的宽度
+export function setPanelWidthMode(mode) {
+  panelMode = mode === "trace" ? "trace" : "overview";
+  const remembered = rememberedWidth(panelPreferenceKey(), panelDefaultPixels(), PANEL_MIN_PIXELS);
+  applyWidth("--panel-width", Math.min(remembered, maxPanelPixels()));
+}
 
 function rememberedWidth(preferenceKey, defaultPixels, minPixels) {
   return Math.max(loadPreference(preferenceKey, defaultPixels), minPixels);
@@ -21,6 +39,11 @@ function maxPanelPixels() {
   return Math.max(PANEL_MIN_PIXELS, Math.floor(window.innerWidth * 0.5));
 }
 
+// preferenceKey / defaultPixels 可以是函数：右侧栏两个页签各记各的宽度，拖的时候按当前页签取
+function resolve(value) {
+  return typeof value === "function" ? value() : value;
+}
+
 function bindResizer(resizer, { side, variableName, preferenceKey, defaultPixels, minPixels, maxPixels }) {
   let dragging = false;
   let startPointerX = 0;
@@ -33,7 +56,7 @@ function bindResizer(resizer, { side, variableName, preferenceKey, defaultPixels
     }
     dragging = true;
     startPointerX = event.clientX;
-    startWidth = rememberedWidth(preferenceKey, defaultPixels, minPixels);
+    startWidth = Math.min(rememberedWidth(resolve(preferenceKey), resolve(defaultPixels), minPixels), maxPixels());
     // 没动过也先把起点宽度落到变量上，endDrag 里直接读 lastWidth 就是最终宽度
     lastWidth = startWidth;
     applyWidth(variableName, lastWidth);
@@ -62,21 +85,21 @@ function bindResizer(resizer, { side, variableName, preferenceKey, defaultPixels
     dragging = false;
     resizer.classList.remove("dragging");
     document.body.classList.remove("resizing");
-    savePreference(preferenceKey, Math.round(lastWidth));
+    savePreference(resolve(preferenceKey), Math.round(lastWidth));
   }
 
   resizer.addEventListener("pointerup", endDrag);
   resizer.addEventListener("pointercancel", endDrag);
 
   resizer.addEventListener("dblclick", () => {
-    applyWidth(variableName, defaultPixels);
-    savePreference(preferenceKey, defaultPixels);
+    applyWidth(variableName, resolve(defaultPixels));
+    savePreference(resolve(preferenceKey), resolve(defaultPixels));
   });
 }
 
 export function initResizers() {
   applyWidth("--sidebar-width", rememberedWidth("sidebarWidth", SIDEBAR_DEFAULT_PIXELS, SIDEBAR_MIN_PIXELS));
-  applyWidth("--panel-width", rememberedWidth("panelWidth", PANEL_DEFAULT_PIXELS, PANEL_MIN_PIXELS));
+  applyWidth("--panel-width", rememberedWidth(panelPreferenceKey(), panelDefaultPixels(), PANEL_MIN_PIXELS));
   bindResizer(document.getElementById("sidebar-resizer"), {
     side: "left",
     variableName: "--sidebar-width",
@@ -88,8 +111,8 @@ export function initResizers() {
   bindResizer(document.getElementById("panel-resizer"), {
     side: "right",
     variableName: "--panel-width",
-    preferenceKey: "panelWidth",
-    defaultPixels: PANEL_DEFAULT_PIXELS,
+    preferenceKey: panelPreferenceKey,
+    defaultPixels: panelDefaultPixels,
     minPixels: PANEL_MIN_PIXELS,
     maxPixels: maxPanelPixels,
   });

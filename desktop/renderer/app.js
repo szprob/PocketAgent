@@ -24,12 +24,13 @@ import { applyAppearance, clear, el, show } from "./dom.js";
 import { closeFilePreview, citationText, initFilePreview, isFilePreviewOpen } from "./static/js/shared/filepreview.js";
 import { closeFolderPicker, isFolderPickerOpen } from "./static/js/shared/folderpicker.js";
 import { icon } from "./icons.js";
-import { initResizers } from "./resizers.js";
+import { initResizers, setPanelWidthMode } from "./resizers.js";
 import { closeSettings, initSettings, isSettingsOpen, openSettings } from "./settings.js";
 import { initSidebar, setActiveView } from "./sidebar.js";
 import { emit, loadPreference, on, savePreference, state } from "./state.js";
 import { RightPanel } from "./rightpanel.js";
 import { configurePlatform } from "./static/js/shared/platform.js";
+import { TraceView, initPanelTabs } from "./static/js/shared/trace-view.js";
 
 // 共享模块（static/js/shared/）要用的几件端相关的事：图标、REST 走主进程转发、带 token 的图片转成 data URL
 configurePlatform({
@@ -121,6 +122,8 @@ const chat = new ChatView({
       rightPanel.scheduleChangesRefresh();
     },
     onLocalLinks: (links) => rightPanel.addPreviewLinks(links),
+    // 轨迹多了一步（模型回复、工具出结果……）：右侧栏的「轨迹」节流后重新取
+    onTraceEvent: () => traceView.refreshSoon(),
   },
 });
 
@@ -159,6 +162,20 @@ const rightPanel = new RightPanel({
   },
 });
 rightPanel.onFilesChanged = () => emit("files-changed", state.currentTaskId);
+
+// 右侧栏「轨迹」页签：对话旁边看每一步（shared/trace-view.js）。切过去时换成轨迹自己记的宽度（默认更宽）
+const traceView = new TraceView(document.getElementById("trace-pane"));
+
+function initTracePanel() {
+  initPanelTabs(document.getElementById("right-panel"), {
+    load: loadPreference,
+    save: savePreference,
+    onChange: (tab) => {
+      setPanelWidthMode(tab);
+      traceView.setVisible(tab === "trace");
+    },
+  });
+}
 
 function hideChatMenu() {
   elements.chatMenu.classList.add("hidden");
@@ -347,6 +364,7 @@ async function openTask(taskId) {
   elements.chatTitle.textContent = "加载中…";
   elements.connectionBanner.classList.add("hidden");
   rightPanel.showTask(taskId);
+  traceView.showTask(taskId);
   restoreUnsent(unsent);
 
   const socket = new SessionSocket(taskId, {
@@ -407,6 +425,7 @@ function leaveTask() {
   runtime.lastChatStatus = null;
   chat.reset();
   rightPanel.clear();
+  traceView.clear();
   elements.connectionBanner.classList.add("hidden");
   restoreUnsent(unsent);
 }
@@ -898,6 +917,7 @@ async function init() {
     },
   });
   initResizers();
+  initTracePanel();
   updateChatMenuVisibility();
 
   elements.restartButton.addEventListener("click", () => {

@@ -4,6 +4,8 @@
 import { requestJson, sendJson, sessionFileUrl } from "../core/api.js";
 import { button, copyText, el, formatClock, formatNumber, formatTokens, icon, isImagePath, renderDiff, workspaceName } from "../ui/dom.js";
 import { emit, loadPreference, on, savePreference } from "../core/state.js";
+import { TraceView, initPanelTabs } from "../shared/trace-view.js";
+import { setPanelWidthMode } from "../ui/resizers.js";
 
 const elements = {};
 const panel = {
@@ -36,6 +38,7 @@ export function initRightPanel() {
   elements.checkpointList = document.getElementById("checkpoint-list");
   document.getElementById("refresh-changes").addEventListener("click", () => refreshChanges());
   initPreview();
+  initTrace();
 
   on("task-status", (status) => {
     panel.status = status;
@@ -81,8 +84,29 @@ export function setRightPanelVisible(visible, { remember = true } = {}) {
   }
 }
 
+// 「轨迹」页签：对话旁边看每一步（见 shared/trace-view.js）。切过去时右侧栏换成轨迹自己记的宽度（默认更宽）
+function initTrace() {
+  panel.trace = new TraceView(document.getElementById("trace-pane"));
+  initPanelTabs(document.getElementById("right-panel"), {
+    load: loadPreference,
+    save: savePreference,
+    onChange: (tab) => {
+      setPanelWidthMode(tab);
+      panel.trace.setVisible(tab === "trace");
+    },
+  });
+  const refreshTrace = (taskId) => {
+    if (taskId === panel.taskId) {
+      panel.trace.refreshSoon();
+    }
+  };
+  on("trace-changed", refreshTrace);
+  on("turn-ended", ({ taskId }) => refreshTrace(taskId));
+}
+
 export function showTaskInPanel(taskId) {
   panel.taskId = taskId;
+  panel.trace.showTask(taskId);
   panel.status = null;
   panel.usage = null;
   panel.turns = 0;

@@ -1012,6 +1012,24 @@ class WebRound3Test(WebTestBase):
         self.assertEqual(overview["usage"]["cached"], 60)
         self.assertEqual(overview["usage"]["cache_hit_rate"], 0.6)
 
+    async def test_trace_lists_the_steps_of_the_task(self) -> None:
+        """右侧栏「轨迹」：每一步从 trace 文件整理出来，系统提示在最前面。"""
+        self.responses.append(LLMResponse(text="你好呀"))
+        session_id = await self._create_session()
+        async with self._connect(session_id) as socket_client:
+            await socket_client.receive_json()
+            await socket_client.send_json({"type": "user_message", "text": "你好"})
+            await self._receive_until(socket_client, is_event("turn_end"))
+
+        trace = await self._get_json(f"/api/sessions/{session_id}/trace")
+
+        self.assertEqual([entry["kind"] for entry in trace["entries"]], ["system", "user", "assistant"])
+        self.assertEqual(trace["entries"][1]["text"], "你好")
+        self.assertEqual(trace["entries"][2]["text"], "你好呀")
+        self.assertEqual(trace["turns"][0]["stop_reason"], "done")
+        missing = await self.client.get("/api/sessions/nope/trace", params=AUTH)
+        self.assertEqual(missing.status, 404)
+
     async def test_file_tree_preview_and_folder_browsing(self) -> None:
         workspace = self.directories.workspace
         (workspace / "src").mkdir()

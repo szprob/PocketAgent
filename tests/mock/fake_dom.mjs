@@ -115,6 +115,28 @@ class FakeParent extends FakeNode {
     return child;
   }
 
+  // 只认单个简单选择器：标签名、.类名、[data-xxx] / [data-xxx="值"]，可以连写（button.trace-row[data-id="1"]）
+  querySelectorAll(selector) {
+    const matches = compileSelector(selector);
+    const found = [];
+    const walk = (node) => {
+      for (const child of node.childNodes) {
+        if (child.nodeType === 1) {
+          if (matches(child)) {
+            found.push(child);
+          }
+          walk(child);
+        }
+      }
+    };
+    walk(this);
+    return found;
+  }
+
+  querySelector(selector) {
+    return this.querySelectorAll(selector)[0] ?? null;
+  }
+
   get textContent() {
     return this.childNodes.map((child) => child.textContent).join("");
   }
@@ -164,6 +186,11 @@ class FakeElement extends FakeParent {
 
   removeAttribute(name) {
     this.attributes.delete(name);
+  }
+
+  // 测试里没有布局，滚动是空操作；记一下被滚到过，方便断言
+  scrollIntoView() {
+    this.scrolledIntoView = true;
   }
 
   addEventListener(type, handler) {
@@ -233,6 +260,20 @@ function attributeText(element) {
   return [...attributes]
     .map(([name, value]) => (value === "" && BOOLEAN_PROPERTIES.includes(name) ? ` ${name}` : ` ${name}="${escapeAttribute(value)}"`))
     .join("");
+}
+
+function datasetKey(attributeName) {
+  return attributeName.slice("data-".length).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
+}
+
+function compileSelector(selector) {
+  const tag = (selector.match(/^[a-z][a-z0-9-]*/i) || [""])[0].toLowerCase();
+  const classes = [...selector.matchAll(/\.([\w-]+)/g)].map((match) => match[1]);
+  const attributes = [...selector.matchAll(/\[(data-[\w-]+)(?:="([^"]*)")?\]/g)].map((match) => [datasetKey(match[1]), match[2]]);
+  return (element) =>
+    (!tag || element.tagName === tag) &&
+    classes.every((name) => element.classList.contains(name)) &&
+    attributes.every(([key, value]) => (value === undefined ? key in element.dataset : String(element.dataset[key]) === value));
 }
 
 export function toHtml(node) {

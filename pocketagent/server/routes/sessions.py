@@ -1,5 +1,6 @@
-"""任务：列表、新建、快照、改名、删除、附件、文件变更和检查点。"""
+"""任务：列表、新建、快照、改名、删除、附件、文件变更、检查点和轨迹。"""
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -8,6 +9,7 @@ from aiohttp import web
 from pocketagent.server import files
 from pocketagent.server.common import error_response, find_session, json_response, session_manager
 from pocketagent.server.session import SessionBusyError, WebSession
+from pocketagent.server.trace_view import build_trace_view
 
 
 async def list_sessions(request: web.Request) -> web.Response:
@@ -44,6 +46,18 @@ async def get_session(request: web.Request) -> web.Response:
     snapshot = web_session.snapshot_message()
     snapshot["usage"] = session_manager(request).usage_log.session_total(web_session.id)
     return json_response(snapshot)
+
+
+async def get_trace(request: web.Request) -> web.Response:
+    """右侧栏「轨迹」：这个任务的每一步（模型、工具、子调用……）和时间，从 trace 文件整理出来。"""
+    web_session = find_session(request)
+    messages = web_session.session.messages
+    system_prompt = ""
+    if messages and messages[0].get("role") == "system":
+        system_prompt = str(messages[0].get("content") or "")
+    trace_path = web_session.settings.traces_dir / f"{web_session.id}.jsonl"
+    # trace 可能有几兆，放到线程里读，不挡别的请求
+    return json_response(await asyncio.to_thread(build_trace_view, trace_path, system_prompt))
 
 
 async def update_session(request: web.Request) -> web.Response:

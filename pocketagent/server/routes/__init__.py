@@ -21,6 +21,7 @@ def add_routes(router: web.UrlDispatcher) -> None:
     router.add_post("/api/sessions", sessions.create_session)
     router.add_get("/api/sessions/{session_id}", sessions.get_session)
     router.add_get("/api/sessions/{session_id}/overview", sessions.get_overview)
+    router.add_get("/api/sessions/{session_id}/trace", sessions.get_trace)
     router.add_patch("/api/sessions/{session_id}", sessions.update_session)
     router.add_post("/api/sessions/{session_id}/rewind", sessions.rewind_session)
     router.add_delete("/api/sessions/{session_id}", sessions.delete_session)

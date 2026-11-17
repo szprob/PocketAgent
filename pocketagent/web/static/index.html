@@ -111,7 +111,12 @@
     </main>
 
     <!-- 右侧栏 -->
-    <aside class="right-panel">
+    <aside class="right-panel" id="right-panel">
+      <div class="panel-tabs" role="tablist">
+        <button class="panel-tab active" type="button" role="tab" data-panel-tab="overview">概览</button>
+        <button class="panel-tab" type="button" role="tab" data-panel-tab="trace">轨迹</button>
+      </div>
+      <div class="panel-pane" data-panel-pane="overview">
       <section class="panel-card" id="overview-card"></section>
       <section class="panel-section" id="preview-section">
         <div class="panel-section-title"><span>预览</span></div>
@@ -145,6 +150,8 @@
         <div class="panel-section-title"><span>检查点</span></div>
         <div id="checkpoint-list"></div>
       </section>
+      </div>
+      <div class="panel-pane trace-pane hidden" data-panel-pane="trace" id="trace-pane"></div>
     </aside>
     <div class="column-resizer" id="panel-resizer" aria-hidden="true"></div>
   </div>

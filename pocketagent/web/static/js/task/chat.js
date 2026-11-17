@@ -559,7 +559,16 @@ function renderPendingInputs(status) {
   }
 }
 
+// 这些事件意味着轨迹多了一步：右侧栏的「轨迹」节流后重新取
+const TRACE_EVENT_TYPES = new Set([
+  "turn_start", "llm_response", "tool_call", "tool_result", "subagent_progress",
+  "interjection_applied", "compaction", "error", "llm_retry", "turn_end",
+]);
+
 function handleAgentEvent(event) {
+  if (TRACE_EVENT_TYPES.has(event.type)) {
+    emit("trace-changed", state.currentTaskId);
+  }
   switch (event.type) {
     case "turn_start":
       finishStreamingBlocks();
