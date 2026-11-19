@@ -668,7 +668,10 @@ body.resizing {
 .message-assistant .md-table-wrap table, .markdown-view .md-table-wrap table { min-width: 100%; border-collapse: collapse; }
 .message-assistant th, .markdown-view th, .message-assistant td, .markdown-view td { padding: 6px 12px; text-align: left; border-bottom: 1px solid var(--border); }
 .message-assistant tr:last-child td, .markdown-view tr:last-child td { border-bottom: 0; }
-.message-assistant th, .markdown-view th { background: var(--surface-muted); font-weight: 600; }
+.message-assistant th, .markdown-view th { background: var(--surface-muted); font-weight: 600; white-space: nowrap; }
+/* 正文是 overflow-wrap: anywhere（长路径不撑破气泡），表格里不能跟着用：格子会被压到一两个字宽，
+   数字、路径从中间断开。格子里按正常规则换行，表头不换行；整张表放不下时外层横着滚 */
+.message-assistant th, .markdown-view th, .message-assistant td, .markdown-view td { overflow-wrap: normal; word-break: normal; }
 .message-assistant .md-align-center, .markdown-view .md-align-center { text-align: center; }
 .message-assistant .md-align-right, .markdown-view .md-align-right { text-align: right; }
 .message-assistant .md-task-list, .markdown-view .md-task-list { list-style: none; padding-left: 0.4em; }
@@ -1433,8 +1436,17 @@ pre code { padding: 0; background: none; font-size: inherit; }
   .modal { padding: 0; }
   .modal-panel, .settings-panel { width: 100%; height: 100%; border-radius: 0; }
   .settings-layout { flex-direction: column; }
-  .settings-tabs { flex-direction: row; width: auto; border-right: 0; border-bottom: 1px solid var(--border); }
+  /* 页签排成一行、放不下就横着滑：不让文字被挤成竖排，也不让后面几个跑到屏幕外点不到 */
+  .settings-tabs { flex-direction: row; width: auto; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--border); scrollbar-width: none; }
+  .settings-tabs::-webkit-scrollbar { display: none; }
+  .settings-tab { flex: none; white-space: nowrap; }
   .model-layout { grid-template-columns: minmax(0, 1fr); }
+  /* 手指点的东西放大一圈（电脑上是 26–32px，手机上不好点） */
+  .icon-button { width: 40px; height: 40px; }
+  .icon-button.small { width: 34px; height: 34px; }
+  .pill { height: 38px; }
+  .send-button, .stop-button { width: 40px; height: 38px; }
+  .settings-tab { padding: 10px 14px; }
 }
 
 /* ---------- 选模型面板 ---------- */
@@ -1664,6 +1676,12 @@ pre code { padding: 0; background: none; font-size: inherit; }
 .panel-tab:hover { color: var(--text); }
 .panel-tab.active { color: var(--text); font-weight: 600; }
 .panel-tab.active::after { content: ""; position: absolute; left: 8px; right: 8px; bottom: -1px; height: 2px; border-radius: 2px; background: var(--accent); }
+/* 关闭按钮只在窄屏（右侧栏是抽屉）时显示：抽屉盖住了顶栏的开关，光靠点旁边那一窄条遮罩不好关 */
+.panel-close { display: none; margin-left: auto; align-self: center; }
+@media (max-width: 860px) {
+  .panel-close { display: inline-flex; }
+  .panel-tab { padding: 10px 12px 12px; }
+}
 .panel-pane { display: flex; flex-direction: column; gap: 18px; min-height: 0; }
 .right-panel.trace-active { overflow: hidden; }
 .right-panel.trace-active .trace-pane { flex: 1; }

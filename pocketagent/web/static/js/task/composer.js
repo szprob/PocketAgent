@@ -8,6 +8,23 @@ import { AGENT_MODE_HINTS, AGENT_MODE_ICONS, AGENT_MODE_LABELS, MODE_ICONS, MODE
 
 const MAX_TEXTAREA_HEIGHT = 240;
 
+// 触屏设备（手机、平板）：软键盘上按不出 Shift+Enter，回车留给换行，发送走按钮。
+// 测试用的假 DOM 没有 matchMedia，当成不是触屏。
+function detectTouchInput() {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+    return false;
+  }
+  if (window.matchMedia("(pointer: coarse)").matches) {
+    return true;
+  }
+  // 安卓 WebView 里主指针报的是 fine（模拟器上实测），光看上面那条认不出来；
+  // 「不能悬停 + 有触摸点」同样说明是触屏。带触屏的笔记本能悬停，不会被算进来
+  const touchPoints = typeof navigator === "undefined" ? 0 : navigator.maxTouchPoints || 0;
+  return window.matchMedia("(hover: none)").matches && touchPoints > 0;
+}
+
+export const TOUCH_INPUT = detectTouchInput();
+
 // 工作区下拉里「不指定工作区」那一项的值。真实工作区都是绝对路径，不会撞上。
 export const SCRATCH_WORKSPACE = "__scratch__";
 const SCRATCH_LABEL = "临时任务（不指定工作区）";
@@ -101,7 +118,7 @@ export class Composer {
 
     this.stopButton = button("stop-button hidden", "", "stop", "停止（Esc）");
     this.stopButton.addEventListener("click", () => this.onStop?.());
-    this.sendButton = button("send-button", "", "arrowUp", "发送（Enter）");
+    this.sendButton = button("send-button", "", "arrowUp", TOUCH_INPUT ? "发送" : "发送（Enter）");
     this.sendButton.addEventListener("click", () => this.submit());
 
     toolbar.append(
@@ -182,6 +199,10 @@ export class Composer {
       }
       // 中文输入法选词时按的 Enter 不算发送
       if (event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
+        // 触屏上回车是换行；接了键盘的话 Ctrl / ⌘ + Enter 照样能发
+        if (TOUCH_INPUT && !event.ctrlKey && !event.metaKey) {
+          return;
+        }
         event.preventDefault();
         this.submit();
       }

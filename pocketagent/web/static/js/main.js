@@ -4,7 +4,7 @@ import { requestJson, sendJson, withToken } from "./core/api.js";
 import { closeEditor, initAutomations, isAutomationEditorOpen, showAutomations } from "./automations/automations.js";
 import { chatComposer, initChat, interrupt, isChatRunning, leaveTask, openTask, updateChatOptions } from "./task/chat.js";
 import { looksLikeCommand, loadSkillNames, runCommand } from "./core/commands.js";
-import { Composer, SCRATCH_WORKSPACE } from "./task/composer.js";
+import { Composer, SCRATCH_WORKSPACE, TOUCH_INPUT } from "./task/composer.js";
 import { applyAppearance, el, icon, show } from "./ui/dom.js";
 import { citationText, closeFilePreview, initFilePreview, isFilePreviewOpen } from "./shared/filepreview.js";
 import { closeFolderPicker, isFolderPickerOpen } from "./shared/folderpicker.js";
@@ -101,7 +101,9 @@ const pendingFirstMessages = new Map();
 function initNewTask() {
   newTaskComposer = new Composer(document.getElementById("new-task-composer"), {
     kind: "new",
-    placeholder: "描述你要做的事，比如「看看这个仓库是做什么的」…  Enter 发送；/ 开头是命令",
+    placeholder: TOUCH_INPUT
+      ? "描述你要做的事…  / 开头是命令"
+      : "描述你要做的事，比如「看看这个仓库是做什么的」…  Enter 发送；/ 开头是命令",
     onSubmit: startNewTask,
     onWorkspaceChange: refreshNewTaskSkills,
   });
@@ -237,22 +239,61 @@ function bindLayoutControls() {
   document.getElementById("toggle-right-panel").addEventListener("click", () => {
     setRightPanelVisible(app.classList.contains("right-panel-hidden"), { remember: !isMobileLayout() });
   });
+  // 抽屉里的关闭按钮（只在窄屏显示）：抽屉盖住了顶栏那个开关
+  document.getElementById("close-right-panel").addEventListener("click", () => {
+    setRightPanelVisible(false, { remember: false });
+  });
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") {
       return;
     }
-    if (isSettingsOpen()) {
-      closeSettings();
-    } else if (isFilePreviewOpen()) {
-      closeFilePreview();
-    } else if (isFolderPickerOpen()) {
-      closeFolderPicker();
-    } else if (isAutomationEditorOpen()) {
-      closeEditor();
-    } else if (isChatRunning()) {
+    if (!closeTopDialog() && isChatRunning()) {
       interrupt();
     }
   });
+  // 手机 App 的返回键：android/ 的 MainActivity 先调这个，返回 true 表示这里处理了
+  window.__pocketAgentBack = handleBackKey;
+}
+
+// 关掉最上面那个弹窗（设置、文件预览、选目录、自动化编辑）；一个都没开返回 false
+function closeTopDialog() {
+  if (isSettingsOpen()) {
+    closeSettings();
+    return true;
+  }
+  if (isFilePreviewOpen()) {
+    closeFilePreview();
+    return true;
+  }
+  if (isFolderPickerOpen()) {
+    closeFolderPicker();
+    return true;
+  }
+  if (isAutomationEditorOpen()) {
+    closeEditor();
+    return true;
+  }
+  return false;
+}
+
+// 返回键：开着弹窗关弹窗，开着抽屉收抽屉。都没开返回 false，App 再按浏览历史后退
+function handleBackKey() {
+  if (closeTopDialog()) {
+    return true;
+  }
+  if (!isMobileLayout()) {
+    return false;
+  }
+  if (app.classList.contains("sidebar-open")) {
+    closeMobileSidebar();
+    return true;
+  }
+  const rightDrawerOpen = app.classList.contains("in-task") && !app.classList.contains("right-panel-hidden");
+  if (rightDrawerOpen) {
+    setRightPanelVisible(false, { remember: false });
+    return true;
+  }
+  return false;
 }
 
 // ===================== 启动 =====================

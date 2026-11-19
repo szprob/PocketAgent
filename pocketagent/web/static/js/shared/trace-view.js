@@ -416,7 +416,20 @@ export class TraceView {
   }
 }
 
+// 手机 App（android/）的 WebView 存不了 blob 下载。那边挂了一个原生接口，把内容交给它写进「下载」目录。
+// 口令是 App 在页面加载完后注入的（见 MainActivity.AndroidBridge）；别的环境没有这个接口，返回 false。
+function saveThroughAndroidApp(fileName, text) {
+  const bridge = window.PocketAgentAndroid;
+  if (!bridge || typeof bridge.saveTextFile !== "function") {
+    return false;
+  }
+  return bridge.saveTextFile(window.__pocketAgentBridgeKey || "", fileName, text) === true;
+}
+
 function downloadText(fileName, text) {
+  if (saveThroughAndroidApp(fileName, text)) {
+    return;
+  }
   const url = URL.createObjectURL(new Blob([text], { type: "application/x-ndjson" }));
   const link = document.createElement("a");
   link.href = url;

@@ -2,7 +2,7 @@
 
 import { attachmentUrl, newClientId, requestJson, sendJson, sessionFileUrl, socketUrl, uploadFiles } from "../core/api.js";
 import { looksLikeCommand, loadSkillNames, runCommand } from "../core/commands.js";
-import { Composer } from "./composer.js";
+import { Composer, TOUCH_INPUT } from "./composer.js";
 import { button, el, icon, isImagePath, renderDiff, show } from "../ui/dom.js";
 import { renderMarkdown } from "../shared/markdown.js";
 import { ActivityFold, dissolveFolds } from "../shared/activity-fold.js";
@@ -114,7 +114,8 @@ export function initChat({ onDeleted }) {
 
   chat.composer = new Composer(document.getElementById("chat-composer"), {
     kind: "chat",
-    placeholder: "接着说…  Enter 发送，Shift+Enter 换行，图片可以直接粘贴",
+    // 触屏上回车是换行、发送点按钮，快捷键提示用不上，也免得占两行
+    placeholder: TOUCH_INPUT ? "接着说…" : "接着说…  Enter 发送，Shift+Enter 换行，图片可以直接粘贴",
     onSubmit: sendUserMessage,
     onStop: interrupt,
     onModeChange: (mode) => sendToServer({ type: "set_mode", mode }),
