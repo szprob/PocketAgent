@@ -106,7 +106,8 @@ make apk          # 等价于 cd android && ./gradlew :app:assembleDebug
 - `assets/alpine-minirootfs.bin`：Alpine 3.20.3 aarch64 minirootfs（gzip tar），https://alpinelinux.org/
 - `assets/proot/`：Termux 的 PRoot 5.1.107.102 + loader + libtalloc + libandroid-shmem
 - 这些二进制直接放在仓库里（约 4.2MB），不用联网就能打包。每个文件的下载地址、SHA-256、源码地址和
-  许可证都写在 `assets/proot/NOTICE.txt`，可以自己核对；rootfs 的校验值和 Alpine 官方公布的一致。
+  许可证都写在 `assets/proot/NOTICE.txt`，可以自己核对。2026-11-20 核对过：rootfs 的校验值和 Alpine 官方
+  公布的一致，PRoot 那五个文件和 Termux 官方包里的逐字节一致。
   升级其中任何一个时记得同步改 NOTICE。
 - `assets/pocketagent-src.zip`：构建时生成，不提交
 
