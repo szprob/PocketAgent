@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">PocketAgent</string>
+
+    <string name="setup_title">PocketAgent</string>
+    <string name="setup_intro">后端跑在手机自带的 Alpine Linux 里，不依赖 Termux，也不连别的电脑。第一次启动要装 Python、git、ripgrep，约几分钟；装好后每次秒开。</string>
+    <string name="setup_hint">首次初始化会下载约 100MB（Alpine 软件包 + Python 依赖），之后都从本地启动。</string>
+
+    <string name="status_checking">正在检查内置后端…</string>
+    <string name="status_down">内置后端还没起来，正在启动。</string>
+    <string name="status_starting">正在启动内置后端…第一次可能需要几分钟，日志如下。</string>
+    <string name="status_start_timeout">启动超时。日志停在下面这一步，可以点「重试」。</string>
+
+    <string name="action_start_backend">启动后端</string>
+    <string name="action_retry">重试</string>
+    <string name="choose_file">选择文件</string>
+
+    <string name="download_saved">已保存到 %1$s</string>
+    <string name="download_failed">保存失败：%1$s</string>
+    <string name="download_unsupported">这种链接在手机上存不了</string>
+
+    <string name="storage_title">要不要访问手机文件？</string>
+    <string name="storage_message">允许「所有文件访问」后，内置 Linux 里的 /sdcard 就是手机存储，agent 能直接改手机上的仓库和文档；不允许也能用，只是只能操作 App 自己的 workspace。</string>
+    <string name="storage_action">去允许</string>
+    <string name="storage_unavailable">这台手机没有「所有文件访问」设置页，先在 App 自己的 workspace 里用。</string>
+
+    <string name="notifications_title">要不要开通知？</string>
+    <string name="notifications_message">开了以后，切到别的 App 时任务等你确认或者跑完了会提醒你，常驻通知上还有「停止」按钮。不开也能用。</string>
+    <string name="notifications_action">去开启</string>
+    <string name="notifications_unavailable">打不开通知设置页，请在系统设置 → 应用 → PocketAgent → 通知 里开启。</string>
+</resources>

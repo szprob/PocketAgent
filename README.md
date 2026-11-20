@@ -78,6 +78,12 @@ py -3.12 -m pocketagent --web -C D:\SZ\git\foo
   （Windows 上不一定有 make）；`tests/vendor_pocketflow/` 里有两条上游的并行 batch 用例假设并行分支按启动顺序完成，
   Windows 上计时精度粗、完成顺序不固定，和本项目代码无关，在 Windows 上自动跳过（见 `tests/vendor_pocketflow/__init__.py`）
 
+### Android
+
+`android/` 是一个单 APK：Python、git、ripgrep、bash 和 Alpine rootfs 都打包在 APK 里，用 PRoot 在手机上跑后端，
+WebView 显示界面。不依赖 Termux，也不连别的电脑；第一次启动下载约 100MB 依赖，之后秒开。
+`make apk` 打包，安装要求见 [android/README.md](android/README.md)。
+
 ## 文档
 
 详细文档在 [docs/](docs/)：

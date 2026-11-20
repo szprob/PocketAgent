@@ -1,0 +1,92 @@
+plugins {
+    id "com.android.application"
+}
+
+def generatedAssetsDir = file("$buildDir/generated/pocketagentAssets")
+
+// 把仓库里的 pocketagent / pocketflow 源码打成 zip 放进 APK 的 assets；
+// 手机上解压到内置 rootfs 的 /opt/PocketAgent，后端直接从这份源码运行（依赖按 pyproject.toml 装）。
+def packagePocketAgentSources = tasks.register("packagePocketAgentSources", Zip) {
+    archiveFileName = "pocketagent-src.zip"
+    destinationDirectory = file(generatedAssetsDir)
+    from(rootProject.projectDir.parentFile) {
+        include "pocketagent/**"
+        include "pocketflow/**"
+        include "pyproject.toml"
+        include "README.md"
+        exclude "**/__pycache__/**"
+        exclude "**/*.pyc"
+        exclude "**/*.egg-info/**"
+        exclude "**/.pytest_cache/**"
+    }
+}
+
+// 可选的固定签名：android/keystore.properties（不提交）里写 storeFile / storePassword / keyAlias / keyPassword。
+// 没有这个文件就用本机的 debug 签名——换一台电脑打的包签名不同，覆盖安装不了，见 android/README.md。
+def keystorePropertiesFile = rootProject.file("keystore.properties")
+def keystoreProperties = new Properties()
+if (keystorePropertiesFile.exists()) {
+    keystorePropertiesFile.withInputStream { stream -> keystoreProperties.load(stream) }
+}
+
+android {
+    namespace "com.pocketagent.mobile"
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.pocketagent.mobile"
+        minSdk 26
+        // PRoot 要在应用数据目录里 exec 文件；targetSdk >= 29 会被 Android 的 noexec 限制拦掉
+        targetSdk 28
+        versionCode 3
+        versionName "0.3.0"
+    }
+
+    sourceSets {
+        main {
+            assets.srcDir generatedAssetsDir
+        }
+    }
+
+    signingConfigs {
+        if (keystorePropertiesFile.exists()) {
+            personal {
+                storeFile rootProject.file(keystoreProperties["storeFile"])
+                storePassword keystoreProperties["storePassword"]
+                keyAlias keystoreProperties["keyAlias"]
+                keyPassword keystoreProperties["keyPassword"]
+            }
+        }
+    }
+
+    buildTypes {
+        debug {
+            if (keystorePropertiesFile.exists()) {
+                signingConfig signingConfigs.personal
+            }
+        }
+        release {
+            minifyEnabled false
+            // 自用包：有固定签名用固定签名，没有就也用 debug 签名
+            signingConfig keystorePropertiesFile.exists() ? signingConfigs.personal : signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    packagingOptions {
+        resources {
+            excludes += ["META-INF/DEPENDENCIES", "META-INF/LICENSE*", "META-INF/NOTICE*"]
+        }
+    }
+}
+
+dependencies {
+    // 解 Alpine rootfs 的 tar.gz（带符号链接和权限位）
+    implementation "org.apache.commons:commons-compress:1.26.2"
+}
+
+preBuild.dependsOn(packagePocketAgentSources)
